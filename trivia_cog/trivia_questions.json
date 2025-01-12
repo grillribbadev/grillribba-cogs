@@ -1,0 +1,490 @@
+{
+    "onepiece": [
+      {
+        "question": "What is Luffy's dream?",
+        "answer": ["Pirate King", "King of the Pirates"]
+      },
+      {
+        "question": "Who is the navigator of the Straw Hats?",
+        "answer": ["Nami"]
+      },
+      {
+        "question": "What fruit did Luffy eat?",
+        "answer": ["Gum-Gum", "Gomu Gomu", "Gum Gum", "Gomu Gomu no Mi", "Hito Hito", "Hito Hito no Mi"]
+      },
+      {
+        "question": "What is Zoro's fighting style?",
+        "answer": ["Three-Sword", "Santoryu", "Three Sword", "Three Sword Style"]
+      },
+      {
+        "question": "Who is the cook of the Straw Hats?",
+        "answer": ["Sanji", "Black Leg Sanji"]
+      },
+      {
+        "question": "What is the name of the Straw Hats' first ship?",
+        "answer": ["Going Merry", "Merry"]
+      },
+      {
+        "question": "Who is the doctor of the Straw Hats?",
+        "answer": ["Chopper", "Tony Tony Chopper"]
+      },
+      {
+        "question": "What is Usopp's dream?",
+        "answer": ["Brave Warrior", "Brave Warrior of the Sea"]
+      },
+      {
+        "question": "What is the second ship of the Straw Hats?",
+        "answer": ["Thousand Sunny", "Sunny"]
+      },
+      {
+        "question": "Who is Luffy's grandfather?",
+        "answer": ["Garp", "Monkey D. Garp", "Monkey D Garp"]
+      },
+      {
+        "question": "Who is the archaeologist of the Straw Hats?",
+        "answer": ["Robin", "Nico Robin"]
+      },
+      {
+        "question": "What island is the home of the Fish-Men?",
+        "answer": ["Fish-Man Island", "Fishman Island", "Fish man Island"]
+      },
+      {
+        "question": "Who is the musician of the Straw Hats?",
+        "answer": ["Brook", "Soul King Brook"]
+      },
+      {
+        "question": "What is the name of Luffy's older brother?",
+        "answer": ["Ace", "Portgas D. Ace", "Portgas D Ace"]
+      },
+      {
+        "question": "Who is the shipwright of the Straw Hats?",
+        "answer": ["Franky", "Cutty Flam"]
+      },
+      {
+        "question": "What is the currency used in One Piece?",
+        "answer": ["Berries", "Beli"]
+      },
+      {
+        "question": "Who is the main villain in Alabasta?",
+        "answer": ["Crocodile", "Sir Crocodile", "Mr. 0", "Mr 0"]
+      },
+      {
+        "question": "What is the name of the Straw Hats' swordsman?",
+        "answer": ["Zoro", "Roronoa Zoro"]
+      },
+      {
+        "question": "What is Luffy's signature attack?",
+        "answer": ["Gum-Gum Pistol", "Gomu Gomu no Pistol", "Gum Gum Pistol"]
+      },
+      {
+        "question": "What is the name of the first island in the Grand Line?",
+        "answer": ["Reverse Mountain"]
+      },
+      {
+        "question": "Who has the Poneglyph reading ability?",
+        "answer": ["Robin", "Nico Robin"]
+      },
+      {
+        "question": "What is the name of the island where Skypiea begins?",
+        "answer": ["Jaya"]
+      },
+      {
+        "question": "Who is the Yonko with the title 'Strongest Creature'?",
+        "answer": ["Kaido", "Kaido of the Beasts"]
+      },
+      {
+        "question": "What is the Straw Hats' flag symbol?",
+        "answer": ["Jolly Roger", "Straw Hat Jolly Roger"]
+      },
+      {
+        "question": "What is the name of Luffy's father?",
+        "answer": ["Dragon", "Monkey D. Dragon", "Monkey D Dragon"]
+      },
+    {
+      "question": "Who is the first mate of the Straw Hats?",
+      "answer": ["Zoro", "Roronoa Zoro"]
+    },
+    {
+      "question": "What is Luffy's favorite food?",
+      "answer": ["Meat"]
+    },
+    {
+      "question": "What is Nami's weapon?",
+      "answer": ["Climatact", "Climate Baton"]
+    },
+    {
+      "question": "Who is the sniper of the Straw Hats?",
+      "answer": ["Usopp", "God Usopp", "Sogeking"]
+    },
+    {
+      "question": "What is the name of Usopp's father?",
+      "answer": ["Yasopp"]
+    },
+    {
+      "question": "Who trained Zoro in swordsmanship?",
+      "answer": ["Mihawk", "Dracule Mihawk"]
+    },
+    {
+      "question": "What is the name of Sanji's restaurant on the sea?",
+      "answer": ["Baratie"]
+    },
+    {
+      "question": "What island is home to the Mink Tribe?",
+      "answer": ["Zou"]
+    },
+    {
+      "question": "What is Chopper's dream?",
+      "answer": ["Cure All Diseases", "Cure Diseases", "Doctor to Cure All Diseases"]
+    },
+    {
+      "question": "Who is the Yonko known as the 'Strongest Man in the World'?",
+      "answer": ["Whitebeard", "Edward Newgate"]
+    },
+    {
+      "question": "What is the name of Luffy's bounty after Enies Lobby?",
+      "answer": ["300 Million Berries", "300,000,000", "300 Million"]
+    },
+    {
+      "question": "What is the name of Nami's adoptive sister?",
+      "answer": ["Nojiko"]
+    },
+    {
+      "question": "Who is Luffy's rival from the Worst Generation?",
+      "answer": ["Kid", "Eustass Kid"]
+    },
+    {
+      "question": "What is the name of the Marine Admiral with gravity powers?",
+      "answer": ["Fujitora", "Issho"]
+    },
+    {
+      "question": "What is Robin's Devil Fruit?",
+      "answer": ["Hana Hana", "Hana Hana no Mi", "Flower-Flower Fruit"]
+    },
+    {
+      "question": "What is the name of Zoro's cursed sword?",
+      "answer": ["Sandai Kitetsu", "Kitetsu"]
+    },
+    {
+      "question": "Who is the current Fleet Admiral?",
+      "answer": ["Akainu", "Sakazuki"]
+    },
+    {
+      "question": "What is Luffy's Gear Fourth form called?",
+      "answer": ["Boundman", "Bounceman"]
+    },
+    {
+      "question": "What is the name of Big Mom's crew?",
+      "answer": ["Big Mom Pirates", "Charlotte Family"]
+    },
+    {
+      "question": "What is Franky's dream?",
+      "answer": ["Build a Ship to Sail the World", "Build the Perfect Ship"]
+    },
+    {
+      "question": "What is the name of Sanji's fighting style?",
+      "answer": ["Black Leg", "Black Leg Style"]
+    },
+    {
+      "question": "What is the name of the weapon Enel used?",
+      "answer": ["Maxim"]
+    },
+    {
+      "question": "What is the name of the World Government's secret police?",
+      "answer": ["CP9", "Cipher Pol 9"]
+    },
+    {
+      "question": "Who is the Revolutionary Army's second-in-command?",
+      "answer": ["Sabo"]
+    },
+    {
+      "question": "What is the name of Zoro's hometown?",
+      "answer": ["Shimotsuki Village"]
+    },
+    {
+      "question": "What is the name of the scientist who created artificial Devil Fruits?",
+      "answer": ["Caesar Clown", "Caesar"]
+    },
+    {
+      "question": "What is the name of Kaido's island base?",
+      "answer": ["Onigashima"]
+    },
+    {
+      "question": "What is the name of the Shichibukai who has sand powers?",
+      "answer": ["Crocodile", "Sir Crocodile"]
+    },
+    {
+      "question": "What is the name of the giant whale at Reverse Mountain?",
+      "answer": ["Laboon"]
+    },
+    {
+      "question": "What is the name of the Sea Train's destination?",
+      "answer": ["Enies Lobby"]
+    },
+    {
+      "question": "What is the name of the swordsman from Wano who joined the Straw Hats?",
+      "answer": ["Brook", "Soul King Brook"]
+    },
+    {
+      "question": "What is the name of the Pirate King's ship?",
+      "answer": ["Oro Jackson"]
+    },
+    {
+      "question": "Who is Luffy's mother?",
+      "answer": ["Unknown", "Not Revealed"]
+    },
+    {
+      "question": "What is Zoro's bounty after Wano?",
+      "answer": ["1.111 Billion Berries", "1,111,000,000", "1.111 Billion"]
+    },
+    {
+      "question": "Who is the creator of One Piece?",
+      "answer": ["Eiichiro Oda", "Oda"]
+    },
+    {
+      "question": "What is the name of the legendary island where One Piece is located?",
+      "answer": ["Raftel", "Laugh Tale"]
+    },
+    {
+      "question": "What is the name of the fish-man who was once a Shichibukai?",
+      "answer": ["Jinbe", "Jimbei"]
+    },
+    {
+      "question": "What is the name of the infamous 'D' Clan?",
+      "answer": ["Will of D", "Clan of D"]
+    },
+    {
+      "question": "Who was the first villain Luffy defeated in the Grand Line?",
+      "answer": ["Crocodile", "Sir Crocodile"]
+    },
+    {
+      "question": "What is the name of Shanks' ship?",
+      "answer": ["Red Force"]
+    },
+    {
+      "question": "What is the treasure that all pirates seek?",
+      "answer": ["One Piece"]
+    },
+    {
+      "question": "What is the name of Luffy's hometown?",
+      "answer": ["Fuschia Village", "Foosha Village"]
+    },
+    {
+      "question": "What is the name of the Marine Base in Alabasta?",
+      "answer": ["Marineford"]
+    },
+    {
+      "question": "What is the name of the scientist who works with Vegapunk?",
+      "answer": ["Caesar Clown", "Caesar"]
+    },
+    {
+      "question": "What is the name of Luffy's bounty after Dressrosa?",
+      "answer": ["500 Million Berries", "500,000,000", "500 Million"]
+    },
+    {
+      "question": "What is the name of the fish-man karate master?",
+      "answer": ["Jinbe", "Jimbei"]
+    },
+    {
+      "question": "What is the name of the prison Luffy broke into?",
+      "answer": ["Impel Down"]
+    },
+    {
+      "question": "What is the name of the island ruled by Big Mom?",
+      "answer": ["Whole Cake Island"]
+    },
+    {
+        "question": "Who is the first mate of the Straw Hats?",
+        "answer": ["Zoro", "Roronoa Zoro"]
+      },
+      {
+        "question": "What is Luffy's favorite food?",
+        "answer": ["Meat"]
+      },
+      {
+        "question": "What is Nami's weapon?",
+        "answer": ["Climatact", "Climate Baton"]
+      },
+      {
+        "question": "Who is the sniper of the Straw Hats?",
+        "answer": ["Usopp", "God Usopp", "Sogeking"]
+      },
+      {
+        "question": "What is the name of Usopp's father?",
+        "answer": ["Yasopp"]
+      },
+      {
+        "question": "Who trained Zoro in swordsmanship?",
+        "answer": ["Mihawk", "Dracule Mihawk"]
+      },
+      {
+        "question": "What is the name of Sanji's restaurant on the sea?",
+        "answer": ["Baratie"]
+      },
+      {
+        "question": "What island is home to the Mink Tribe?",
+        "answer": ["Zou"]
+      },
+      {
+        "question": "What is Chopper's dream?",
+        "answer": ["Cure All Diseases", "Cure Diseases", "Doctor to Cure All Diseases"]
+      },
+      {
+        "question": "Who is the Yonko known as the 'Strongest Man in the World'?",
+        "answer": ["Whitebeard", "Edward Newgate"]
+      },
+      {
+        "question": "What is the name of Luffy's bounty after Enies Lobby?",
+        "answer": ["300 Million Berries", "300,000,000", "300 Million"]
+      },
+      {
+        "question": "What is the name of Nami's adoptive sister?",
+        "answer": ["Nojiko"]
+      },
+      {
+        "question": "Who is Luffy's rival from the Worst Generation?",
+        "answer": ["Kid", "Eustass Kid"]
+      },
+      {
+        "question": "What is the name of the Marine Admiral with gravity powers?",
+        "answer": ["Fujitora", "Issho"]
+      },
+      {
+        "question": "What is Robin's Devil Fruit?",
+        "answer": ["Hana Hana", "Hana Hana no Mi", "Flower-Flower Fruit"]
+      },
+      {
+        "question": "What is the name of Zoro's cursed sword?",
+        "answer": ["Sandai Kitetsu", "Kitetsu"]
+      },
+      {
+        "question": "Who is the current Fleet Admiral?",
+        "answer": ["Akainu", "Sakazuki"]
+      },
+      {
+        "question": "What is Luffy's Gear Fourth form called?",
+        "answer": ["Boundman", "Bounceman"]
+      },
+      {
+        "question": "What is the name of Big Mom's crew?",
+        "answer": ["Big Mom Pirates", "Charlotte Family"]
+      },
+      {
+        "question": "What is Franky's dream?",
+        "answer": ["Build a Ship to Sail the World", "Build the Perfect Ship"]
+      },
+      {
+        "question": "What is the name of Sanji's fighting style?",
+        "answer": ["Black Leg", "Black Leg Style"]
+      },
+      {
+        "question": "What is the name of the weapon Enel used?",
+        "answer": ["Maxim"]
+      },
+      {
+        "question": "What is the name of the World Government's secret police?",
+        "answer": ["CP9", "Cipher Pol 9"]
+      },
+      {
+        "question": "Who is the Revolutionary Army's second-in-command?",
+        "answer": ["Sabo"]
+      },
+      {
+        "question": "What is the name of Zoro's hometown?",
+        "answer": ["Shimotsuki Village"]
+      },
+      {
+        "question": "What is the name of the scientist who created artificial Devil Fruits?",
+        "answer": ["Caesar Clown", "Caesar"]
+      },
+      {
+        "question": "What is the name of Kaido's island base?",
+        "answer": ["Onigashima"]
+      },
+      {
+        "question": "What is the name of the Shichibukai who has sand powers?",
+        "answer": ["Crocodile", "Sir Crocodile"]
+      },
+      {
+        "question": "What is the name of the giant whale at Reverse Mountain?",
+        "answer": ["Laboon"]
+      },
+      {
+        "question": "What is the name of the Sea Train's destination?",
+        "answer": ["Enies Lobby"]
+      },
+      {
+        "question": "What is the name of the swordsman from Wano who joined the Straw Hats?",
+        "answer": ["Brook", "Soul King Brook"]
+      },
+      {
+        "question": "What is the name of the Pirate King's ship?",
+        "answer": ["Oro Jackson"]
+      },
+      {
+        "question": "Who is Luffy's mother?",
+        "answer": ["Unknown", "Not Revealed"]
+      },
+      {
+        "question": "What is Zoro's bounty after Wano?",
+        "answer": ["1.111 Billion Berries", "1,111,000,000", "1.111 Billion"]
+      },
+      {
+        "question": "Who is the creator of One Piece?",
+        "answer": ["Eiichiro Oda", "Oda"]
+      },
+      {
+        "question": "What is the name of the legendary island where One Piece is located?",
+        "answer": ["Raftel", "Laugh Tale"]
+      },
+      {
+        "question": "What is the name of the fish-man who was once a Shichibukai?",
+        "answer": ["Jinbe", "Jimbei"]
+      },
+      {
+        "question": "What is the name of the infamous 'D' Clan?",
+        "answer": ["Will of D", "Clan of D"]
+      },
+      {
+        "question": "Who was the first villain Luffy defeated in the Grand Line?",
+        "answer": ["Crocodile", "Sir Crocodile"]
+      },
+      {
+        "question": "What is the name of Shanks' ship?",
+        "answer": ["Red Force"]
+      },
+      {
+        "question": "What is the treasure that all pirates seek?",
+        "answer": ["One Piece"]
+      },
+      {
+        "question": "What is the name of Luffy's hometown?",
+        "answer": ["Fuschia Village", "Foosha Village"]
+      },
+      {
+        "question": "What is the name of the Marine Base in Alabasta?",
+        "answer": ["Marineford"]
+      },
+      {
+        "question": "What is the name of the scientist who works with Vegapunk?",
+        "answer": ["Caesar Clown", "Caesar"]
+      },
+      {
+        "question": "What is the name of Luffy's bounty after Dressrosa?",
+        "answer": ["500 Million Berries", "500,000,000", "500 Million"]
+      },
+      {
+        "question": "What is the name of the fish-man karate master?",
+        "answer": ["Jinbe", "Jimbei"]
+      },
+      {
+        "question": "What is the name of the prison Luffy broke into?",
+        "answer": ["Impel Down"]
+      },
+      {
+        "question": "What is the name of the island ruled by Big Mom?",
+        "answer": ["Whole Cake Island"]
+      }
+    ]
+  }
+
+  

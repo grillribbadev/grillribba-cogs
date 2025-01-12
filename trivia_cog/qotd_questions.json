@@ -1,0 +1,10 @@
+{
+    "qotd_1": {
+        "question": "What is the capital of France?",
+        "answer": ["paris"]
+    },
+    "qotd_2": {
+        "question": "Name a primary color.",
+        "answer": ["red", "blue", "yellow"]
+    }
+}
