@@ -44,3 +44,4 @@ class Reboot(commands.Cog):
             os.system(f"/usr/bin/sudo -u {username} /sbin/reboot")
         except TimeoutError:
             await ctx.send("Reboot cancelled. ⛔")
+
