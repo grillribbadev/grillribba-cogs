@@ -36,49 +36,49 @@ class Prune(commands.Cog):
         if action.lower() == "activate" and level in [5, 15]:
             self.lockdown_active = True
             self.lockdown_level = LEVEL_5_ROLE_ID if level == 5 else LEVEL_15_ROLE_ID
-            await self.lock_categories(ctx, self.lockdown_level)
+            await self.lock_category_channels(ctx, self.lockdown_level)
             await ctx.send(f"🛡️ **Lockdown Activated:** Only users with `Level {level}+` can access locked categories.")
         
         elif action.lower() == "deactivate":
             self.lockdown_active = False
             self.lockdown_level = None
-            await self.unlock_categories(ctx)
+            await self.unlock_category_channels(ctx)
             await ctx.send("❌ **Lockdown Deactivated:** All categories are now accessible.")
 
         else:
             await ctx.send("Usage: `.shield activate 5` or `.shield activate 15`")
 
-    async def lock_categories(self, ctx, role_id: int):
+    async def lock_category_channels(self, ctx, role_id: int):
         role = discord.utils.get(ctx.guild.roles, id=role_id)
         if not role:
             await ctx.send("❌ The required role does not exist. Please check the role IDs.")
             return
 
         tasks = []
-        for category_id in CATEGORY_IDS:
-            category = discord.utils.get(ctx.guild.categories, id=category_id)
-            if category:
-                # Lock the category for everyone except the specified role
-                overwrite = category.overwrites_for(ctx.guild.default_role)
-                overwrite.view_channel = False
-                tasks.append(category.set_permissions(ctx.guild.default_role, overwrite=overwrite))
+        for category in ctx.guild.categories:
+            if category.id in CATEGORY_IDS:
+                for channel in category.channels:
+                    # Lock the channel for everyone except the specified role
+                    overwrite = channel.overwrites_for(ctx.guild.default_role)
+                    overwrite.view_channel = False
+                    tasks.append(channel.set_permissions(ctx.guild.default_role, overwrite=overwrite))
 
-                # Allow only the selected level role to access
-                overwrite = category.overwrites_for(role)
-                overwrite.view_channel = True
-                tasks.append(category.set_permissions(role, overwrite=overwrite))
+                    # Allow only the selected level role to access
+                    overwrite = channel.overwrites_for(role)
+                    overwrite.view_channel = True
+                    tasks.append(channel.set_permissions(role, overwrite=overwrite))
 
         await asyncio.gather(*tasks)  # Apply changes in parallel for speed
 
-    async def unlock_categories(self, ctx):
+    async def unlock_category_channels(self, ctx):
         tasks = []
-        for category_id in CATEGORY_IDS:
-            category = discord.utils.get(ctx.guild.categories, id=category_id)
-            if category:
-                # Reset category permissions
-                overwrite = category.overwrites_for(ctx.guild.default_role)
-                overwrite.view_channel = None
-                tasks.append(category.set_permissions(ctx.guild.default_role, overwrite=overwrite))
+        for category in ctx.guild.categories:
+            if category.id in CATEGORY_IDS:
+                for channel in category.channels:
+                    # Reset channel permissions
+                    overwrite = channel.overwrites_for(ctx.guild.default_role)
+                    overwrite.view_channel = None
+                    tasks.append(channel.set_permissions(ctx.guild.default_role, overwrite=overwrite))
 
         await asyncio.gather(*tasks)  # Apply unlocks in parallel
 
