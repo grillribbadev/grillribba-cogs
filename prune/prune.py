@@ -82,11 +82,24 @@ class Prune(commands.Cog):
                         await msg.delete()
                         deleted_count += 1
             except discord.Forbidden:
-                continue  # Skip channels the bot doesn't have permission for
+                continue  
             except discord.HTTPException:
-                continue  # Skip on any API errors
+                continue  
 
-        await ctx.send(f"Nuked **{deleted_count}** messages from {user.mention} across all channels.")
+        muted_role = discord.utils.get(ctx.guild.roles, name="Muted")
+        if not muted_role:
+            try:
+                muted_role = await ctx.guild.create_role(name="Muted", permissions=discord.Permissions(send_messages=False, speak=False))
+                for channel in ctx.guild.channels:
+                    await channel.set_permissions(muted_role, send_messages=False, speak=False)
+            except discord.Forbidden:
+                return await ctx.send("I don't have permission to create or manage the Muted role.")
+
+        try:
+            await user.add_roles(muted_role)
+            await ctx.send(f"Nuked **{deleted_count}** messages from {user.mention} and permanently muted them.")
+        except discord.Forbidden:
+            await ctx.send("I don't have permission to mute this user.")
 
 async def setup(bot: Red):
     await bot.add_cog(Prune(bot))
