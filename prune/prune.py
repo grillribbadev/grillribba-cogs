@@ -70,12 +70,21 @@ class Prune(commands.Cog):
 
     async def upload_logs_to_pastebin(self, text: str) -> Optional[str]:
         async with aiohttp.ClientSession() as session:
-            async with session.post(PASTE_SERVICE_URL, json={"text": text}) as response:
+            async with session.post(PASTE_SERVICE_URL, data=text.encode("utf-8")) as response:
                 if response.status == 200:
-                    json_data = await response.json()
-                    if "key" in json_data:
-                        return f"https://mystb.in/{json_data['key']}"
-                return None
+                    try:
+                        json_data = await response.json()
+                        if "key" in json_data:
+                            return f"https://mystb.in/{json_data['key']}"
+                        else:
+                            print(f"Unexpected response from Mystbin: {json_data}")
+                            return None
+                    except Exception as e:
+                        print(f"Error parsing Mystbin response: {e}")
+                        return None
+                else:
+                    print(f"Mystbin API returned status {response.status}")
+                    return None
 
 async def setup(bot: Red):
     await bot.add_cog(Prune(bot))
