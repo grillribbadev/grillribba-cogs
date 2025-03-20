@@ -1,11 +1,25 @@
 import discord
 from redbot.core import commands
 from redbot.core.bot import Red
+from redbot.core.utils.chat_formatting import box
 from typing import Optional
 from collections import defaultdict
 
+# Role IDs for Lockdown
 LEVEL_5_ROLE_ID = 644731127738662922  # Petty Officer [LVL5]
 LEVEL_15_ROLE_ID = 644731543415291911  # Level 15 Role
+
+# Category IDs to Lock
+CATEGORY_IDS = {
+    "grand_line_hq": 1243536580212166666,
+    "media_share": 1350967803435548712,
+    "one_piece_central": 374126802836258817,
+    "oharas_library": 793834222284570664,
+    "vega_punk": 802966896155688960,
+    "games": 1245221633518604359,
+    "talent": 1243539315523326024,
+    "seas_of_bluestar": 705907719466516541
+}
 
 class Prune(commands.Cog):
     def __init__(self, bot: Red):
@@ -18,49 +32,47 @@ class Prune(commands.Cog):
     @commands.guild_only()
     @commands.command()
     async def shield(self, ctx: commands.Context, action: str, level: Optional[int] = None):
-        if action.lower() == "activate":
-            if level == 5:
-                self.lockdown_level = LEVEL_5_ROLE_ID
-                self.lockdown_active = True
-                await self.lock_channels(ctx, LEVEL_5_ROLE_ID)
-                await ctx.send("🛡️ **Lockdown Activated:** Only users with `Level 5+` can talk.")
-            elif level == 15:
-                self.lockdown_level = LEVEL_15_ROLE_ID
-                self.lockdown_active = True
-                await self.lock_channels(ctx, LEVEL_15_ROLE_ID)
-                await ctx.send("🛡️ **Lockdown Activated:** Only users with `Level 15+` can talk.")
-            else:
-                await ctx.send("Usage: `.shield activate level 5` or `.shield activate level 15`")
+        if action.lower() == "activate" and level in [5, 15]:
+            self.lockdown_active = True
+            self.lockdown_level = LEVEL_5_ROLE_ID if level == 5 else LEVEL_15_ROLE_ID
+            await self.lock_categories(ctx, self.lockdown_level)
+            await ctx.send(f"🛡️ **Lockdown Activated:** Only users with `Level {level}+` can access specific categories.")
         
         elif action.lower() == "deactivate":
             self.lockdown_active = False
             self.lockdown_level = None
-            await self.unlock_channels(ctx)
-            await ctx.send("❌ **Lockdown Deactivated:** All users can talk again.")
-        else:
-            await ctx.send("Usage: `.shield activate level 5`, `.shield activate level 15`, or `.shield deactivate`")
+            await self.unlock_categories(ctx)
+            await ctx.send("❌ **Lockdown Deactivated:** All categories are now accessible.")
 
-    async def lock_channels(self, ctx, role_id: int):
+        else:
+            await ctx.send("Usage: `.shield activate 5` or `.shield activate 15`")
+
+    async def lock_categories(self, ctx, role_id: int):
         role = discord.utils.get(ctx.guild.roles, id=role_id)
         if not role:
             await ctx.send("❌ The required role does not exist. Please check the role IDs.")
             return
 
-        for channel in ctx.guild.text_channels:
-            overwrite = channel.overwrites_for(ctx.guild.default_role)
-            overwrite.send_messages = False
-            await channel.set_permissions(ctx.guild.default_role, overwrite=overwrite)
+        for category_id in CATEGORY_IDS.values():
+            category = discord.utils.get(ctx.guild.categories, id=category_id)
+            if category:
+                # Lock category for everyone except the specified role
+                overwrite = category.overwrites_for(ctx.guild.default_role)
+                overwrite.view_channel = False
+                await category.set_permissions(ctx.guild.default_role, overwrite=overwrite)
 
-            # Allow the specified level role to talk
-            overwrite = channel.overwrites_for(role)
-            overwrite.send_messages = True
-            await channel.set_permissions(role, overwrite=overwrite)
+                # Allow the specified level role to access it
+                overwrite = category.overwrites_for(role)
+                overwrite.view_channel = True
+                await category.set_permissions(role, overwrite=overwrite)
 
-    async def unlock_channels(self, ctx):
-        for channel in ctx.guild.text_channels:
-            overwrite = channel.overwrites_for(ctx.guild.default_role)
-            overwrite.send_messages = None  # Reset permissions
-            await channel.set_permissions(ctx.guild.default_role, overwrite=overwrite)
+    async def unlock_categories(self, ctx):
+        for category_id in CATEGORY_IDS.values():
+            category = discord.utils.get(ctx.guild.categories, id=category_id)
+            if category:
+                overwrite = category.overwrites_for(ctx.guild.default_role)
+                overwrite.view_channel = None  # Reset permissions
+                await category.set_permissions(ctx.guild.default_role, overwrite=overwrite)
 
     @commands.mod()
     @commands.guild_only()
