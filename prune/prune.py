@@ -1,12 +1,9 @@
 import discord
-import aiohttp
 from redbot.core import commands
 from redbot.core.bot import Red
 from redbot.core.utils.chat_formatting import box
 from typing import Optional
 from collections import defaultdict
-
-PASTE_SERVICE_URL = "https://mystb.in/documents"
 
 class Prune(commands.Cog):
     def __init__(self, bot: Red):
@@ -62,29 +59,7 @@ class Prune(commands.Cog):
         logs = logs[-limit:]
         formatted_logs = "\n".join([f"[{log['timestamp']}] {log['user']}: {log['content']}" for log in logs])
 
-        paste_url = await self.upload_logs_to_pastebin(formatted_logs)
-        if paste_url:
-            await ctx.send(f"Logs uploaded: {paste_url}")
-        else:
-            await ctx.send("Failed to upload logs. Please try again later.")
-
-    async def upload_logs_to_pastebin(self, text: str) -> Optional[str]:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(PASTE_SERVICE_URL, data=text.encode("utf-8")) as response:
-                if response.status == 200:
-                    try:
-                        json_data = await response.json()
-                        if "key" in json_data:
-                            return f"https://mystb.in/{json_data['key']}"
-                        else:
-                            print(f"Unexpected response from Mystbin: {json_data}")
-                            return None
-                    except Exception as e:
-                        print(f"Error parsing Mystbin response: {e}")
-                        return None
-                else:
-                    print(f"Mystbin API returned status {response.status}")
-                    return None
+        await ctx.send(box(formatted_logs, lang="yaml"))
 
 async def setup(bot: Red):
     await bot.add_cog(Prune(bot))
