@@ -6,32 +6,28 @@ from redbot.core.utils.chat_formatting import box
 from typing import Optional
 from collections import defaultdict
 
-PASTE_SERVICE_URL = "https://mystb.in/documents"  # More reliable than Hastebin
+PASTE_SERVICE_URL = "https://mystb.in/documents"
 
 class Prune(commands.Cog):
-    """A cog to prune messages from a specific user with optional keyword and channel selection. Logs are uploaded to Mystbin."""
-
     def __init__(self, bot: Red):
         self.bot = bot
-        self.deleted_logs = defaultdict(lambda: defaultdict(list))  # Store logs in memory (resets on restart)
+        self.deleted_logs = defaultdict(lambda: defaultdict(list))
 
     @commands.mod()
     @commands.guild_only()
     @commands.command()
     async def prune(self, ctx: commands.Context, user: discord.Member, amount: int, keyword: Optional[str] = None, channel: Optional[discord.TextChannel] = None):
-        """Delete the last <amount> messages from <user> in a specific channel (default: current channel)."""
         if amount <= 0:
             return await ctx.send("Amount must be a positive number.")
 
         if not channel:
-            channel = ctx.channel  
+            channel = ctx.channel
 
         def check(msg):
             return msg.author.id == user.id and (keyword.lower() in msg.content.lower() if keyword else True)
 
         deleted_messages = await channel.purge(limit=amount * 2, check=check, before=ctx.message)
 
-      
         guild_id = ctx.guild.id
         channel_id = channel.id
         self.deleted_logs[guild_id][channel_id].extend(
@@ -44,12 +40,11 @@ class Prune(commands.Cog):
     @commands.guild_only()
     @commands.command()
     async def prunelogs(self, ctx: commands.Context, user: Optional[discord.Member] = None, limit: int = 20, channel: Optional[discord.TextChannel] = None):
-        """Retrieve pruned messages, upload logs to Mystbin, and return a link."""
         if limit > 100:
             return await ctx.send("Limit cannot exceed 100 messages.")
 
         if not channel:
-            channel = ctx.channel  
+            channel = ctx.channel
 
         guild_id = ctx.guild.id
         channel_id = channel.id
@@ -58,17 +53,15 @@ class Prune(commands.Cog):
         if not logs:
             return await ctx.send(f"No pruned messages logged for {channel.mention}.")
 
-        
         if user:
             logs = [log for log in logs if log["user_id"] == user.id]
 
         if not logs:
             return await ctx.send(f"No logs found for {user.mention} in {channel.mention}.")
 
-        logs = logs[-limit:]  
+        logs = logs[-limit:]
         formatted_logs = "\n".join([f"[{log['timestamp']}] {log['user']}: {log['content']}" for log in logs])
 
-        
         paste_url = await self.upload_logs_to_pastebin(formatted_logs)
         if paste_url:
             await ctx.send(f"Logs uploaded: {paste_url}")
@@ -76,12 +69,12 @@ class Prune(commands.Cog):
             await ctx.send("Failed to upload logs. Please try again later.")
 
     async def upload_logs_to_pastebin(self, text: str) -> Optional[str]:
-        """Uploads logs to Mystbin and returns the URL."""
         async with aiohttp.ClientSession() as session:
-            async with session.post(PASTE_SERVICE_URL, data={"text": text}) as response:
+            async with session.post(PASTE_SERVICE_URL, json={"text": text}) as response:
                 if response.status == 200:
                     json_data = await response.json()
-                    return f"https://mystb.in/{json_data['key']}"
+                    if "key" in json_data:
+                        return f"https://mystb.in/{json_data['key']}"
                 return None
 
 async def setup(bot: Red):
