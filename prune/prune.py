@@ -13,7 +13,7 @@ class Prune(commands.Cog):
     @commands.mod()
     @commands.guild_only()
     @commands.command()
-    async def prune(self, ctx: commands.Context, user: discord.Member, amount: int, keyword: Optional[str] = None, channel: Optional[discord.TextChannel] = None):
+    async def prune(self, ctx: commands.Context, user: discord.Member, amount: int, channel: Optional[discord.TextChannel] = None, *, keyword: Optional[str] = None):
         if amount <= 0:
             return await ctx.send("Amount must be a positive number.")
 
@@ -21,9 +21,9 @@ class Prune(commands.Cog):
             channel = ctx.channel
 
         deleted_messages = []
-        async for msg in channel.history(limit=500):  
+        async for msg in channel.history(limit=500):
             if msg.id == ctx.message.id:
-                continue  
+                continue
             if msg.author.id == user.id and (keyword.lower() in msg.content.lower() if keyword else True):
                 deleted_messages.append(msg)
                 if len(deleted_messages) == amount:
