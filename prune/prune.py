@@ -6,10 +6,10 @@ from redbot.core.utils.chat_formatting import box
 from typing import Optional
 from collections import defaultdict
 
-HASTEBIN_URL = "https://hastebin.com/documents"
+PASTE_SERVICE_URL = "https://mystb.in/documents"  # More reliable than Hastebin
 
 class Prune(commands.Cog):
-    """A cog to prune messages from a specific user with optional keyword and channel selection. Logs are uploaded to Hastebin."""
+    """A cog to prune messages from a specific user with optional keyword and channel selection. Logs are uploaded to Mystbin."""
 
     def __init__(self, bot: Red):
         self.bot = bot
@@ -44,12 +44,12 @@ class Prune(commands.Cog):
     @commands.guild_only()
     @commands.command()
     async def prunelogs(self, ctx: commands.Context, user: Optional[discord.Member] = None, limit: int = 20, channel: Optional[discord.TextChannel] = None):
-        """Retrieve pruned messages, upload logs to Hastebin, and return a link."""
+        """Retrieve pruned messages, upload logs to Mystbin, and return a link."""
         if limit > 100:
             return await ctx.send("Limit cannot exceed 100 messages.")
 
         if not channel:
-            channel = ctx.channel  # Default to current channel
+            channel = ctx.channel  
 
         guild_id = ctx.guild.id
         channel_id = channel.id
@@ -69,21 +69,20 @@ class Prune(commands.Cog):
         formatted_logs = "\n".join([f"[{log['timestamp']}] {log['user']}: {log['content']}" for log in logs])
 
         
-        paste_url = await self.upload_logs_to_hastebin(formatted_logs)
+        paste_url = await self.upload_logs_to_pastebin(formatted_logs)
         if paste_url:
             await ctx.send(f"Logs uploaded: {paste_url}")
         else:
             await ctx.send("Failed to upload logs. Please try again later.")
 
-    async def upload_logs_to_hastebin(self, text: str) -> Optional[str]:
-        """Uploads logs to Hastebin and returns the URL."""
+    async def upload_logs_to_pastebin(self, text: str) -> Optional[str]:
+        """Uploads logs to Mystbin and returns the URL."""
         async with aiohttp.ClientSession() as session:
-            async with session.post(HASTEBIN_URL, data=text.encode("utf-8")) as response:
+            async with session.post(PASTE_SERVICE_URL, data={"text": text}) as response:
                 if response.status == 200:
-                    response_data = await response.json()
-                    return f"https://hastebin.com/{response_data['key']}"
+                    json_data = await response.json()
+                    return f"https://mystb.in/{json_data['key']}"
                 return None
 
 async def setup(bot: Red):
     await bot.add_cog(Prune(bot))
-
