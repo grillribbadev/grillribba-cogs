@@ -1,6 +1,7 @@
 import discord
 from redbot.core import commands
 from redbot.core.bot import Red
+from redbot.core.utils.chat_formatting import box
 from typing import Optional
 from collections import defaultdict
 import asyncio  
@@ -77,13 +78,13 @@ class Prune(commands.Cog):
 
         for channel in ctx.guild.text_channels:
             try:
-                async for msg in channel.history(limit=1000):
-                    if msg.author.id == user.id:
-                        await msg.delete()
-                        deleted_count += 1
-                        await asyncio.sleep(0.5)  # Prevent hitting rate limits
+                messages = [msg async for msg in channel.history(limit=1000) if msg.author == user]
+                if messages:
+                    await channel.delete_messages(messages)
+                    deleted_count += len(messages)
+                    await asyncio.sleep(1)  # Prevent hitting rate limits
             except discord.Forbidden:
-                continue  
+                await ctx.send(f"❌ I don't have permission to delete messages in {channel.mention}.")
             except discord.HTTPException:
                 continue  
 
@@ -93,7 +94,7 @@ class Prune(commands.Cog):
 
         try:
             await user.add_roles(silenced_role)
-            await ctx.send(f"🚨 Nuked **{deleted_count}** messages from {user.mention} and permanently silenced them.")
+            await ctx.send(f"🚨 Nuked **{deleted_count}** messages from {user.mention} and assigned the `Silenced` role.")
         except discord.Forbidden:
             await ctx.send("❌ I don't have permission to assign the `Silenced` role.")
 
