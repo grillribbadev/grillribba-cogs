@@ -1,12 +1,15 @@
 import discord
+import aiohttp
 from redbot.core import commands
 from redbot.core.bot import Red
 from redbot.core.utils.chat_formatting import box
 from typing import Optional
 from collections import defaultdict
 
+HASTEBIN_URL = "https://hastebin.com/documents"
+
 class Prune(commands.Cog):
-    """A cog to prune messages from a specific user with optional keyword and channel selection. Logs exist until bot restarts."""
+    """A cog to prune messages from a specific user with optional keyword and channel selection. Logs are uploaded to Hastebin."""
 
     def __init__(self, bot: Red):
         self.bot = bot
@@ -21,14 +24,14 @@ class Prune(commands.Cog):
             return await ctx.send("Amount must be a positive number.")
 
         if not channel:
-            channel = ctx.channel  # Default to current channel
+            channel = ctx.channel  
 
         def check(msg):
             return msg.author.id == user.id and (keyword.lower() in msg.content.lower() if keyword else True)
 
         deleted_messages = await channel.purge(limit=amount * 2, check=check, before=ctx.message)
 
-        # Log deleted messages (only until restart)
+      
         guild_id = ctx.guild.id
         channel_id = channel.id
         self.deleted_logs[guild_id][channel_id].extend(
@@ -41,7 +44,7 @@ class Prune(commands.Cog):
     @commands.guild_only()
     @commands.command()
     async def prunelogs(self, ctx: commands.Context, user: Optional[discord.Member] = None, limit: int = 20, channel: Optional[discord.TextChannel] = None):
-        """Retrieve pruned messages. Can filter by user and channel (default: current channel)."""
+        """Retrieve pruned messages, upload logs to Hastebin, and return a link."""
         if limit > 100:
             return await ctx.send("Limit cannot exceed 100 messages.")
 
@@ -55,17 +58,32 @@ class Prune(commands.Cog):
         if not logs:
             return await ctx.send(f"No pruned messages logged for {channel.mention}.")
 
-        # Filter logs by user if provided
+        
         if user:
             logs = [log for log in logs if log["user_id"] == user.id]
 
         if not logs:
             return await ctx.send(f"No logs found for {user.mention} in {channel.mention}.")
 
-        logs = logs[-limit:]  # Get last 'limit' messages
+        logs = logs[-limit:]  
         formatted_logs = "\n".join([f"[{log['timestamp']}] {log['user']}: {log['content']}" for log in logs])
 
-        await ctx.send(box(formatted_logs, lang="yaml"))
+        
+        paste_url = await self.upload_logs_to_hastebin(formatted_logs)
+        if paste_url:
+            await ctx.send(f"Logs uploaded: {paste_url}")
+        else:
+            await ctx.send("Failed to upload logs. Please try again later.")
+
+    async def upload_logs_to_hastebin(self, text: str) -> Optional[str]:
+        """Uploads logs to Hastebin and returns the URL."""
+        async with aiohttp.ClientSession() as session:
+            async with session.post(HASTEBIN_URL, data=text.encode("utf-8")) as response:
+                if response.status == 200:
+                    response_data = await response.json()
+                    return f"https://hastebin.com/{response_data['key']}"
+                return None
 
 async def setup(bot: Red):
     await bot.add_cog(Prune(bot))
+
