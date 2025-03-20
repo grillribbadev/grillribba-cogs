@@ -20,15 +20,17 @@ class Prune(commands.Cog):
         if not channel:
             channel = ctx.channel
 
-        def check(msg):
-            return msg.author.id == user.id and (keyword.lower() in msg.content.lower() if keyword else True)
-
         deleted_messages = []
-        async for msg in channel.history(limit=100):  
-            if check(msg):
+        async for msg in channel.history(limit=500):  
+            if msg.id == ctx.message.id:
+                continue  
+            if msg.author.id == user.id and (keyword.lower() in msg.content.lower() if keyword else True):
                 deleted_messages.append(msg)
                 if len(deleted_messages) == amount:
                     break
+
+        if not deleted_messages:
+            return await ctx.send(f"No matching messages found in {channel.mention}.")
 
         await channel.delete_messages(deleted_messages)
 
