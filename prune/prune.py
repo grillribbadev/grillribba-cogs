@@ -1,14 +1,66 @@
 import discord
 from redbot.core import commands
 from redbot.core.bot import Red
-from redbot.core.utils.chat_formatting import box
 from typing import Optional
 from collections import defaultdict
+
+LEVEL_5_ROLE_ID = 644731127738662922  # Petty Officer [LVL5]
+LEVEL_15_ROLE_ID = 644731543415291911  # Level 15 Role
 
 class Prune(commands.Cog):
     def __init__(self, bot: Red):
         self.bot = bot
         self.deleted_logs = defaultdict(lambda: defaultdict(list))
+        self.lockdown_active = False
+        self.lockdown_level = None
+
+    @commands.mod()
+    @commands.guild_only()
+    @commands.command()
+    async def shield(self, ctx: commands.Context, action: str, level: Optional[int] = None):
+        if action.lower() == "activate":
+            if level == 5:
+                self.lockdown_level = LEVEL_5_ROLE_ID
+                self.lockdown_active = True
+                await self.lock_channels(ctx, LEVEL_5_ROLE_ID)
+                await ctx.send("🛡️ **Lockdown Activated:** Only users with `Level 5+` can talk.")
+            elif level == 15:
+                self.lockdown_level = LEVEL_15_ROLE_ID
+                self.lockdown_active = True
+                await self.lock_channels(ctx, LEVEL_15_ROLE_ID)
+                await ctx.send("🛡️ **Lockdown Activated:** Only users with `Level 15+` can talk.")
+            else:
+                await ctx.send("Usage: `.shield activate level 5` or `.shield activate level 15`")
+        
+        elif action.lower() == "deactivate":
+            self.lockdown_active = False
+            self.lockdown_level = None
+            await self.unlock_channels(ctx)
+            await ctx.send("❌ **Lockdown Deactivated:** All users can talk again.")
+        else:
+            await ctx.send("Usage: `.shield activate level 5`, `.shield activate level 15`, or `.shield deactivate`")
+
+    async def lock_channels(self, ctx, role_id: int):
+        role = discord.utils.get(ctx.guild.roles, id=role_id)
+        if not role:
+            await ctx.send("❌ The required role does not exist. Please check the role IDs.")
+            return
+
+        for channel in ctx.guild.text_channels:
+            overwrite = channel.overwrites_for(ctx.guild.default_role)
+            overwrite.send_messages = False
+            await channel.set_permissions(ctx.guild.default_role, overwrite=overwrite)
+
+            # Allow the specified level role to talk
+            overwrite = channel.overwrites_for(role)
+            overwrite.send_messages = True
+            await channel.set_permissions(role, overwrite=overwrite)
+
+    async def unlock_channels(self, ctx):
+        for channel in ctx.guild.text_channels:
+            overwrite = channel.overwrites_for(ctx.guild.default_role)
+            overwrite.send_messages = None  # Reset permissions
+            await channel.set_permissions(ctx.guild.default_role, overwrite=overwrite)
 
     @commands.mod()
     @commands.guild_only()
