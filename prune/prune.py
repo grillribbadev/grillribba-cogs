@@ -69,5 +69,24 @@ class Prune(commands.Cog):
 
         await ctx.send(box(formatted_logs, lang="yaml"))
 
+    @commands.mod()
+    @commands.guild_only()
+    @commands.command()
+    async def nuke(self, ctx: commands.Context, user: discord.Member):
+        deleted_count = 0
+
+        for channel in ctx.guild.text_channels:
+            try:
+                async for msg in channel.history(limit=1000):
+                    if msg.author.id == user.id:
+                        await msg.delete()
+                        deleted_count += 1
+            except discord.Forbidden:
+                continue  # Skip channels the bot doesn't have permission for
+            except discord.HTTPException:
+                continue  # Skip on any API errors
+
+        await ctx.send(f"Nuked **{deleted_count}** messages from {user.mention} across all channels.")
+
 async def setup(bot: Red):
     await bot.add_cog(Prune(bot))
