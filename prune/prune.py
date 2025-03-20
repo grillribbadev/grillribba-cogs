@@ -76,11 +76,15 @@ class Prune(commands.Cog):
         deleted_count = 0
 
         for channel in ctx.guild.text_channels:
+            if not channel.permissions_for(ctx.guild.me).manage_messages:
+                continue  
+
             try:
-                messages = [msg async for msg in channel.history(limit=None) if msg.author == user]
-                if messages:
-                    await channel.delete_messages(messages)
-                    deleted_count += len(messages)
+                while True:
+                    deleted = await channel.purge(limit=100, check=lambda m: m.author == user)
+                    deleted_count += len(deleted)
+                    if len(deleted) < 100:
+                        break  
             except discord.Forbidden:
                 await ctx.send(f"❌ I don't have permission to delete messages in {channel.mention}.")
             except discord.HTTPException:
