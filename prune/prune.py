@@ -23,7 +23,14 @@ class Prune(commands.Cog):
         def check(msg):
             return msg.author.id == user.id and (keyword.lower() in msg.content.lower() if keyword else True)
 
-        deleted_messages = await channel.purge(limit=amount * 2, check=check, before=ctx.message)
+        deleted_messages = []
+        async for msg in channel.history(limit=100):  
+            if check(msg):
+                deleted_messages.append(msg)
+                if len(deleted_messages) == amount:
+                    break
+
+        await channel.delete_messages(deleted_messages)
 
         guild_id = ctx.guild.id
         channel_id = channel.id
