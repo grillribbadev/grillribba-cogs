@@ -13,7 +13,7 @@ class Prune(commands.Cog):
     @commands.mod()
     @commands.guild_only()
     @commands.command()
-    async def prune(self, ctx: commands.Context, user: discord.Member, amount: int, keyword: Optional[str] = None, channel: Optional[discord.TextChannel] = None):
+    async def prune(self, ctx: commands.Context, user: discord.Member, amount: int, channel: Optional[discord.TextChannel] = None, *, keyword: Optional[str] = None):
         if amount <= 0:
             return await ctx.send("Amount must be a positive number.")
 
