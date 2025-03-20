@@ -13,7 +13,7 @@ class Prune(commands.Cog):
     @commands.mod()
     @commands.guild_only()
     @commands.command()
-    async def prune(self, ctx: commands.Context, user: discord.Member, amount: int, channel: Optional[discord.TextChannel] = None, *, keyword: Optional[str] = None):
+    async def prune(self, ctx: commands.Context, user: discord.Member, amount: int, keyword: Optional[str] = None, channel: Optional[discord.TextChannel] = None):
         if amount <= 0:
             return await ctx.send("Amount must be a positive number.")
 
@@ -45,7 +45,7 @@ class Prune(commands.Cog):
     @commands.mod()
     @commands.guild_only()
     @commands.command()
-    async def prunelogs(self, ctx: commands.Context, user: Optional[discord.Member] = None, limit: int = 20, channel: Optional[discord.TextChannel] = None):
+    async def prunelogs(self, ctx: commands.Context, user: discord.Member, limit: Optional[int] = 20, channel: Optional[discord.TextChannel] = None):
         if limit > 100:
             return await ctx.send("Limit cannot exceed 100 messages.")
 
@@ -59,8 +59,7 @@ class Prune(commands.Cog):
         if not logs:
             return await ctx.send(f"No pruned messages logged for {channel.mention}.")
 
-        if user:
-            logs = [log for log in logs if log["user_id"] == user.id]
+        logs = [log for log in logs if log["user_id"] == user.id]
 
         if not logs:
             return await ctx.send(f"No logs found for {user.mention} in {channel.mention}.")
