@@ -4,7 +4,6 @@ from redbot.core.bot import Red
 from redbot.core.utils.chat_formatting import box
 from typing import Optional
 from collections import defaultdict
-import asyncio  
 
 class Prune(commands.Cog):
     def __init__(self, bot: Red):
@@ -78,11 +77,10 @@ class Prune(commands.Cog):
 
         for channel in ctx.guild.text_channels:
             try:
-                messages = [msg async for msg in channel.history(limit=1000) if msg.author == user]
+                messages = [msg async for msg in channel.history(limit=None) if msg.author == user]
                 if messages:
                     await channel.delete_messages(messages)
                     deleted_count += len(messages)
-                    await asyncio.sleep(1)  # Prevent hitting rate limits
             except discord.Forbidden:
                 await ctx.send(f"❌ I don't have permission to delete messages in {channel.mention}.")
             except discord.HTTPException:
