@@ -1,9 +1,9 @@
 import discord
 from redbot.core import commands
 from redbot.core.bot import Red
-from redbot.core.utils.chat_formatting import box
 from typing import Optional
 from collections import defaultdict
+import asyncio  
 
 class Prune(commands.Cog):
     def __init__(self, bot: Red):
@@ -81,25 +81,21 @@ class Prune(commands.Cog):
                     if msg.author.id == user.id:
                         await msg.delete()
                         deleted_count += 1
+                        await asyncio.sleep(0.5)  # Prevent hitting rate limits
             except discord.Forbidden:
                 continue  
             except discord.HTTPException:
                 continue  
 
-        muted_role = discord.utils.get(ctx.guild.roles, name="Muted")
-        if not muted_role:
-            try:
-                muted_role = await ctx.guild.create_role(name="Muted", permissions=discord.Permissions(send_messages=False, speak=False))
-                for channel in ctx.guild.channels:
-                    await channel.set_permissions(muted_role, send_messages=False, speak=False)
-            except discord.Forbidden:
-                return await ctx.send("I don't have permission to create or manage the Muted role.")
+        silenced_role = discord.utils.get(ctx.guild.roles, name="Silenced")
+        if not silenced_role:
+            return await ctx.send("❌ The `Silenced` role does not exist. Please create it manually.")
 
         try:
-            await user.add_roles(muted_role)
-            await ctx.send(f"Nuked **{deleted_count}** messages from {user.mention} and permanently muted them.")
+            await user.add_roles(silenced_role)
+            await ctx.send(f"🚨 Nuked **{deleted_count}** messages from {user.mention} and permanently silenced them.")
         except discord.Forbidden:
-            await ctx.send("I don't have permission to mute this user.")
+            await ctx.send("❌ I don't have permission to assign the `Silenced` role.")
 
 async def setup(bot: Red):
     await bot.add_cog(Prune(bot))
