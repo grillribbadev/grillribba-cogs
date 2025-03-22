@@ -30,10 +30,17 @@ class AntiAltNotifier(commands.Cog):
 
         account_age = (datetime.now(timezone.utc) - member.created_at).days
         if account_age <= account_age_days:
-            await log_channel.send(
-                f"⚠️ **Potential Alt Detected:** {member.mention} (ID: `{member.id}`)\n"
-                f"Account Age: **{account_age} days old** (Created: {member.created_at.strftime('%Y-%m-%d')})"
+            embed = discord.Embed(
+                title="⚠️ Potential Alt Detected",
+                color=discord.Color.orange(),
+                timestamp=datetime.now(timezone.utc)
             )
+            embed.add_field(name="User", value=f"{member.mention} (`{member.id}`)", inline=False)
+            embed.add_field(name="Account Age", value=f"**{account_age} days old**", inline=True)
+            embed.add_field(name="Account Created", value=f"{member.created_at.strftime('%Y-%m-%d %H:%M:%S UTC')}", inline=True)
+            embed.set_footer(text=f"Guild: {member.guild.name}")
+
+            await log_channel.send(embed=embed)
 
     # --- Commands ---
     @commands.group()
