@@ -31,21 +31,24 @@ class AccountWatch(commands.Cog):
         self.config[guild_id][key] = value
         save_config(self.config)
 
-    @commands.command(name="setlog")
+    @commands.command(name="setaltdays")
     @commands.has_guild_permissions(manage_guild=True)
-    async def set_log_channel(self, ctx, channel: discord.TextChannel):
-        """Set the log channel for account alerts."""
-        self.set_guild_config(ctx.guild.id, "log_channel", channel.id)
-        await ctx.send(f"📋 Log channel set to {channel.mention}")
-
-    @commands.command(name="setthreshold")
-    @commands.has_guild_permissions(manage_guild=True)
-    async def set_threshold(self, ctx, days: int):
-        """Set the minimum account age (in days) to trigger a log."""
+    @commands.guild_only()
+    async def set_alt_threshold(self, ctx, days: int):
+        """Set the minimum account age (in days) to trigger alt alert logging."""
         if days < 0:
             return await ctx.send("❌ Threshold must be a positive number.")
+
         self.set_guild_config(ctx.guild.id, "threshold_days", days)
-        await ctx.send(f"🛡️ Threshold set to `{days}` day(s).")
+        await ctx.send(f"🛡️ Alt alert threshold set to `{days}` day(s).")
+
+    @commands.command(name="setaltlog")
+    @commands.has_guild_permissions(manage_guild=True)
+    @commands.guild_only()
+    async def set_alt_log_channel(self, ctx, channel: discord.TextChannel):
+        """Set the channel where new alt account alerts are sent."""
+        self.set_guild_config(ctx.guild.id, "log_channel", channel.id)
+        await ctx.send(f"📋 Alt log channel set to {channel.mention}")
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
@@ -71,7 +74,11 @@ class AccountWatch(commands.Cog):
             embed.add_field(name="Account Created", value=member.created_at.strftime("%Y-%m-%d %H:%M UTC"))
             embed.add_field(name="Account Age", value=f"{account_age.days} day(s)")
             embed.set_footer(text=f"Threshold: {threshold_days} day(s)")
-            await log_channel.send(embed=embed)
+
+            try:
+                await log_channel.send(embed=embed)
+            except discord.Forbidden:
+                print(f"[ERROR] Missing permissions to send in {log_channel.name}")
 
 async def setup(bot):
     await bot.add_cog(AccountWatch(bot))
