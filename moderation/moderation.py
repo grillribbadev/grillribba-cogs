@@ -7,60 +7,96 @@ import asyncio
 class Moderation(commands.Cog):
     """Moderation cog with mute, ban, kick, and warning features."""
 
-    __version__ = "1.1.0"
+    __version__ = "1.2.0"
 
     def __init__(self, bot: Red):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=847326529, force_registration=True)
         default_guild = {
             "mute_role": None,
-            "warnings": {}  # {user_id: [timestamp, reason]}
+            "warnings": {}  # {user_id: [{"timestamp":..., "reason":...}, ...]}
         }
         self.config.register_guild(**default_guild)
 
-    # ---------- Role helpers ----------
+    # ---------- Role & overwrite helpers ----------
 
-    async def _apply_mute_overwrites(self, guild: discord.Guild, role: discord.Role) -> int:
-        """
-        Ensure basic mute overwrites are set everywhere for the given role.
-        Returns number of channels updated.
-        """
-        updated = 0
-        # Text-like: block sending & reactions (also threads)
-        text_kwargs = dict(
+    def _text_overwrite_spec(self) -> dict[str, bool]:
+        # Thread perms included so they can't bypass via threads
+        return dict(
             send_messages=False,
             add_reactions=False,
             send_messages_in_threads=False,
             create_public_threads=False,
             create_private_threads=False,
         )
-        # Voice-like: block speaking (leave connect alone so mods can move users, etc.)
-        voice_kwargs = dict(
+
+    def _voice_overwrite_spec(self) -> dict[str, bool]:
+        # Leave connect alone so staff can move them if needed
+        return dict(
             speak=False,
             stream=False,
             request_to_speak=False,
         )
 
+    async def _apply_mute_overwrites(self, guild: discord.Guild, role: discord.Role) -> int:
+        """
+        Ensure basic mute overwrites are set everywhere for the given role.
+        Returns number of channels updated (attempted writes).
+        """
+        updated = 0
+        text_spec = self._text_overwrite_spec()
+        voice_spec = self._voice_overwrite_spec()
+
         for ch in guild.channels:
             try:
                 if isinstance(ch, (discord.TextChannel, discord.ForumChannel, discord.CategoryChannel)):
-                    # For categories, these act as defaults for children
-                    await ch.set_permissions(role, reason="muteconfig: text perms", **text_kwargs)
+                    await ch.set_permissions(role, reason="muteconfig: text perms", **text_spec)
                     updated += 1
                 elif isinstance(ch, (discord.VoiceChannel, discord.StageChannel)):
-                    await ch.set_permissions(role, reason="muteconfig: voice perms", **voice_kwargs)
+                    await ch.set_permissions(role, reason="muteconfig: voice perms", **voice_spec)
                     updated += 1
                 else:
-                    # Threads inherit from parents; still try text perms just in case
-                    await ch.set_permissions(role, reason="muteconfig: misc perms", **text_kwargs)
+                    # Threads and other derivations: try text-style perms
+                    await ch.set_permissions(role, reason="muteconfig: misc perms", **text_spec)
                     updated += 1
             except discord.Forbidden:
                 # Missing perms on some channel; skip gracefully
                 continue
             except Exception:
-                # Any other channel-type specific oddity; keep going
+                # Ignore odd channel types or transient errors
                 continue
         return updated
+
+    def _has_required_overwrites(self, ch: discord.abc.GuildChannel, role: discord.Role) -> bool:
+        """
+        Check if a channel/category has the expected explicit denies for this role.
+        """
+        ow = ch.overwrites_for(role)
+        needed = self._text_overwrite_spec() if isinstance(
+            ch, (discord.TextChannel, discord.ForumChannel, discord.CategoryChannel)
+        ) else self._voice_overwrite_spec()
+
+        for attr, expected in needed.items():
+            # Only count it "correct" if explicitly set to the expected value
+            if getattr(ow, attr, None) is not expected:
+                return False
+        return True
+
+    async def _scan_overwrites(self, guild: discord.Guild, role: discord.Role) -> tuple[int, int]:
+        """
+        Return (ok_count, total_considered) for channels/categories with correct explicit denies.
+        """
+        total = 0
+        ok = 0
+        for ch in guild.channels:
+            if isinstance(ch, (discord.TextChannel, discord.ForumChannel, discord.CategoryChannel, discord.VoiceChannel, discord.StageChannel)):
+                total += 1
+                try:
+                    if self._has_required_overwrites(ch, role):
+                        ok += 1
+                except Exception:
+                    pass
+        return ok, total
 
     async def _ensure_mute_role(self, guild: discord.Guild, *, role: discord.Role | None = None) -> discord.Role:
         """
@@ -103,23 +139,73 @@ class Moderation(commands.Cog):
         """Public helper used by mute/unmute; ensures role & overwrites exist."""
         return await self._ensure_mute_role(guild)
 
-    # ---------- Configuration command ----------
+    # ---------- Configuration group ----------
 
     @commands.guild_only()
     @commands.admin_or_permissions(manage_roles=True)
-    @commands.hybrid_command(name="muteconfig")
-    async def muteconfig(self, ctx: commands.Context, role: discord.Role | None = None):
+    @commands.hybrid_group(name="muteconfig", invoke_without_command=True)
+    async def muteconfig(self, ctx: commands.Context):
         """
         Create/repair the muted role and apply proper permissions everywhere.
-        - With no argument: creates/uses a role named **Muted**.
-        - With a role: uses that role as the mute role.
+        Run with no subcommand to (re)configure automatically.
         """
+        try:
+            mute_role = await self._ensure_mute_role(ctx.guild)
+        except discord.Forbidden:
+            return await ctx.reply("🚫 I need **Manage Roles** and permission to manage channel overwrites.")
+        count = await self._apply_mute_overwrites(ctx.guild, mute_role)
+        ok, total = await self._scan_overwrites(ctx.guild, mute_role)
+        await ctx.reply(
+            f"✅ Mute role is **{mute_role.name}** (`{mute_role.id}`). "
+            f"Permissions refreshed on **{count}** channels. "
+            f"Status: **{ok}/{total}** channels have the required explicit denies."
+        )
+
+    @muteconfig.command(name="show")
+    @commands.guild_only()
+    @commands.admin_or_permissions(manage_roles=True)
+    async def muteconfig_show(self, ctx: commands.Context):
+        """Show the current mute configuration (role + overwrite coverage)."""
+        rid = await self.config.guild(ctx.guild).mute_role()
+        role = ctx.guild.get_role(rid) if rid else None
+        if not role:
+            return await ctx.reply("ℹ️ No mute role configured yet. Run `[p]muteconfig` to set it up.")
+        ok, total = await self._scan_overwrites(ctx.guild, role)
+        await ctx.reply(
+            f"🔧 **Mute role:** {role.mention} (`{role.id}`)\n"
+            f"🗂 **Overwrite coverage:** {ok}/{total} channels/categories have the expected denies.\n"
+            f"▶️ Tip: Run `[p]muteconfig repair` to reapply everywhere."
+        )
+
+    @muteconfig.command(name="set")
+    @commands.guild_only()
+    @commands.admin_or_permissions(manage_roles=True)
+    async def muteconfig_set(self, ctx: commands.Context, role: discord.Role):
+        """Use a specific role as the mute role and apply the required overwrites."""
         try:
             mute_role = await self._ensure_mute_role(ctx.guild, role=role)
         except discord.Forbidden:
             return await ctx.reply("🚫 I need **Manage Roles** and permission to manage channel overwrites.")
-        count = await self._apply_mute_overwrites(ctx.guild, mute_role)
-        await ctx.reply(f"✅ Mute role is **{mute_role.name}**. Permissions refreshed on **{count}** channels.")
+        ok, total = await self._scan_overwrites(ctx.guild, mute_role)
+        await ctx.reply(
+            f"✅ Mute role set to **{mute_role.name}** (`{mute_role.id}`). "
+            f"Overwrite status: **{ok}/{total}** channels covered."
+        )
+
+    @muteconfig.command(name="repair")
+    @commands.guild_only()
+    @commands.admin_or_permissions(manage_roles=True)
+    async def muteconfig_repair(self, ctx: commands.Context):
+        """Reapply mute overwrites everywhere without changing which role is used."""
+        rid = await self.config.guild(ctx.guild).mute_role()
+        role = ctx.guild.get_role(rid) if rid else None
+        if not role:
+            return await ctx.reply("ℹ️ No mute role configured. Run `[p]muteconfig` first.")
+        count = await self._apply_mute_overwrites(ctx.guild, role)
+        ok, total = await self._scan_overwrites(ctx.guild, role)
+        await ctx.reply(
+            f"🔁 Reapplied overwrites on **{count}** channels. Coverage now **{ok}/{total}**."
+        )
 
     # ---------- Moderation commands ----------
 
@@ -152,10 +238,13 @@ class Moderation(commands.Cog):
     @commands.command(name="unmute")
     async def unmute_user(self, ctx: commands.Context, member: discord.Member):
         """Unmute a member."""
-        mute_role = await self.get_or_create_mute_role(ctx.guild)
-        if mute_role in member.roles:
+        rid = await self.config.guild(ctx.guild).mute_role()
+        role = ctx.guild.get_role(rid) if rid else None
+        if not role:
+            role = await self.get_or_create_mute_role(ctx.guild)
+        if role in member.roles:
             try:
-                await member.remove_roles(mute_role, reason="manual unmute")
+                await member.remove_roles(role, reason="manual unmute")
             except discord.Forbidden:
                 return await ctx.send("🚫 I can't remove the mute role (check role position/permissions).")
             await ctx.send(f"🔊 {member.mention} has been unmuted.")
