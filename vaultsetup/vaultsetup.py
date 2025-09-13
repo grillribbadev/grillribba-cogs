@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Iterable, Optional
+from typing import Optional
 
 import discord
 from redbot.core import commands, checks
@@ -9,22 +9,27 @@ from redbot.core.bot import Red
 
 log = logging.getLogger(__name__)
 
-
-# ---------- Helpers to declare the structure you provided ----------
-# Names and topics can be tweaked safely.
+# ====== Themed names ======
 SERVER_NAME = "The Vault"
-STAFF_ROLE_NAME = "Vault Staff"  # created if missing
 
-# Category → list[(channel_name, kind, topic, extra_perms_tag)]
+# Themed rank roles (created if missing)
+ROLE_OWNER = "⚜️ Vault Overlord"     # full admin
+ROLE_ADMIN = "🛡️ Vault Shogun"      # full admin
+ROLE_MOD   = "🗡️ Vault Sentinels"   # moderator set
+
+# Category → list[(name, kind, topic, tag)]
 # kind: "text" | "voice"
-# extra_perms_tag (optional): simple hints we handle in code
+# tag controls extra perms:
+#   None            = inherit category
+#   "staff_write"   = everyone can read, only staff can send
+#   "staff_only"    = only staff can view
 STRUCTURE = {
     "🗝️ Entrance": [
-        ("rules", "text", "Server rules. Read-only for everyone; staff can post.", "staff_write_only"),
-        ("announcements", "text", "Official updates. Read-only for everyone; staff can post.", "staff_write_only"),
-        ("server-guide", "text", "How to navigate roles, leveling, bots.", "staff_write_only"),
+        ("rules", "text", "Server rules. Read-only; staff can post.", "staff_write"),
+        ("announcements", "text", "Official updates & news.", "staff_write"),
+        ("server-guide", "text", "How to navigate The Vault (roles, bots, leveling).", "staff_write"),
         ("self-roles", "text", "Reaction/self-assign roles.", None),
-        ("welcome", "text", "Bot welcome messages.", None),
+        ("welcome", "text", "Bot welcomes new members.", None),
     ],
     "📢 The Vault Hub": [
         ("general-chat", "text", "Main chat for everyone.", None),
@@ -34,29 +39,29 @@ STRUCTURE = {
     ],
     "📖 Anime & Manga": [
         ("anime-discussion", "text", "General anime chat.", None),
-        ("manga-discussion", "text", "Talk manga chapters.", None),
+        ("manga-discussion", "text", "Talk about manga chapters.", None),
         ("seasonal-anime", "text", "Trending / new releases.", None),
         ("anime-battles", "text", "Who-would-win debates.", None),
-        ("fanart-gallery", "text", "Share art/drawings/edits (images only).", None),
+        ("fanart-gallery", "text", "Images/art/edits.", None),
         ("theories-and-lore", "text", "Deep theories & predictions.", None),
     ],
     "🎮 Entertainment": [
-        ("gaming-corner", "text", "Talk games (anime & general).", None),
-        ("music-room", "text", "Share OP/EDs & playlists.", None),
+        ("gaming-corner", "text", "Games chat (anime & general).", None),
+        ("music-room", "text", "OP/EDs & playlists.", None),
         ("memes", "text", "Memes only.", None),
         ("off-topic", "text", "Non-anime topics.", None),
     ],
     "🎉 Events": [
-        ("vault-events", "text", "Event announcements (staff posts, all can react).", "staff_write_only"),
+        ("vault-events", "text", "Event announcements (staff posts, all react).", "staff_write"),
         ("contests", "text", "Art/meme competitions & giveaways.", None),
-        ("qotd", "text", "Question of the Day.", "staff_write_only"),
+        ("qotd", "text", "Question of the day.", "staff_write"),
     ],
     "🔐 Staff Zone": [
         ("staff-chat", "text", "Staff coordination.", "staff_only"),
         ("staff-announcements", "text", "Owner/Admin posts only.", "staff_only"),
         ("mod-logs", "text", "Automated moderation logs.", "staff_only"),
-        ("user-reports", "text", "User reports/complaints.", "staff_only"),
-        ("ideas-and-planning", "text", "Future server ideas/events.", "staff_only"),
+        ("user-reports", "text", "Reports & complaints.", "staff_only"),
+        ("ideas-and-planning", "text", "Future ideas/events.", "staff_only"),
     ],
     "⚙️ Logs": [
         ("join-leave-log", "text", "Member join/leave tracking.", "staff_only"),
@@ -66,44 +71,60 @@ STRUCTURE = {
     ],
     "🔊 Voice Channels": [
         ("General VC", "voice", "General voice chat.", None),
-        ("Anime Watch VC", "voice", "For synced watch nights.", None),
-        ("Gaming VC", "voice", "Gaming voice chat.", None),
+        ("Anime Watch VC", "voice", "Synced watch nights.", None),
+        ("Gaming VC", "voice", "Gaming voice.", None),
         ("Music VC", "voice", "Music listening.", None),
     ],
 }
 
 
 class VaultSetup(commands.Cog):
-    """One-click server scaffold for **The Vault** (anime/manga theme)."""
+    """One-click server scaffold for **The Vault** (non-destructive, themed ranks)."""
 
     def __init__(self, bot: Red) -> None:
         self.bot = bot
 
-    # ---------- internal utilities ----------
+    # ---------- role helpers ----------
 
-    @staticmethod
-    def _has_overwrite(ow: discord.PermissionOverwrite, **kwargs) -> bool:
-        for k, v in kwargs.items():
-            if getattr(ow, k, None) != v:
-                return False
-        return True
-
-    async def _ensure_role(self, guild: discord.Guild, name: str, *, perms: discord.Permissions | None = None) -> discord.Role:
+    async def _ensure_role(
+        self,
+        guild: discord.Guild,
+        name: str,
+        perms: discord.Permissions,
+    ) -> discord.Role:
         role = discord.utils.get(guild.roles, name=name)
         if role:
             return role
-        reason = "VaultSetup: create staff role"
-        role = await guild.create_role(name=name, permissions=perms or discord.Permissions.none(), reason=reason)
-        return role
+        # Create role (no position juggling to avoid permission errors)
+        return await guild.create_role(name=name, permissions=perms, reason="VaultSetup: create rank")
 
-    async def _ensure_category(self, guild: discord.Guild, name: str, *, overwrites: dict[discord.Role | discord.Member, discord.PermissionOverwrite]) -> discord.CategoryChannel:
+    async def _ensure_ranks(self, guild: discord.Guild) -> tuple[discord.Role, discord.Role, discord.Role]:
+        # Admin roles (Owner/Admin) with administrator=True
+        admin_perms = discord.Permissions(administrator=True)
+        mod_perms = discord.Permissions(
+            manage_messages=True,
+            kick_members=True,
+            mute_members=True,      # legacy flag (still present); see also moderate_members for timeouts
+            moderate_members=True,  # timeout
+            manage_channels=True,
+            move_members=True,
+            ban_members=False,
+        )
+        owner = await self._ensure_role(guild, ROLE_OWNER, admin_perms)
+        admin = await self._ensure_role(guild, ROLE_ADMIN, admin_perms)
+        mod = await self._ensure_role(guild, ROLE_MOD, mod_perms)
+        return owner, admin, mod
+
+    # ---------- channel helpers (create-only by default) ----------
+
+    async def _create_category_if_missing(
+        self,
+        guild: discord.Guild,
+        name: str,
+        overwrites: dict[discord.abc.Snowflake, discord.PermissionOverwrite],
+    ) -> discord.CategoryChannel:
         cat = discord.utils.get(guild.categories, name=name)
         if cat:
-            # Update existing overwrites minimally (doesn't nuke custom ones)
-            try:
-                await cat.edit(overwrites={**cat.overwrites, **overwrites}, reason="VaultSetup: sync perms")
-            except Exception:
-                pass
             return cat
         return await guild.create_category(name=name, overwrites=overwrites, reason="VaultSetup: create category")
 
@@ -113,31 +134,23 @@ class VaultSetup(commands.Cog):
         category: discord.CategoryChannel,
         name: str,
         topic: Optional[str],
+        overwrites: dict[discord.abc.Snowflake, discord.PermissionOverwrite],
         *,
-        base_overwrites: dict[discord.Role | discord.Member, discord.PermissionOverwrite],
-        tag: Optional[str],
-        staff_role: discord.Role,
+        sync_existing: bool = False,
     ) -> discord.TextChannel:
         chan = discord.utils.get(category.text_channels, name=name) or discord.utils.get(guild.text_channels, name=name, category=category)
-        ow = dict(base_overwrites)
-        if tag == "staff_write_only":
-            # Everyone can view & read, but cannot send; staff can send.
-            ow[guild.default_role] = discord.PermissionOverwrite(view_channel=True, read_message_history=True, send_messages=False)
-            ow[staff_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_messages=True)
-        elif tag == "staff_only":
-            ow[guild.default_role] = discord.PermissionOverwrite(view_channel=False)
-            ow[staff_role] = discord.PermissionOverwrite(view_channel=True, read_message_history=True, send_messages=True, manage_messages=True)
-        # else: inherit category/base
-
         if chan:
-            try:
-                await chan.edit(topic=topic or discord.utils.MISSING, overwrites={**chan.overwrites, **ow}, reason="VaultSetup: sync perms/topic")
-            except Exception:
-                pass
+            if sync_existing:
+                # merge overwrites (do NOT replace) to avoid nuking custom perms
+                try:
+                    chan_ow = dict(chan.overwrites)
+                    chan_ow.update(overwrites)
+                    await chan.edit(topic=topic or discord.utils.MISSING, overwrites=chan_ow, reason="VaultSetup: sync perms/topic")
+                except Exception:
+                    pass
             return chan
-
         return await guild.create_text_channel(
-            name=name, topic=topic or discord.utils.MISSING, overwrites=ow or None, category=category, reason="VaultSetup: create channel"
+            name=name, topic=topic or discord.utils.MISSING, category=category, overwrites=overwrites or None, reason="VaultSetup: create text"
         )
 
     async def _ensure_voice(
@@ -145,123 +158,141 @@ class VaultSetup(commands.Cog):
         guild: discord.Guild,
         category: discord.CategoryChannel,
         name: str,
-        topic: Optional[str],
+        overwrites: dict[discord.abc.Snowflake, discord.PermissionOverwrite],
         *,
-        base_overwrites: dict[discord.Role | discord.Member, discord.PermissionOverwrite],
-        tag: Optional[str],
-        staff_role: discord.Role,
+        sync_existing: bool = False,
     ) -> discord.VoiceChannel:
         chan = discord.utils.get(category.voice_channels, name=name) or discord.utils.get(guild.voice_channels, name=name, category=category)
-        ow = dict(base_overwrites)
-        if tag == "staff_only":
-            ow[guild.default_role] = discord.PermissionOverwrite(view_channel=False, connect=False)
-            ow[staff_role] = discord.PermissionOverwrite(view_channel=True, connect=True, speak=True, mute_members=True, move_members=True)
-
         if chan:
-            try:
-                await chan.edit(overwrites={**chan.overwrites, **ow}, reason="VaultSetup: sync voice perms")
-            except Exception:
-                pass
+            if sync_existing:
+                try:
+                    ow = dict(chan.overwrites)
+                    ow.update(overwrites)
+                    await chan.edit(overwrites=ow, reason="VaultSetup: sync voice perms")
+                except Exception:
+                    pass
             return chan
+        return await guild.create_voice_channel(name=name, category=category, overwrites=overwrites or None, reason="VaultSetup: create voice")
 
-        return await guild.create_voice_channel(name=name, overwrites=ow or None, category=category, reason="VaultSetup: create voice")
+    # ---------- permission builders ----------
+
+    def _base_overwrites(self, guild: discord.Guild, owner: discord.Role, admin: discord.Role, mod: discord.Role):
+        everyone = guild.default_role
+        staff_view = discord.PermissionOverwrite(view_channel=True, read_message_history=True, send_messages=True, manage_messages=True)
+        base_public = {
+            everyone: discord.PermissionOverwrite(view_channel=True, read_message_history=True),
+            owner: staff_view,
+            admin: staff_view,
+            mod: staff_view,
+        }
+        base_staff_hidden = {
+            everyone: discord.PermissionOverwrite(view_channel=False),
+            owner: staff_view,
+            admin: staff_view,
+            mod: staff_view,
+        }
+        return base_public, base_staff_hidden
+
+    def _channel_overwrites_for_tag(
+        self,
+        guild: discord.Guild,
+        owner: discord.Role,
+        admin: discord.Role,
+        mod: discord.Role,
+        base: dict[discord.abc.Snowflake, discord.PermissionOverwrite],
+        tag: Optional[str],
+    ):
+        ow = dict(base)
+        everyone = guild.default_role
+        if tag == "staff_write":
+            # everyone reads, staff writes
+            ow[everyone] = discord.PermissionOverwrite(view_channel=True, read_message_history=True, send_messages=False)
+        elif tag == "staff_only":
+            ow[everyone] = discord.PermissionOverwrite(view_channel=False)
+        return ow
 
     # ---------- command ----------
 
     @commands.hybrid_command(name="vaultsetup")
-    @checks.is_owner()  # Red owner only (works for prefix & slash)
+    @checks.is_owner()  # bot owner only
     @commands.guild_only()
-    async def vaultsetup_build(self, ctx: commands.Context, *, dryrun: Optional[bool] = False):
+    async def vaultsetup_build(self, ctx: commands.Context, *, mode: str = "create"):
         """
-        Build the full **The Vault** server structure (owner only).
+        Build **The Vault** structure (owner only).
 
-        Parameters
-        ----------
-        dryrun: bool
-            If True, shows what would be created/updated without making changes.
+        mode:
+          • create (default) – **create-only**, never edits existing channels/categories.
+          • sync            – create missing, and lightly **merge** overwrites on channels created by/inside these categories.
         """
         guild = ctx.guild
-        assert guild is not None
+        assert guild
 
-        # Ensure staff role first
-        staff_role = await self._ensure_role(guild, STAFF_ROLE_NAME)
+        sync_existing = str(mode).lower() == "sync"
 
-        # Base overwrites per category type
-        everyone = guild.default_role
-        base_public = {
-            everyone: discord.PermissionOverwrite(view_channel=True, read_message_history=True),
-            staff_role: discord.PermissionOverwrite(view_channel=True, manage_messages=True),
-        }
-        base_staff_hidden = {
-            everyone: discord.PermissionOverwrite(view_channel=False),
-            staff_role: discord.PermissionOverwrite(view_channel=True, read_message_history=True, send_messages=True, manage_messages=True),
-        }
+        # 1) Ensure ranks (non-destructive)
+        owner_r, admin_r, mod_r = await self._ensure_ranks(guild)
+
+        # 2) Base category overwrites
+        base_public, base_hidden = self._base_overwrites(guild, owner_r, admin_r, mod_r)
 
         created: list[str] = []
-        updated: list[str] = []
+        touched: list[str] = []
 
-        # Walk the structure and create/sync
+        # 3) Walk and create categories/channels
         for cat_name, channels in STRUCTURE.items():
             is_staff_only = cat_name in ("🔐 Staff Zone", "⚙️ Logs")
-            cat_overwrites = base_staff_hidden if is_staff_only else base_public
+            cat_ow = base_hidden if is_staff_only else base_public
 
-            if dryrun:
-                # Lookups only
-                cat = discord.utils.get(guild.categories, name=cat_name)
-            else:
-                cat = await self._ensure_category(guild, cat_name, overwrites=cat_overwrites)
-
+            # Non-destructive: if category exists, we don't edit overwrites unless sync_existing=True
+            cat = discord.utils.get(guild.categories, name=cat_name)
             if not cat:
+                cat = await self._create_category_if_missing(guild, cat_name, cat_ow)
                 created.append(f"Category: {cat_name}")
-                # create minimal in dry-run? skip
-                continue
+            elif sync_existing:
+                try:
+                    ow = dict(cat.overwrites)
+                    ow.update(cat_ow)  # merge only for our rank targets/default role
+                    await cat.edit(overwrites=ow, reason="VaultSetup: sync category perms")
+                    touched.append(f"{cat_name} (perms synced)")
+                except Exception:
+                    pass
 
+            # Channels
             for ch_name, kind, topic, tag in channels:
+                ch_ow = self._channel_overwrites_for_tag(guild, owner_r, admin_r, mod_r, cat_ow, tag)
                 if kind == "text":
-                    if dryrun:
-                        chan = discord.utils.get(cat.text_channels, name=ch_name) or discord.utils.get(guild.text_channels, name=ch_name, category=cat)
-                        if chan:
-                            updated.append(f"{cat_name} / #{ch_name} (sync perms/topic)")
-                        else:
+                    ch = await self._ensure_text(guild, cat, ch_name, topic, ch_ow, sync_existing=sync_existing)
+                    if ch.category == cat and ch.name == ch_name and ch.created_at:
+                        # best-effort log
+                        if ch.created_at.timestamp() > (ctx.created_at.timestamp() if hasattr(ctx, "created_at") else 0):
                             created.append(f"{cat_name} / #{ch_name}")
-                        continue
-                    chan = await self._ensure_text(
-                        guild, cat, ch_name, topic, base_overwrites=cat_overwrites, tag=tag, staff_role=staff_role
-                    )
-                    if chan.created_at.timestamp() > (ctx.message.created_at.timestamp() if ctx.message else 0):
-                        created.append(f"{cat_name} / #{ch_name}")
-                    else:
-                        updated.append(f"{cat_name} / #{ch_name}")
-                else:
-                    if dryrun:
-                        chan = discord.utils.get(cat.voice_channels, name=ch_name) or discord.utils.get(guild.voice_channels, name=ch_name, category=cat)
-                        if chan:
-                            updated.append(f"{cat_name} / 🔊 {ch_name} (sync perms)")
                         else:
+                            touched.append(f"{cat_name} / #{ch_name}")
+                else:
+                    v = await self._ensure_voice(guild, cat, ch_name, ch_ow, sync_existing=sync_existing)
+                    if v.category == cat and v.name == ch_name and v.created_at:
+                        if v.created_at.timestamp() > (ctx.created_at.timestamp() if hasattr(ctx, "created_at") else 0):
                             created.append(f"{cat_name} / 🔊 {ch_name}")
-                        continue
-                    v = await self._ensure_voice(
-                        guild, cat, ch_name, topic, base_overwrites=cat_overwrites, tag=tag, staff_role=staff_role
-                    )
-                    if v.created_at.timestamp() > (ctx.message.created_at.timestamp() if ctx.message else 0):
-                        created.append(f"{cat_name} / 🔊 {ch_name}")
-                    else:
-                        updated.append(f"{cat_name} / 🔊 {ch_name}")
+                        else:
+                            touched.append(f"{cat_name} / 🔊 {ch_name}")
 
-        # Final summary
-        title = f"🏗️ {SERVER_NAME} Setup " + ("(Dry Run)" if dryrun else "")
-        desc_lines: list[str] = []
+        # 4) Summary
+        desc = []
         if created:
-            desc_lines.append(f"**Created ({len(created)}):**\n• " + "\n• ".join(created[:40]))
-            if len(created) > 40:
-                desc_lines.append(f"…and {len(created)-40} more")
-        if updated:
-            desc_lines.append(f"\n**Synced ({len(updated)}):**\n• " + "\n• ".join(updated[:40]))
-            if len(updated) > 40:
-                desc_lines.append(f"…and {len(updated)-40} more")
-        if not created and not updated:
-            desc_lines.append("Everything already matches the target structure ✅")
+            desc.append(f"**Created ({len(created)}):**\n• " + "\n• ".join(created[:30]))
+            if len(created) > 30:
+                desc.append(f"…and {len(created)-30} more")
+        if touched:
+            desc.append(f"\n**Synced ({len(touched)}):**\n• " + "\n• ".join(touched[:30]))
+            if len(touched) > 30:
+                desc.append(f"…and {len(touched)-30} more")
+        if not desc:
+            desc = ["Everything already matches the target layout ✅"]
 
-        embed = discord.Embed(title=title, description="\n".join(desc_lines) or "No changes.", color=discord.Color.blurple())
-        embed.set_footer(text="Owner-only | Uses hybrid command (prefix & slash)")
-        await (ctx.reply if getattr(ctx, "reply", None) else ctx.send)(embed=embed, mention_author=False)
+        embed = discord.Embed(
+            title=f"🏗️ {SERVER_NAME} Setup — {'SYNC' if sync_existing else 'CREATE-ONLY'}",
+            description="\n".join(desc),
+            color=discord.Color.blurple(),
+        )
+        embed.set_footer(text="Non-destructive • Owner-only • Hybrid command")
+        await ctx.reply(embed=embed, mention_author=False)
