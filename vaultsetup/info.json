@@ -1,0 +1,13 @@
+{
+  "author": ["Grillribba"],
+  "install_msg": "Thanks for installing VaultSetup! Run `[p]vaultsetup build` (owner only) to create your server structure.",
+  "name": "VaultSetup",
+  "short": "One-click anime/manga server scaffold for The Vault.",
+  "description": "Creates categories, channels, and permissions for an anime/manga hub, including staff and logging sections.",
+  "end_user_data_statement": "This cog stores no personal data.",
+  "tags": ["utility", "setup", "server"],
+  "requirements": [],
+  "min_bot_version": "3.5.0",
+  "hidden": false,
+  "disabled": false
+}
