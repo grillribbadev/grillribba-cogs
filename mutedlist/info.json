@@ -1,0 +1,13 @@
+{
+  "author": ["Grillribba"],
+  "install_msg": "Thanks for installing MuteList. Use `[p]help mutelist`.",
+  "name": "MuteList",
+  "short": "List muted users (roles configurable) with reasons.",
+  "description": "Configurable set of 'mute' roles. Lists all members holding any of those roles and shows the reason (stored or pulled from Audit Log).",
+  "end_user_data_statement": "Stores member IDs and mute metadata (reason, moderator ID, timestamps).",
+  "tags": ["moderation", "utility"],
+  "requirements": [],
+  "min_bot_version": "3.5.0",
+  "hidden": false,
+  "disabled": false
+}
