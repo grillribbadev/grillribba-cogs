@@ -21,17 +21,33 @@ class GeminiCog(commands.Cog):
     # ----------------- Listener -----------------
     @commands.Cog.listener()
     async def on_member_update(self, before: discord.Member, after: discord.Member):
+        # Only act when nickname/display_name changes
         if before.display_name != after.display_name:
             blocked = await self.config.guild(after.guild).blocked_users()
             if after.id in blocked:
+                desired_nick = None  # reset to username (no nickname)
+                # Prevent infinite loop: skip if already at desired nick
+                if after.nick == desired_nick:
+                    return
                 try:
-                    # reset to old display name
-                    await after.edit(nick=before.display_name, reason="Gemini: blocked from nickname change")
-                    log.info("Reverted nickname change for %s in guild %s", after.id, after.guild.id)
+                    await after.edit(
+                        nick=desired_nick,
+                        reason="Gemini: blocked from nickname change",
+                    )
+                    log.info(
+                        "Reverted nickname for %s (%s) in guild %s",
+                        after, after.id, after.guild.id,
+                    )
                 except discord.Forbidden:
-                    log.warning("Missing permission to reset nickname for %s in guild %s", after.id, after.guild.id)
+                    log.warning(
+                        "Missing permission to reset nickname for %s in guild %s",
+                        after.id, after.guild.id,
+                    )
                 except Exception as e:
-                    log.error("Error reverting nickname for %s: %s", after.id, e)
+                    log.error(
+                        "Error reverting nickname for %s in guild %s: %s",
+                        after.id, after.guild.id, e,
+                    )
 
     # ----------------- Commands -----------------
     @commands.guild_only()
@@ -48,8 +64,18 @@ class GeminiCog(commands.Cog):
         if member.id in blocked:
             await ctx.send(f"{member.mention} is already blocked.")
             return
+
         blocked.append(member.id)
         await self.config.guild(ctx.guild).blocked_users.set(blocked)
+
+        # Reset nickname immediately
+        try:
+            await member.edit(
+                nick=None,
+                reason="Gemini: blocked from nickname change",
+            )
+        except discord.Forbidden:
+            await ctx.send("⚠️ I lack permission to reset that member's nickname.")
         await ctx.send(f"🚫 {member.mention} is now blocked from changing their nickname.")
 
     @nickblock.command(name="remove")
@@ -59,6 +85,7 @@ class GeminiCog(commands.Cog):
         if member.id not in blocked:
             await ctx.send(f"{member.mention} is not blocked.")
             return
+
         blocked.remove(member.id)
         await self.config.guild(ctx.guild).blocked_users.set(blocked)
         await ctx.send(f"✅ {member.mention} removed from blocklist.")
@@ -70,6 +97,7 @@ class GeminiCog(commands.Cog):
         if not blocked:
             await ctx.send("No one is blocked.")
             return
+
         entries = []
         for uid in blocked:
             member = ctx.guild.get_member(uid)
@@ -77,5 +105,6 @@ class GeminiCog(commands.Cog):
                 entries.append(f"- {member.mention}")
             else:
                 entries.append(f"- User ID {uid}")
+
         msg = "🚫 Blocked users:\n" + "\n".join(entries)
         await ctx.send(msg)
