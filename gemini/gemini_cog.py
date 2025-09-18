@@ -8,51 +8,32 @@ import logging
 log = logging.getLogger("red.gemini")
 
 GUILD_DEFAULTS = {"blocked_users": []}
-ROLE_NAME = "🚫 NoNickChange"
+
 
 class GeminiCog(commands.Cog):
-    """Prevent selected users from changing their nickname by assigning a deny-role."""
+    """Prevent selected users from changing their nickname by reverting changes."""
 
     def __init__(self, bot: Red) -> None:
         self.bot = bot
         self.config = Config.get_conf(self, identifier=2468101214, force_registration=True)
         self.config.register_guild(**GUILD_DEFAULTS)
 
-    async def _get_or_create_role(self, guild: discord.Guild) -> discord.Role | None:
-        role = discord.utils.get(guild.roles, name=ROLE_NAME)
-        if role:
-            return role
-        try:
-            role = await guild.create_role(
-                name=ROLE_NAME,
-                permissions=discord.Permissions.none(),
-                reason="Gemini setup",
-            )
-            perms = role.permissions
-            perms.update(change_nickname=False)
-            await role.edit(permissions=perms)
-            log.info(f"Created {ROLE_NAME} role in guild {guild.id}")
-            return role
-        except discord.Forbidden:
-            log.error(f"Missing manage roles permission to create {ROLE_NAME} in guild {guild.id}")
-            return None
+    # ----------------- Listener -----------------
+    @commands.Cog.listener()
+    async def on_member_update(self, before: discord.Member, after: discord.Member):
+        if before.display_name != after.display_name:
+            blocked = await self.config.guild(after.guild).blocked_users()
+            if after.id in blocked:
+                try:
+                    # reset to old display name
+                    await after.edit(nick=before.display_name, reason="Gemini: blocked from nickname change")
+                    log.info("Reverted nickname change for %s in guild %s", after.id, after.guild.id)
+                except discord.Forbidden:
+                    log.warning("Missing permission to reset nickname for %s in guild %s", after.id, after.guild.id)
+                except Exception as e:
+                    log.error("Error reverting nickname for %s: %s", after.id, e)
 
-    async def _assign_role(self, member: discord.Member):
-        role = await self._get_or_create_role(member.guild)
-        if role and role not in member.roles:
-            try:
-                await member.add_roles(role, reason="Gemini add")
-            except discord.Forbidden:
-                log.warning(f"Cannot assign {ROLE_NAME} role in guild {member.guild.id}")
-
-    async def _remove_role(self, member: discord.Member):
-        role = discord.utils.get(member.guild.roles, name=ROLE_NAME)
-        if role and role in member.roles:
-            try:
-                await member.remove_roles(role, reason="Gemini remove")
-            except discord.Forbidden:
-                log.warning(f"Cannot remove {ROLE_NAME} role in guild {member.guild.id}")
-
+    # ----------------- Commands -----------------
     @commands.guild_only()
     @checks.admin()
     @commands.group(name="nickblock", invoke_without_command=True)
@@ -69,7 +50,6 @@ class GeminiCog(commands.Cog):
             return
         blocked.append(member.id)
         await self.config.guild(ctx.guild).blocked_users.set(blocked)
-        await self._assign_role(member)
         await ctx.send(f"🚫 {member.mention} is now blocked from changing their nickname.")
 
     @nickblock.command(name="remove")
@@ -81,7 +61,6 @@ class GeminiCog(commands.Cog):
             return
         blocked.remove(member.id)
         await self.config.guild(ctx.guild).blocked_users.set(blocked)
-        await self._remove_role(member)
         await ctx.send(f"✅ {member.mention} removed from blocklist.")
 
     @nickblock.command(name="list")
