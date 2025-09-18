@@ -5,17 +5,17 @@ from redbot.core import commands, Config, checks
 from redbot.core.bot import Red
 import logging
 
-log = logging.getLogger("red.nickblocker")
+log = logging.getLogger("red.gemini")
 
 GUILD_DEFAULTS = {"blocked_users": []}
 ROLE_NAME = "🚫 NoNickChange"
 
-class NickBlocker(commands.Cog):
+class GeminiCog(commands.Cog):
     """Prevent selected users from changing their nickname by assigning a deny-role."""
 
     def __init__(self, bot: Red) -> None:
         self.bot = bot
-        self.config = Config.get_conf(self, identifier=9876543210, force_registration=True)
+        self.config = Config.get_conf(self, identifier=2468101214, force_registration=True)
         self.config.register_guild(**GUILD_DEFAULTS)
 
     async def _get_or_create_role(self, guild: discord.Guild) -> discord.Role | None:
@@ -26,7 +26,7 @@ class NickBlocker(commands.Cog):
             role = await guild.create_role(
                 name=ROLE_NAME,
                 permissions=discord.Permissions.none(),
-                reason="NickBlocker setup",
+                reason="Gemini setup",
             )
             perms = role.permissions
             perms.update(change_nickname=False)
@@ -41,7 +41,7 @@ class NickBlocker(commands.Cog):
         role = await self._get_or_create_role(member.guild)
         if role and role not in member.roles:
             try:
-                await member.add_roles(role, reason="NickBlocker add")
+                await member.add_roles(role, reason="Gemini add")
             except discord.Forbidden:
                 log.warning(f"Cannot assign {ROLE_NAME} role in guild {member.guild.id}")
 
@@ -49,7 +49,7 @@ class NickBlocker(commands.Cog):
         role = discord.utils.get(member.guild.roles, name=ROLE_NAME)
         if role and role in member.roles:
             try:
-                await member.remove_roles(role, reason="NickBlocker remove")
+                await member.remove_roles(role, reason="Gemini remove")
             except discord.Forbidden:
                 log.warning(f"Cannot remove {ROLE_NAME} role in guild {member.guild.id}")
 
