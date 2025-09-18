@@ -1,4 +1,4 @@
-from .nickblocker import NickBlocker
+from .gemini_cog import GeminiCog
 
 async def setup(bot):
-    await bot.add_cog(NickBlocker(bot))
+    await bot.add_cog(GeminiCog(bot))
