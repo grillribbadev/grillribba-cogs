@@ -22,15 +22,17 @@ class JoinTracker(commands.Cog):
             return await ctx.send("❌ Days must be at least 1.")
 
         cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        # Only count members who are STILL in the server
         members = [m for m in ctx.guild.members if m.joined_at and m.joined_at >= cutoff]
 
-        embed = discord.Embed(
-            title="📊 Join Count",
-            description=f"**{len(members)}** members joined in the last **{days} day(s)**.",
-            color=discord.Color.green(),
-            timestamp=datetime.now(timezone.utc)
+        await ctx.send(
+            embed=discord.Embed(
+                title="📊 Join Count",
+                description=f"**{len(members)}** members joined in the last **{days} day(s)**.",
+                color=discord.Color.green(),
+                timestamp=datetime.now(timezone.utc)
+            )
         )
-        await ctx.send(embed=embed)
 
     # ------------------------
     # Detailed list
@@ -49,29 +51,28 @@ class JoinTracker(commands.Cog):
         members = [m for m in ctx.guild.members if m.joined_at and m.joined_at >= cutoff]
 
         if not members:
-            return await ctx.send(embed=discord.Embed(
-                title="📋 Joined Members",
-                description=f"No members joined in the last {days} day(s).",
-                color=discord.Color.orange()
-            ))
+            return await ctx.send(
+                embed=discord.Embed(
+                    title="📋 Joined Members",
+                    description=f"No members joined in the last {days} day(s).",
+                    color=discord.Color.orange()
+                )
+            )
 
         # Sort by join date
         members.sort(key=lambda m: m.joined_at)
 
-        # Build pages of 20 members each
+        # Split into chunks of 20 members each
         chunks = [members[i:i+20] for i in range(0, len(members), 20)]
-        page = 1
-
-        for chunk in chunks:
+        for i, chunk in enumerate(chunks, start=1):
             desc = "\n".join(
                 f"• {m.mention} — joined <t:{int(m.joined_at.timestamp())}:R>"
                 for m in chunk
             )
             embed = discord.Embed(
-                title=f"📋 Joined Members (Last {days}d) — Page {page}/{len(chunks)}",
+                title=f"📋 Joined Members (Last {days}d) — Page {i}/{len(chunks)}",
                 description=desc,
                 color=discord.Color.blurple(),
                 timestamp=datetime.now(timezone.utc)
             )
             await ctx.send(embed=embed)
-            page += 1
