@@ -14,7 +14,7 @@ class JoinedToday(commands.Cog):
         """
         Show how many members joined in the last N days (default 1).
         """
-        now = datetime.datetime.utcnow()
+        now = datetime.datetime.now(datetime.timezone.utc)
         cutoff = now - datetime.timedelta(days=days)
 
         count = sum(1 for m in ctx.guild.members if m.joined_at and m.joined_at > cutoff)
@@ -29,7 +29,7 @@ class JoinedToday(commands.Cog):
         """
         Show members who joined in the last N days (paginated).
         """
-        now = datetime.datetime.utcnow()
+        now = datetime.datetime.now(datetime.timezone.utc)
         cutoff = now - datetime.timedelta(days=days)
 
         members = [
@@ -71,12 +71,16 @@ class JoinedToday(commands.Cog):
                 if self.current > 0:
                     self.current -= 1
                     await interaction.response.edit_message(embed=self.format_page(), view=self)
+                else:
+                    await interaction.response.defer()
 
             @discord.ui.button(label="➡️ Next", style=discord.ButtonStyle.secondary)
             async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
                 if self.current < len(pages) - 1:
                     self.current += 1
                     await interaction.response.edit_message(embed=self.format_page(), view=self)
+                else:
+                    await interaction.response.defer()
 
             @discord.ui.button(label="❌ Close", style=discord.ButtonStyle.danger)
             async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
