@@ -9,14 +9,15 @@ SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "y": 31536000}
 
 
 class AutoRoleManager(commands.Cog):
-    """Assign roles temporarily and remove them after a set duration."""
+    """Assign roles temporarily; remove them on time; optional linked-role removal on apply; keep expired history."""
 
     def __init__(self, bot):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=879823456123, force_registration=True)
         # assignments: { user_id: { "role": int, "expires": int, "channel": int, "reason": str } }
-        # expired: list of dicts { "user": int, "role": int, "expired": int, "reason": str }
-        self.config.register_guild(assignments={}, log_channel=None, silent=False, expired=[])
+        # expired:     [ { "user": int, "role": int, "expired": int, "reason": str } ]
+        # rolelinks:   { "trigger_role_id": remove_role_id }  (when trigger is applied, remove the mapped role)
+        self.config.register_guild(assignments={}, log_channel=None, silent=False, expired=[], rolelinks={})
         self.check_expired_roles.start()
 
     def cog_unload(self):
@@ -52,21 +53,48 @@ class AutoRoleManager(commands.Cog):
         return " ".join(parts)
 
     async def _log_expired_record(self, guild: discord.Guild, user_id: int, role_id: int, expired_ts: int, reason: str):
-        """
-        Persist an expired record and keep history tidy:
-        - Trim entries older than 30 days
-        - Cap to last 500 entries
-        """
+        """Persist an expired record and keep history tidy (<=30 days; <=500 entries)."""
         history = await self.config.guild(guild).expired()
         history.append(
             {"user": int(user_id), "role": int(role_id), "expired": int(expired_ts), "reason": str(reason or "")}
         )
-        # Trim by age (30 days) and by length (500)
         thirty_days_ago = int(time.time()) - (30 * 86400)
         history = [h for h in history if h.get("expired", 0) >= thirty_days_ago]
         if len(history) > 500:
             history = history[-500:]
         await self.config.guild(guild).expired.set(history)
+
+    async def _maybe_apply_rolelink(self, guild: discord.Guild, member: discord.Member, trigger_role_id: int):
+        """If trigger role is configured, remove the linked role from member (if present)."""
+        links = await self.config.guild(guild).rolelinks()
+        target_id = links.get(str(trigger_role_id))
+        if not target_id:
+            return
+        remove_role = guild.get_role(int(target_id))
+        if not remove_role:
+            return
+        if remove_role in member.roles:
+            try:
+                await member.remove_roles(remove_role, reason=f"Linked removal: trigger role {trigger_role_id} applied")
+            except discord.Forbidden:
+                # Silent fail; insufficient perms
+                pass
+
+            # Optional: log to log_channel
+            log_id = await self.config.guild(guild).log_channel()
+            log_channel = guild.get_channel(log_id) if log_id else None
+            if log_channel and log_channel.permissions_for(guild.me).send_messages:
+                trig_role_mention = guild.get_role(trigger_role_id).mention if guild.get_role(trigger_role_id) else f"<@&{trigger_role_id}>"
+                embed = discord.Embed(
+                    title="🔗 Linked Role Removed",
+                    description=(
+                        f"**User:** {member.mention}\n"
+                        f"**Trigger:** {trig_role_mention}\n"
+                        f"**Removed:** {remove_role.mention}"
+                    ),
+                    color=discord.Color.orange()
+                )
+                await log_channel.send(embed=embed)
 
     # ----------------------- commands -----------------------
 
@@ -113,6 +141,10 @@ class AutoRoleManager(commands.Cog):
                 color=discord.Color.red()
             ))
 
+        # Apply linked-role removal if configured
+        await self._maybe_apply_rolelink(ctx.guild, member, role.id)
+
+        # Persist absolute expiration timestamp
         expire_at = int(time.time()) + seconds
         guild_data = await self.config.guild(ctx.guild).assignments()
         guild_data[str(member.id)] = {
@@ -370,7 +402,7 @@ class AutoRoleManager(commands.Cog):
             user_text = f"<@{user_id}>"
             role_text = f"<@&{role_id}>"
 
-            lines.append(f"• {user_text} — {role_text} • expired <t:{when}:R>  \n  └─ 📝 {reason}")
+            lines.append(f"• {user_text} — {role_text} • expired <t:{when}:R>\n  └─ 📝 {reason}")
             shown += 1
             if shown >= 20:
                 lines.append("*Showing latest 20…*")
@@ -379,14 +411,56 @@ class AutoRoleManager(commands.Cog):
         embed.description = "\n".join(lines)
         await ctx.send(embed=embed)
 
+    # ----------------------- NEW: linked-role config -----------------------
+
+    @commands.guild_only()
+    @checks.admin()
+    @commands.group(name="temprolelink", invoke_without_command=True)
+    async def temprole_link(self, ctx):
+        """Manage linked role removals (when TRIGGER role is applied, REMOVE role is removed)."""
+        await ctx.send_help(ctx.command)
+
+    @temprole_link.command(name="set")
+    async def temprole_link_set(self, ctx, trigger: discord.Role, remove: discord.Role):
+        """Set a link: when TRIGGER is applied, REMOVE is removed."""
+        links = await self.config.guild(ctx.guild).rolelinks()
+        links[str(trigger.id)] = remove.id
+        await self.config.guild(ctx.guild).rolelinks.set(links)
+        await ctx.send(f"✅ When {trigger.mention} is applied, {remove.mention} will be removed.")
+
+    @temprole_link.command(name="clear")
+    async def temprole_link_clear(self, ctx, trigger: discord.Role):
+        """Clear a linked role removal."""
+        links = await self.config.guild(ctx.guild).rolelinks()
+        if str(trigger.id) in links:
+            removed = links.pop(str(trigger.id))
+            await self.config.guild(ctx.guild).rolelinks.set(links)
+            await ctx.send(f"✅ Cleared link for {trigger.mention} (was removing <@&{removed}>).")
+        else:
+            await ctx.send(f"❌ No link found for {trigger.mention}.")
+
+    @temprole_link.command(name="list")
+    async def temprole_link_list(self, ctx):
+        """List all current linked role removals."""
+        links = await self.config.guild(ctx.guild).rolelinks()
+        if not links:
+            return await ctx.send("ℹ️ No linked role removals configured.")
+        lines = []
+        for trig, rem in links.items():
+            trig_role = ctx.guild.get_role(int(trig))
+            rem_role = ctx.guild.get_role(int(rem))
+            if trig_role and rem_role:
+                lines.append(f"When {trig_role.mention} → remove {rem_role.mention}")
+        embed = discord.Embed(title="🔗 Linked Role Removals", description="\n".join(lines), color=discord.Color.blurple())
+        await ctx.send(embed=embed)
+
     # ----------------------- background expiration -----------------------
 
     @tasks.loop(seconds=60)
     async def check_expired_roles(self):
         """
         Runs every 60s. Removes expired roles.
-        If a role expired a while ago (e.g., during downtime), we avoid spamming the
-        original channel; we still log to the log channel for auditing and store history.
+        If a role expired during downtime, avoid spamming the origin channel (still log and record).
         """
         now = int(time.time())
         for guild in self.bot.guilds:
@@ -431,7 +505,7 @@ class AutoRoleManager(commands.Cog):
                         color=discord.Color.orange()
                     )
 
-                    # Consider outages: if overdue > 120s, assume offline catch-up, don't spam origin.
+                    # Consider outages: if overdue > 120s, assume offline catch-up, don't spam origin channel.
                     overdue = now - expires
                     expired_during_outage = overdue > 120
 
@@ -465,3 +539,23 @@ class AutoRoleManager(commands.Cog):
     @check_expired_roles.before_loop
     async def before_checker(self):
         await self.bot.wait_until_ready()
+
+    # ----------------------- event hook (manual role adds) -----------------------
+
+    @commands.Cog.listener()
+    async def on_member_update(self, before: discord.Member, after: discord.Member):
+        """
+        If a role is added manually (not via command) and it is configured as a trigger,
+        remove the linked role automatically.
+        """
+        if before.guild != after.guild:
+            return
+        added = {r.id for r in after.roles} - {r.id for r in before.roles}
+        if not added:
+            return
+        links = await self.config.guild(after.guild).rolelinks()
+        if not links:
+            return
+        for rid in added:
+            if str(rid) in links:
+                await self._maybe_apply_rolelink(after.guild, after, rid)
