@@ -3,10 +3,25 @@ from redbot.core import commands
 import datetime
 
 class JoinedToday(commands.Cog):
-    """Track and list members who joined in the last N days."""
+    """Track and list members who joined recently."""
 
     def __init__(self, bot):
         self.bot = bot
+
+    @commands.guild_only()
+    @commands.command(name="joinedcount")
+    async def joined_count(self, ctx: commands.Context, days: int = 1):
+        """
+        Show how many members joined in the last N days (default 1).
+        """
+        now = datetime.datetime.utcnow()
+        cutoff = now - datetime.timedelta(days=days)
+
+        count = sum(1 for m in ctx.guild.members if m.joined_at and m.joined_at > cutoff)
+
+        await ctx.send(
+            f"📊 **{count}** member(s) joined in the last **{days}** day(s)."
+        )
 
     @commands.guild_only()
     @commands.command(name="joinedlist")
