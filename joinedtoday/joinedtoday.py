@@ -1,90 +1,79 @@
 import discord
-from redbot.core import commands
-import datetime
+from discord.ext import commands
+from redbot.core import commands as redcommands
+from datetime import datetime, timedelta, timezone
 
-class JoinedToday(commands.Cog):
-    """Track and list members who joined recently."""
+class JoinedToday(redcommands.Cog):
+    """Track members who joined recently."""
 
     def __init__(self, bot):
         self.bot = bot
 
-    @commands.guild_only()
-    @commands.command(name="joinedcount")
-    async def joined_count(self, ctx: commands.Context, days: int = 1):
-        """
-        Show how many members joined in the last N days (default 1).
-        """
-        now = datetime.datetime.now(datetime.timezone.utc)
-        cutoff = now - datetime.timedelta(days=days)
-
+    @redcommands.guild_only()
+    @redcommands.command(name="joinedcount")
+    async def joined_count(self, ctx, days: int = 1):
+        """Show how many members joined in the last X days (default 1)."""
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(days=days)
         count = sum(1 for m in ctx.guild.members if m.joined_at and m.joined_at > cutoff)
+        await ctx.send(f"📊 **{count}** members joined in the last **{days} day(s)**.")
 
-        await ctx.send(
-            f"📊 **{count}** member(s) joined in the last **{days}** day(s)."
-        )
-
-    @commands.guild_only()
-    @commands.command(name="joinedlist")
-    async def joined_list(self, ctx: commands.Context, days: int = 1):
-        """
-        Show members who joined in the last N days (paginated).
-        """
-        now = datetime.datetime.now(datetime.timezone.utc)
-        cutoff = now - datetime.timedelta(days=days)
-
-        members = [
-            m for m in ctx.guild.members
-            if m.joined_at and m.joined_at > cutoff
-        ]
-        members.sort(key=lambda m: m.joined_at)
+    @redcommands.guild_only()
+    @redcommands.command(name="joinedlist")
+    async def joined_list(self, ctx, days: int = 1):
+        """List members who joined in the last X days with pagination (default 1)."""
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(days=days)
+        members = [m for m in ctx.guild.members if m.joined_at and m.joined_at > cutoff]
 
         if not members:
-            return await ctx.send(f"❌ No members joined in the last {days} days.")
+            return await ctx.send(f"ℹ️ No members joined in the last **{days} day(s)**.")
 
-        # Split into pages
+        members.sort(key=lambda m: m.joined_at)
+
+        pages = []
         page_size = 10
-        pages = [
-            members[i:i + page_size] for i in range(0, len(members), page_size)
-        ]
+        for i in range(0, len(members), page_size):
+            chunk = members[i:i + page_size]
+            desc = []
+            for m in chunk:
+                ts = int(m.joined_at.replace(tzinfo=timezone.utc).timestamp())
+                desc.append(f"👤 {m.mention} • **{m.display_name}** (`{m.id}`) • <t:{ts}:R>")
+            embed = discord.Embed(
+                title=f"📋 Members Joined in Last {days} Day(s)",
+                description="\n".join(desc),
+                color=discord.Color.blurple()
+            )
+            embed.set_footer(text=f"Page {i//page_size + 1}/{(len(members)-1)//page_size + 1} • Total: {len(members)}")
+            pages.append(embed)
 
+        # --- Pagination with Buttons ---
         class Paginator(discord.ui.View):
             def __init__(self):
                 super().__init__(timeout=60)
                 self.current = 0
 
-            def format_page(self):
-                embed = discord.Embed(
-                    title=f"📋 Members Joined in Last {days} Day(s)",
-                    color=discord.Color.blurple()
-                )
-                embed.set_footer(text=f"Page {self.current+1}/{len(pages)} • Total: {len(members)}")
+            async def update(self, interaction: discord.Interaction):
+                await interaction.response.edit_message(embed=pages[self.current], view=self)
 
-                desc = []
-                for m in pages[self.current]:
-                    ts = int(m.joined_at.timestamp())
-                    desc.append(f"👤 {m.mention} (`{m.id}`) • <t:{ts}:R>")
-                embed.description = "\n".join(desc)
-                return embed
-
-            @discord.ui.button(label="⬅️ Previous", style=discord.ButtonStyle.secondary)
-            async def previous(self, interaction: discord.Interaction, button: discord.ui.Button):
+            @discord.ui.button(label="Previous", style=discord.ButtonStyle.primary)
+            async def prev(self, interaction: discord.Interaction, button: discord.ui.Button):
                 if self.current > 0:
                     self.current -= 1
-                    await interaction.response.edit_message(embed=self.format_page(), view=self)
-                else:
-                    await interaction.response.defer()
+                    await self.update(interaction)
 
-            @discord.ui.button(label="➡️ Next", style=discord.ButtonStyle.secondary)
+            @discord.ui.button(label="Next", style=discord.ButtonStyle.primary)
             async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
                 if self.current < len(pages) - 1:
                     self.current += 1
-                    await interaction.response.edit_message(embed=self.format_page(), view=self)
-                else:
-                    await interaction.response.defer()
+                    await self.update(interaction)
 
-            @discord.ui.button(label="❌ Close", style=discord.ButtonStyle.danger)
+            @discord.ui.button(label="Close", style=discord.ButtonStyle.danger)
             async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
                 await interaction.message.delete()
 
         view = Paginator()
-        await ctx.send(embed=view.format_page(), view=view)
+        await ctx.send(embed=pages[0], view=view)
+
+async def setup(bot):
+    await bot.add_cog(JoinedToday(bot))
