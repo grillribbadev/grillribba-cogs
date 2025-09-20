@@ -1,78 +1,62 @@
 import discord
 from redbot.core import commands
-from datetime import datetime, timedelta, timezone
+import datetime
 
-class JoinTracker(commands.Cog):
-    """Track how many members joined recently."""
+class JoinedToday(commands.Cog):
+    """Track and report members who joined today."""
 
     def __init__(self, bot):
         self.bot = bot
 
-    # ------------------------
-    # Count only
-    # ------------------------
+    def _joined_today(self, guild: discord.Guild):
+        """Return list of members who joined today and are still in the guild."""
+        today = datetime.datetime.utcnow().date()
+        return [
+            m for m in guild.members
+            if m.joined_at and m.joined_at.date() == today
+        ]
+
     @commands.guild_only()
     @commands.command(name="joinedcount")
-    async def joined_count(self, ctx: commands.Context, days: int = 1):
+    async def joined_count(self, ctx: commands.Context):
         """
-        Show how many members joined in the last X days.
-        Defaults to today (1 day).
+        Show how many members joined today (who are still in the server).
         """
-        if days < 1:
-            return await ctx.send("❌ Days must be at least 1.")
-
-        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-        # Only count members who are STILL in the server
-        members = [m for m in ctx.guild.members if m.joined_at and m.joined_at >= cutoff]
-
-        await ctx.send(
-            embed=discord.Embed(
-                title="📊 Join Count",
-                description=f"**{len(members)}** members joined in the last **{days} day(s)**.",
-                color=discord.Color.green(),
-                timestamp=datetime.now(timezone.utc)
-            )
+        joined = self._joined_today(ctx.guild)
+        count = len(joined)
+        embed = discord.Embed(
+            title="📊 Members Joined Today",
+            description=f"**{count}** members joined today and are still in this server.",
+            color=discord.Color.blurple()
         )
+        await ctx.send(embed=embed)
 
-    # ------------------------
-    # Detailed list
-    # ------------------------
     @commands.guild_only()
     @commands.command(name="joinedlist")
-    async def joined_list(self, ctx: commands.Context, days: int = 1):
+    async def joined_list(self, ctx: commands.Context):
         """
-        List members who joined in the last X days (default: today).
-        Only shows members still in the server.
+        List members who joined today (still in the server).
         """
-        if days < 1:
-            return await ctx.send("❌ Days must be at least 1.")
+        joined = self._joined_today(ctx.guild)
+        if not joined:
+            return await ctx.send(embed=discord.Embed(
+                title="📋 Members Joined Today",
+                description="No members joined today.",
+                color=discord.Color.blurple()
+            ))
 
-        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-        members = [m for m in ctx.guild.members if m.joined_at and m.joined_at >= cutoff]
+        lines = [f"• {m.mention} (`{m}`)" for m in joined]
+        # Discord embed field limit handling
+        desc = "\n".join(lines[:50])  # cap to 50 entries for readability
+        if len(lines) > 50:
+            desc += f"\n… and {len(lines) - 50} more."
 
-        if not members:
-            return await ctx.send(
-                embed=discord.Embed(
-                    title="📋 Joined Members",
-                    description=f"No members joined in the last {days} day(s).",
-                    color=discord.Color.orange()
-                )
-            )
+        embed = discord.Embed(
+            title=f"📋 Members Joined Today ({len(joined)})",
+            description=desc,
+            color=discord.Color.blurple()
+        )
+        await ctx.send(embed=embed)
 
-        # Sort by join date
-        members.sort(key=lambda m: m.joined_at)
-
-        # Split into chunks of 20 members each
-        chunks = [members[i:i+20] for i in range(0, len(members), 20)]
-        for i, chunk in enumerate(chunks, start=1):
-            desc = "\n".join(
-                f"• {m.mention} — joined <t:{int(m.joined_at.timestamp())}:R>"
-                for m in chunk
-            )
-            embed = discord.Embed(
-                title=f"📋 Joined Members (Last {days}d) — Page {i}/{len(chunks)}",
-                description=desc,
-                color=discord.Color.blurple(),
-                timestamp=datetime.now(timezone.utc)
-            )
-            await ctx.send(embed=embed)
+async def setup(bot):
+    await bot.add_cog(JoinedToday(bot))
