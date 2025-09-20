@@ -1,69 +1,79 @@
 import discord
 from redbot.core import commands
-import datetime
+from datetime import datetime, timedelta, timezone
 
-class JoinedTracker(commands.Cog):
+
+class JoinedToday(commands.Cog):
     """Track and report members who joined in the last N days."""
 
     def __init__(self, bot):
         self.bot = bot
 
-    def _joined_within(self, guild: discord.Guild, days: int):
-        """Return list of members who joined within the last <days> days."""
-        now = datetime.datetime.utcnow()
-        cutoff = now - datetime.timedelta(days=days)
-        return [m for m in guild.members if m.joined_at and m.joined_at >= cutoff]
-
     @commands.guild_only()
     @commands.command(name="joinedcount")
-    async def joined_count(self, ctx: commands.Context, days: int = 1):
+    async def joinedcount(self, ctx, days: int = 1):
         """
-        Show how many members joined in the last <days> (default = 1, i.e. today).
+        Show how many members joined in the last N days (default 1).
+        Includes only members still in the server.
         """
         if days < 1:
-            return await ctx.send("❌ Days must be at least 1.")
+            return await ctx.send("⚠️ Days must be at least 1.")
 
-        joined = self._joined_within(ctx.guild, days)
-        count = len(joined)
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(days=days)
 
-        title = f"📊 Members Joined in the Last {days} Day{'s' if days > 1 else ''}"
+        # Count members still in guild
+        joined_members = [
+            m for m in ctx.guild.members if m.joined_at and m.joined_at >= cutoff
+        ]
+        count = len(joined_members)
+
         embed = discord.Embed(
-            title=title,
-            description=f"**{count}** members joined in the last {days} day{'s' if days > 1 else ''} and are still in this server.",
-            color=discord.Color.blurple()
+            title=f"📥 Members Joined (Last {days} day{'s' if days > 1 else ''})",
+            description=f"✅ **{count} member{'s' if count != 1 else ''} joined** "
+                        f"in the last {days} day{'s' if days > 1 else ''}.",
+            color=discord.Color.green(),
         )
+        embed.set_footer(text=f"Only includes members still in {ctx.guild.name}.")
+
         await ctx.send(embed=embed)
 
     @commands.guild_only()
     @commands.command(name="joinedlist")
-    async def joined_list(self, ctx: commands.Context, days: int = 1):
+    async def joinedlist(self, ctx, days: int = 1):
         """
-        List members who joined in the last <days> (default = 1, i.e. today).
+        List members who joined in the last N days (default 1).
+        Includes only members still in the server.
         """
         if days < 1:
-            return await ctx.send("❌ Days must be at least 1.")
+            return await ctx.send("⚠️ Days must be at least 1.")
 
-        joined = self._joined_within(ctx.guild, days)
-        if not joined:
-            title = f"📋 Members Joined in the Last {days} Day{'s' if days > 1 else ''}"
-            return await ctx.send(embed=discord.Embed(
-                title=title,
-                description="No members joined in that time frame.",
-                color=discord.Color.blurple()
-            ))
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(days=days)
 
-        lines = [f"• {m.mention} (`{m}`)" for m in joined]
-        desc = "\n".join(lines[:50])  # cap to 50 entries
-        if len(lines) > 50:
-            desc += f"\n… and {len(lines) - 50} more."
+        joined_members = [
+            m for m in ctx.guild.members if m.joined_at and m.joined_at >= cutoff
+        ]
 
-        title = f"📋 Members Joined in the Last {days} Day{'s' if days > 1 else ''}"
+        if not joined_members:
+            return await ctx.send(
+                f"ℹ️ No members joined in the last {days} day{'s' if days > 1 else ''}."
+            )
+
+        lines = [f"• {m.mention} (`{m}`)" for m in joined_members]
+        desc = "\n".join(lines[:30])  # Show up to 30
+        if len(joined_members) > 30:
+            desc += f"\n… and {len(joined_members) - 30} more."
+
         embed = discord.Embed(
-            title=title,
+            title=f"📋 Members Joined (Last {days} day{'s' if days > 1 else ''})",
             description=desc,
-            color=discord.Color.blurple()
+            color=discord.Color.blurple(),
         )
+        embed.set_footer(text=f"Only includes members still in {ctx.guild.name}.")
+
         await ctx.send(embed=embed)
 
+
 async def setup(bot):
-    await bot.add_cog(JoinedTracker(bot))
+    await bot.add_cog(JoinedToday(bot))
