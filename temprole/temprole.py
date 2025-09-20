@@ -16,7 +16,7 @@ class AutoRoleManager(commands.Cog):
         self.config = Config.get_conf(self, identifier=879823456123, force_registration=True)
         # assignments: { user_id: { "role": int, "expires": int, "channel": int, "reason": str } }
         # expired:     [ { "user": int, "role": int, "expired": int, "reason": str } ]
-        # rolelinks:   { "trigger_role_id": remove_role_id }  (when trigger is applied, remove the mapped role)
+        # rolelinks:   { "trigger_role_id": remove/reapply role_id }  (when trigger is applied -> remove; when ends -> reapply)
         self.config.register_guild(assignments={}, log_channel=None, silent=False, expired=[], rolelinks={})
         self.check_expired_roles.start()
 
@@ -52,6 +52,14 @@ class AutoRoleManager(commands.Cog):
             parts.append(f"{seconds}s")
         return " ".join(parts)
 
+    async def _send_log_embed(self, guild: discord.Guild, embed: discord.Embed):
+        log_id = await self.config.guild(guild).log_channel()
+        if not log_id:
+            return
+        ch = guild.get_channel(log_id)
+        if ch and ch.permissions_for(guild.me).send_messages:
+            await ch.send(embed=embed)
+
     async def _log_expired_record(self, guild: discord.Guild, user_id: int, role_id: int, expired_ts: int, reason: str):
         """Persist an expired record and keep history tidy (<=30 days; <=500 entries)."""
         history = await self.config.guild(guild).expired()
@@ -78,23 +86,50 @@ class AutoRoleManager(commands.Cog):
                 await member.remove_roles(remove_role, reason=f"Linked removal: trigger role {trigger_role_id} applied")
             except discord.Forbidden:
                 # Silent fail; insufficient perms
-                pass
+                return
 
-            # Optional: log to log_channel
-            log_id = await self.config.guild(guild).log_channel()
-            log_channel = guild.get_channel(log_id) if log_id else None
-            if log_channel and log_channel.permissions_for(guild.me).send_messages:
-                trig_role_mention = guild.get_role(trigger_role_id).mention if guild.get_role(trigger_role_id) else f"<@&{trigger_role_id}>"
-                embed = discord.Embed(
-                    title="🔗 Linked Role Removed",
-                    description=(
-                        f"**User:** {member.mention}\n"
-                        f"**Trigger:** {trig_role_mention}\n"
-                        f"**Removed:** {remove_role.mention}"
-                    ),
-                    color=discord.Color.orange()
-                )
-                await log_channel.send(embed=embed)
+            # Log linked removal
+            trig = guild.get_role(trigger_role_id)
+            embed = discord.Embed(
+                title="🔗 Linked Role Removed",
+                description=(
+                    f"**User:** {member.mention}\n"
+                    f"**Trigger:** {trig.mention if trig else f'<@&{trigger_role_id}>'}\n"
+                    f"**Removed:** {remove_role.mention}"
+                ),
+                color=discord.Color.orange()
+            )
+            await self._send_log_embed(guild, embed)
+
+    async def _maybe_reapply_rolelink(self, guild: discord.Guild, member: discord.Member, trigger_role_id: int):
+        """If trigger role is configured, reapply the linked role when trigger ends (expire/cancel)."""
+        if not member:
+            return
+        links = await self.config.guild(guild).rolelinks()
+        target_id = links.get(str(trigger_role_id))
+        if not target_id:
+            return
+        add_role = guild.get_role(int(target_id))
+        if not add_role:
+            return
+        if add_role not in member.roles:
+            try:
+                await member.add_roles(add_role, reason=f"Linked reapply: trigger role {trigger_role_id} ended")
+            except discord.Forbidden:
+                return
+
+            # Log linked reapply
+            trig = guild.get_role(trigger_role_id)
+            embed = discord.Embed(
+                title="🔗 Linked Role Reapplied",
+                description=(
+                    f"**User:** {member.mention}\n"
+                    f"**Trigger Ended:** {trig.mention if trig else f'<@&{trigger_role_id}>'}\n"
+                    f"**Reapplied:** {add_role.mention}"
+                ),
+                color=discord.Color.green()
+            )
+            await self._send_log_embed(guild, embed)
 
     # ----------------------- commands -----------------------
 
@@ -171,11 +206,8 @@ class AutoRoleManager(commands.Cog):
         if not silent:
             await ctx.send(embed=embed)
 
-        log_id = await self.config.guild(ctx.guild).log_channel()
-        if log_id:
-            log_channel = ctx.guild.get_channel(log_id)
-            if log_channel and log_channel.permissions_for(ctx.guild.me).send_messages:
-                await log_channel.send(embed=embed)
+        # Also log to the configured log channel
+        await self._send_log_embed(ctx.guild, embed)
 
     @commands.guild_only()
     @checks.admin()
@@ -241,9 +273,14 @@ class AutoRoleManager(commands.Cog):
                     color=discord.Color.red()
                 ))
 
+            # Reapply linked role if configured
+            await self._maybe_reapply_rolelink(ctx.guild, member, role.id)
+
+        # Remove assignment record
         del data[str(member.id)]
         await self.config.guild(ctx.guild).assignments.set(data)
 
+        # Notify channel + log
         embed = discord.Embed(
             title="🔓 Temporary Role Cancelled",
             description=(
@@ -255,12 +292,7 @@ class AutoRoleManager(commands.Cog):
             color=discord.Color.blue()
         )
         await ctx.send(embed=embed)
-
-        log_id = await self.config.guild(ctx.guild).log_channel()
-        if log_id:
-            log_channel = ctx.guild.get_channel(log_id)
-            if log_channel and log_channel.permissions_for(ctx.guild.me).send_messages:
-                await log_channel.send(embed=embed)
+        await self._send_log_embed(ctx.guild, embed)
 
     @commands.guild_only()
     @checks.admin_or_permissions(manage_roles=True)
@@ -417,41 +449,41 @@ class AutoRoleManager(commands.Cog):
     @checks.admin()
     @commands.group(name="temprolelink", invoke_without_command=True)
     async def temprole_link(self, ctx):
-        """Manage linked role removals (when TRIGGER role is applied, REMOVE role is removed)."""
+        """Manage linked role removals (when TRIGGER role is applied, REMOVE role is removed; on end, reapply)."""
         await ctx.send_help(ctx.command)
 
     @temprole_link.command(name="set")
-    async def temprole_link_set(self, ctx, trigger: discord.Role, remove: discord.Role):
-        """Set a link: when TRIGGER is applied, REMOVE is removed."""
+    async def temprole_link_set(self, ctx, trigger: discord.Role, remove_or_reapply: discord.Role):
+        """Set a link: when TRIGGER is applied, REMOVE_OR_REAPPLY is removed; when TRIGGER ends, it is reapplied."""
         links = await self.config.guild(ctx.guild).rolelinks()
-        links[str(trigger.id)] = remove.id
+        links[str(trigger.id)] = remove_or_reapply.id
         await self.config.guild(ctx.guild).rolelinks.set(links)
-        await ctx.send(f"✅ When {trigger.mention} is applied, {remove.mention} will be removed.")
+        await ctx.send(f"✅ Configured: when {trigger.mention} is applied → remove {remove_or_reapply.mention}; when it ends → reapply it.")
 
     @temprole_link.command(name="clear")
     async def temprole_link_clear(self, ctx, trigger: discord.Role):
-        """Clear a linked role removal."""
+        """Clear a linked role mapping."""
         links = await self.config.guild(ctx.guild).rolelinks()
         if str(trigger.id) in links:
             removed = links.pop(str(trigger.id))
             await self.config.guild(ctx.guild).rolelinks.set(links)
-            await ctx.send(f"✅ Cleared link for {trigger.mention} (was removing <@&{removed}>).")
+            await ctx.send(f"✅ Cleared link for {trigger.mention} (was <@&{removed}>).")
         else:
             await ctx.send(f"❌ No link found for {trigger.mention}.")
 
     @temprole_link.command(name="list")
     async def temprole_link_list(self, ctx):
-        """List all current linked role removals."""
+        """List all current linked role mappings."""
         links = await self.config.guild(ctx.guild).rolelinks()
         if not links:
-            return await ctx.send("ℹ️ No linked role removals configured.")
+            return await ctx.send("ℹ️ No linked role mappings configured.")
         lines = []
         for trig, rem in links.items():
             trig_role = ctx.guild.get_role(int(trig))
             rem_role = ctx.guild.get_role(int(rem))
             if trig_role and rem_role:
-                lines.append(f"When {trig_role.mention} → remove {rem_role.mention}")
-        embed = discord.Embed(title="🔗 Linked Role Removals", description="\n".join(lines), color=discord.Color.blurple())
+                lines.append(f"When {trig_role.mention} → remove {rem_role.mention}; when it ends → reapply {rem_role.mention}")
+        embed = discord.Embed(title="🔗 Linked Role Mappings", description="\n".join(lines), color=discord.Color.blurple())
         await ctx.send(embed=embed)
 
     # ----------------------- background expiration -----------------------
@@ -491,7 +523,10 @@ class AutoRoleManager(commands.Cog):
                         except discord.Forbidden:
                             pass
 
-                    # Build log embed
+                        # Reapply linked role (on trigger end)
+                        await self._maybe_reapply_rolelink(guild, member, role.id)
+
+                    # Build embed (log; origin channel only if not outage catch-up)
                     user_text = member.mention if member else f"<@{user_id}>"
                     role_text = role.mention if role else f"<@&{entry.get('role', 0)}>"
                     embed = discord.Embed(
