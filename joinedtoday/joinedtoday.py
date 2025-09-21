@@ -42,7 +42,8 @@ class JoinedToday(redcommands.Cog):
             )
             return await ctx.send(embed=embed)
 
-        members.sort(key=lambda m: m.joined_at)
+        # Sort newest first (reverse chronological)
+        members.sort(key=lambda m: m.joined_at, reverse=True)
 
         pages = []
         page_size = 8  # fewer per page for readability on phone
