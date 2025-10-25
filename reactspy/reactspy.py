@@ -17,33 +17,31 @@ DEFAULTS_GUILD = {
     "spam_threshold": {"count": 5, "interval": 10},
 }
 
-# Hardcoded delay and cooldown settings (per user)
-SPAM_LOG_DELAY_SEC = 3    # Delay after threshold is hit
-SPAM_LOG_COOLDOWN_SEC = 30  # Per-user cooldown between logs
+SPAM_LOG_DELAY_SEC = 3
+SPAM_LOG_COOLDOWN_SEC = 30
 
 class ReactSpy(commands.Cog):
-    """Logs only spammy reactions with per-user delay + cooldown (global)."""
+    """Logs only spammy reactions with per-user delay, cooldown, and emoji tracking."""
 
     def __init__(self, bot: Red):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=0xFA51C0DE, force_registration=True)
         self.config.register_guild(**DEFAULTS_GUILD)
 
-        self._reaction_history: Dict[int, Deque[float]] = defaultdict(lambda: deque(maxlen=128))
-        self._cooldowns: Dict[int, float] = {}  # user_id -> timestamp
-        self._pending_logs: Dict[int, asyncio.Task] = {}  # debounce log tasks
+        self._reaction_history: Dict[int, Deque[tuple[float, str]]] = defaultdict(lambda: deque(maxlen=128))
+        self._cooldowns: Dict[int, float] = {}
+        self._pending_logs: Dict[int, asyncio.Task] = {}
 
     @commands.group(name="reactspy", invoke_without_command=True)
     @commands.admin()
     async def reactspy(self, ctx: commands.Context):
-        """Show ReactSpy settings."""
         data = await self.config.guild(ctx.guild).all()
         spam = data["spam_threshold"]
         await ctx.send(
             f"👁 Watching: <#{data['watch_channel_id']}>\n"
             f"🪵 Logging to: <#{data['log_channel_id']}>\n"
-            f"⚠️ Spam: **{spam['count']}** reactions in **{spam['interval']}s**\n"
-            f"⏱️ Log delay: {SPAM_LOG_DELAY_SEC}s • Cooldown: {SPAM_LOG_COOLDOWN_SEC}s (per user)"
+            f"⚠️ Spam = {spam['count']} reactions in {spam['interval']}s\n"
+            f"⏱️ Delay: {SPAM_LOG_DELAY_SEC}s • Cooldown: {SPAM_LOG_COOLDOWN_SEC}s"
         )
 
     @reactspy.command(name="setwatch")
@@ -74,13 +72,13 @@ class ReactSpy(commands.Cog):
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
-        await self._handle(payload)
+        await self._handle(payload, added=True)
 
     @commands.Cog.listener()
     async def on_raw_reaction_remove(self, payload: discord.RawReactionActionEvent):
-        await self._handle(payload)
+        await self._handle(payload, added=False)
 
-    async def _handle(self, payload: discord.RawReactionActionEvent):
+    async def _handle(self, payload: discord.RawReactionActionEvent, added: bool):
         if not payload.guild_id:
             return
         guild = self.bot.get_guild(payload.guild_id)
@@ -95,23 +93,21 @@ class ReactSpy(commands.Cog):
         if not member or member.bot:
             return
 
+        emoji_str = str(payload.emoji)
         now = time.time()
-        self._reaction_history[member.id].append(now)
+        self._reaction_history[member.id].append((now, emoji_str))
 
         spam_cfg = cfg["spam_threshold"]
         count = spam_cfg["count"]
         interval = spam_cfg["interval"]
 
-        recent = [t for t in self._reaction_history[member.id] if now - t <= interval]
+        recent = [(t, e) for t, e in self._reaction_history[member.id] if now - t <= interval]
 
         if len(recent) >= count:
             if member.id in self._pending_logs:
-                return  # debounce: already waiting to log this user
-
+                return
             if now < self._cooldowns.get(member.id, 0):
-                return  # per-user cooldown
-
-            # Start delay task
+                return
             task = asyncio.create_task(self._delayed_log_if_still_spamming(member, payload, guild, cfg))
             self._pending_logs[member.id] = task
 
@@ -128,14 +124,14 @@ class ReactSpy(commands.Cog):
         timestamps = self._reaction_history[member.id]
         spam_cfg = cfg["spam_threshold"]
         interval = spam_cfg["interval"]
-        recent = [t for t in timestamps if now - t <= interval]
+        recent = [(t, e) for t, e in timestamps if now - t <= interval]
 
         if len(recent) < spam_cfg["count"]:
-            # They slowed down
             self._pending_logs.pop(member.id, None)
             return
 
-        # Still spamming — log it
+        emoji_display = " ".join(e for _, e in recent[-10:]) or "N/A"
+
         jump_url = None
         try:
             channel = guild.get_channel(payload.channel_id)
@@ -152,6 +148,7 @@ class ReactSpy(commands.Cog):
                 color=discord.Color.red(),
                 timestamp=discord.utils.utcnow()
             )
+            embed.add_field(name="Emojis used", value=emoji_display, inline=False)
             if jump_url:
                 embed.add_field(name="Message", value=f"[Jump to message]({jump_url})", inline=False)
             embed.set_footer(text=f"User ID: {member.id}")
