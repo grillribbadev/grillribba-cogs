@@ -33,6 +33,17 @@ class OnePieceGuess(commands.Cog):
                         await self.engine.config.guild(guild).characters.set([str(s) for s in seed])
                 except Exception:
                     pass
+            # migration safety: ensure keys exist
+            g = await self.engine.config.guild(guild).all()
+            blur = g.get("blur") or {}
+            if "bw" not in blur:
+                blur["bw"] = False
+                await self.engine.config.guild(guild).blur.set(blur)
+            active = g.get("active") or {}
+            if "expired" not in active:
+                active["expired"] = False
+                await self.engine.config.guild(guild).active.set(active)
+
         await self.tasks.start()
 
     def cog_unload(self) -> None:
@@ -52,7 +63,8 @@ class OnePieceGuess(commands.Cog):
         blur = g.get("blur") or {}
         await ctx.reply(
             "Status: **{enabled}**\nChannel: {channel}\nInterval: **{interval}s**\nRound timeout: **{roundtime}s**\n"
-            "Reward: **{reward}**\nBlur: **{mode}** @ **{strength}**\nHint: **{hint}** (max {maxc} chars)".format(
+            "Reward: **{reward}**\nBlur: **{mode}** @ **{strength}** • B/W: **{bw}**\n"
+            "Hint: **{hint}** (max {maxc} chars)".format(
                 enabled=enabled,
                 channel=(ch.mention if ch else "—"),
                 interval=g.get("interval"),
@@ -60,6 +72,7 @@ class OnePieceGuess(commands.Cog):
                 reward=g.get("reward"),
                 mode=blur.get("mode", "gaussian"),
                 strength=blur.get("strength", 8),
+                bw=("ON" if blur.get("bw") else "OFF"),
                 hint=("ON" if g.get("hint_enabled") else "OFF"),
                 maxc=g.get("hint_max_chars"),
             ),
@@ -101,16 +114,19 @@ class OnePieceGuess(commands.Cog):
         await self.engine.config.guild(ctx.guild).reward.set(max(0, int(amount)))
         await ctx.reply(f"Reward set to **{max(0,int(amount))}**")
 
-    # ---- admin: blur & hints ----
+    # ---- admin: blur, strength, black & white, hints ----
     @opguess.group(name="blur", invoke_without_command=True)
     @commands.admin()
     async def opguess_blur(self, ctx: commands.Context):
         blur = await self.engine.config.guild(ctx.guild).blur()
-        await ctx.reply(f"Blur mode: **{blur.get('mode','gaussian')}** • strength: **{blur.get('strength',8)}**")
+        await ctx.reply(
+            f"Blur mode: **{blur.get('mode','gaussian')}** • strength: **{blur.get('strength',8)}** • B/W: **{'ON' if blur.get('bw') else 'OFF'}**"
+        )
 
     @opguess_blur.command(name="mode")
     @commands.admin()
     async def opguess_blur_mode(self, ctx: commands.Context, mode: str):
+        """Set blur mode: gaussian|pixelate"""
         mode = mode.lower().strip()
         if mode not in {"gaussian", "pixelate"}:
             return await ctx.reply("Mode must be `gaussian` or `pixelate`.")
@@ -122,11 +138,22 @@ class OnePieceGuess(commands.Cog):
     @opguess_blur.command(name="strength")
     @commands.admin()
     async def opguess_blur_strength(self, ctx: commands.Context, value: int):
-        value = max(1, min(64, int(value)))
+        """Set blur radius (gaussian) or block size (pixelate). Max 250."""
+        value = max(1, min(250, int(value)))
         blur = await self.engine.config.guild(ctx.guild).blur()
         blur["strength"] = value
         await self.engine.config.guild(ctx.guild).blur.set(blur)
         await ctx.reply(f"Blur strength set to **{value}**")
+
+    @opguess_blur.command(name="bw")
+    @commands.admin()
+    async def opguess_blur_bw(self, ctx: commands.Context, on_off: Optional[bool] = None):
+        """Toggle black & white mode for the image."""
+        blur = await self.engine.config.guild(ctx.guild).blur()
+        new = (not bool(blur.get("bw"))) if on_off is None else bool(on_off)
+        blur["bw"] = new
+        await self.engine.config.guild(ctx.guild).blur.set(blur)
+        await ctx.reply(f"Black & white **{'ON' if new else 'OFF'}**")
 
     @opguess.command(name="hint")
     @commands.admin()
@@ -237,7 +264,8 @@ class OnePieceGuess(commands.Cog):
             blur = gconf.get("blur") or {}
             mode = str(blur.get("mode") or "gaussian").lower()
             strength = int(blur.get("strength") or 8)
-            buf = await self.engine.make_blurred(image_url, mode=mode, strength=strength)
+            bw = bool(blur.get("bw"))
+            buf = await self.engine.make_blurred(image_url, mode=mode, strength=strength, bw=bw)
             if buf:
                 file = discord.File(buf, filename="opguess_blur.png")
                 emb.set_image(url="attachment://opguess_blur.png")
