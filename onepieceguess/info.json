@@ -1,0 +1,13 @@
+{
+  "author": ["Grillribba"],
+  "install_msg": "Thanks for installing OnePieceGuess! Use `[p]opguess help`.",
+  "name": "OnePieceGuess",
+  "short": "Timed One Piece guessing game with blurred images.",
+  "description": "Posts periodic One Piece character challenges. Image is blurred; users guess with fuzzy matching. Fully configurable interval, reward, pool, blur mode/strength. Optional payout via BeriCore.",
+  "end_user_data_statement": "This cog stores minimal configuration (enabled/channel/interval/reward/blur, active round) and a list of character names and optional aliases; no personal data beyond Discord IDs for win counts.",
+  "tags": ["games", "fun", "onepiece", "trivia"],
+  "requirements": ["aiohttp", "Pillow>=10.0"],
+  "min_bot_version": "3.5.0",
+  "hidden": false,
+  "disabled": false
+}
