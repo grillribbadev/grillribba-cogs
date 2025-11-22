@@ -99,9 +99,11 @@ class GuessEngine:
 
     async def check_guess(self, guild: discord.Guild, user_input: str) -> Tuple[bool, Optional[str]]:
         active = await self.get_active(guild)
-        title = active.get("title")
-        if not title or active.get("expired"):
-            return False, title
+        # Treat no round OR expired round as "no active round"
+        if not active or not active.get("title") or active.get("expired"):
+            return False, None
+
+        title = active["title"]
 
         # build candidate keywords (title + aliases)
         aliases = await self.config.guild(guild).aliases()
@@ -126,11 +128,10 @@ class GuessEngine:
         # exact normalized
         if guess == k:
             return True
-        # token containment or edit distance-ish containment
-        # allow users to say "blackbeard" for "Marshall D. Teach" if alias covers it;
-        # otherwise loose contains on tokens length>=3
+        # containment
         if k in guess or guess in k:
             return True
+        # token overlap for >=3 chars
         g_tokens = set(t for t in guess.split() if len(t) >= 3)
         k_tokens = set(t for t in k.split() if len(t) >= 3)
         return bool(g_tokens & k_tokens)
@@ -216,7 +217,6 @@ class GuessEngine:
             # skip if it includes the name/aliases tokens
             if any(tok in low for tok in forbidden):
                 continue
-            # prefer mid-length quotes
             candidates.append(text)
 
         if not candidates:
