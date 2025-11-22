@@ -48,7 +48,6 @@ class GuessTasks:
             # 1) If a round is active and not yet expired, enforce per-round timeout
             if title and not expired:
                 if now - started_at >= roundtime:
-                    # Time's up: announce & lock until the cadence (interval) elapses
                     channel = guild.get_channel(int(channel_id))
                     if channel:
                         ctitle, _extract, img = await self.engine.fetch_page_brief(title)
@@ -86,7 +85,6 @@ class GuessTasks:
                     continue
 
             # 2) Cadence gate ALWAYS (even if expired=True).
-            #    If a round existed, wait until the interval has fully elapsed since it started.
             if title and (now - started_at) < interval:
                 continue
 
@@ -100,7 +98,6 @@ class GuessTasks:
                 continue
 
             ctitle, extract, image_url = await self.engine.fetch_page_brief(new_title)
-            display_title = ctitle or new_title
 
             emb = discord.Embed(
                 title="🗺️ Guess the One Piece Character!",
@@ -108,7 +105,8 @@ class GuessTasks:
                             "Typos and common aliases are accepted.",
                 color=COLOR_EMBED
             )
-            emb.set_footer(text=f"Timer: {interval}s • Round timeout: {roundtime}s • Title seeded from: {display_title}")
+            # no spoilers here
+            emb.set_footer(text=f"Timer: {interval}s • Round timeout: {roundtime}s")
 
             # hint text
             if gconf.get("hint_enabled") and extract:
@@ -116,13 +114,14 @@ class GuessTasks:
                 val = extract if len(extract) <= maxn else (extract[:maxn] + "…")
                 emb.add_field(name="Hint", value=val, inline=False)
 
-            # blurred image
+            # blurred image (respect BW toggle)
             file = None
             if image_url:
                 blur = gconf.get("blur") or {}
                 mode = str(blur.get("mode") or "gaussian").lower()
                 strength = int(blur.get("strength") or 8)
-                buf = await self.engine.make_blurred(image_url, mode=mode, strength=strength)
+                bw = bool(blur.get("bw"))
+                buf = await self.engine.make_blurred(image_url, mode=mode, strength=strength, bw=bw)
                 if buf:
                     file = discord.File(buf, filename="opguess_blur.png")
                     emb.set_image(url="attachment://opguess_blur.png")
