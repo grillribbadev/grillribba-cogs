@@ -2,6 +2,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Optional
+from io import BytesIO
+import aiohttp
 
 import discord
 from redbot.core import commands
@@ -283,18 +285,44 @@ class OnePieceGuess(commands.Cog):
             return await ctx.reply("No active round — wait for the next prompt.")
         if not ok:
             return await ctx.reply("Not quite. Try again!")
-        # win!
-        await self.engine.set_expired(ctx.guild, True)  # keep cadence until next interval
+
+        # Correct guess: mark expired (keep cadence until next interval)
+        await self.engine.set_expired(ctx.guild, True)
+
+        # Stats & reward
         u = self.engine.config.user(ctx.author)
         wins = await u.wins() or 0
         await u.wins.set(wins + 1)
         reward = await self.engine.config.guild(ctx.guild).reward()
         await self.engine.reward(ctx.author, reward)
-        await ctx.reply(embed=discord.Embed(
+
+        # Fetch original (unblurred) image and attach on the "Correct!" embed
+        file = None
+        try:
+            ctitle, _extract, image_url = await self.engine.fetch_page_brief(title)
+            if image_url:
+                async with aiohttp.ClientSession() as s:
+                    async with s.get(image_url, timeout=12) as r:
+                        if r.status == 200:
+                            buf = BytesIO(await r.read())
+                            buf.seek(0)
+                            file = discord.File(buf, filename="opguess_reveal.png")
+        except Exception:
+            file = None
+
+        emb = discord.Embed(
             title="✅ Correct!",
             description=f"{ctx.author.mention} got it — **{title}**.",
             color=COLOR_OK
-        ), allowed_mentions=discord.AllowedMentions.none())
+        )
+        if file:
+            emb.set_image(url="attachment://opguess_reveal.png")
+
+        await ctx.reply(
+            embed=emb,
+            file=file if file else discord.utils.MISSING,
+            allowed_mentions=discord.AllowedMentions.none()
+        )
 
 async def setup(bot: Red):
     cog = OnePieceGuess(bot)
