@@ -7,8 +7,9 @@ from io import BytesIO
 
 from redbot.core import commands
 
-from .constants import COLOR_EMBED
+from .constants import COLOR_EMBED, INTERVAL_DEFAULT, ROUND_DEFAULT
 from .core import GuessEngine
+
 
 class GuessTasks:
     """Background loop that posts/ends rounds on schedule."""
@@ -33,8 +34,8 @@ class GuessTasks:
                 continue
 
             channel_id = gconf.get("channel_id")
-            interval   = int(gconf.get("interval") or 0)   # cadence
-            roundtime  = int(gconf.get("roundtime") or 0)  # per-round timeout
+            interval   = int(gconf.get("interval") or INTERVAL_DEFAULT)   # posting cadence
+            roundtime  = int(gconf.get("roundtime") or ROUND_DEFAULT)     # per-round timeout
             if not channel_id or interval <= 0 or roundtime <= 0:
                 continue
 
@@ -44,9 +45,10 @@ class GuessTasks:
             expired = bool(active.get("expired"))
             now = int(time.time())
 
-            # 1) If a round is active and not expired, enforce roundtime
+            # 1) If a round is active and not yet expired, enforce per-round timeout
             if title and not expired:
                 if now - started_at >= roundtime:
+                    # Time's up: announce & lock until the cadence (interval) elapses
                     channel = guild.get_channel(int(channel_id))
                     if channel:
                         ctitle, _extract, img = await self.engine.fetch_page_brief(title)
@@ -55,7 +57,7 @@ class GuessTasks:
                             description=f"No one guessed the correct character.\n**Answer:** {ctitle or title}",
                             color=discord.Color.orange()
                         )
-                        # (optional) attach unblurred image on reveal
+                        # Optional: attach unblurred image on reveal
                         if img:
                             try:
                                 async with aiohttp.ClientSession() as s:
@@ -65,10 +67,6 @@ class GuessTasks:
                                             file = discord.File(buf, filename="opguess_reveal.png")
                                             reveal.set_image(url="attachment://opguess_reveal.png")
                                             await channel.send(embed=reveal, file=file)
-                                            file = None
-                                            reveal = None
-                                            # fallthrough
-                                            pass
                                         else:
                                             await channel.send(embed=reveal)
                             except Exception:
@@ -81,14 +79,18 @@ class GuessTasks:
                                 await channel.send(embed=reveal)
                             except Exception:
                                 pass
-                    # lock this round until cadence says it's time for a new one
                     await self.engine.set_expired(guild, True)
 
-                # While within the cadence window, do not post a new round
+                # Still within cadence? then do nothing else this tick
                 if now - started_at < interval:
                     continue
 
-            # 2) If cadence window passed (or no active), post a new round
+            # 2) Cadence gate ALWAYS (even if expired=True).
+            #    If a round existed, wait until the interval has fully elapsed since it started.
+            if title and (now - started_at) < interval:
+                continue
+
+            # 3) Post a new round
             channel = guild.get_channel(int(channel_id))
             if not channel:
                 continue
