@@ -5,6 +5,7 @@ from typing import Optional
 from io import BytesIO
 import aiohttp
 import io
+import time
 
 import discord
 from redbot.core import commands
@@ -53,7 +54,7 @@ class OnePieceGuess(commands.Cog):
     def cog_unload(self) -> None:
         self.tasks.cancel()
 
-    # --------- status ---------
+    # --------- status / root group ---------
     @commands.hybrid_group(name="opguess", invoke_without_command=True)
     @commands.guild_only()
     async def opguess(self, ctx: commands.Context):
@@ -76,6 +77,43 @@ class OnePieceGuess(commands.Cog):
             f"win_pts: {int(tap.get('win_points') or 0)}, timeout_pts: {int(tap.get('timeout_points') or 0)})"
         )
         await ctx.reply(status, allowed_mentions=discord.AllowedMentions.none())
+
+    @opguess.command(name="status")
+    @commands.admin()
+    @commands.guild_only()
+    async def opguess_status(self, ctx: commands.Context):
+        """Show the current round status: answer, jump link, and remaining time."""
+        active = await self.engine.get_active(ctx.guild)
+        if not active or not active.get("title"):
+            return await ctx.reply("No active round right now.")
+        title: str = active.get("title")
+        msg_id = active.get("posted_message_id")
+        chan_id = active.get("posted_channel_id")
+        started_at = active.get("started_at") or 0
+
+        g = await self.engine.config.guild(ctx.guild).all()
+        roundtime = int(g.get("roundtime") or 120)
+        elapsed = int(max(0, time.time() - started_at)) if started_at else 0
+        remaining = max(0, roundtime - elapsed)
+
+        jump = None
+        if chan_id and msg_id:
+            ch = ctx.guild.get_channel(int(chan_id))
+            if isinstance(ch, discord.TextChannel):
+                try:
+                    msg = await ch.fetch_message(int(msg_id))
+                    jump = msg.jump_url
+                except Exception:
+                    pass
+
+        emb = discord.Embed(
+            title="🧭 Current Round Status",
+            color=discord.Color.blurple(),
+            description=f"**Answer:** {title}\n**Time remaining:** {remaining}s (of {roundtime}s)",
+        )
+        if jump:
+            emb.add_field(name="Round Message", value=f"[Jump to message]({jump})", inline=False)
+        await ctx.reply(embed=emb, allowed_mentions=discord.AllowedMentions.none())
 
     # ---- admin: toggle/channel/interval/reward/roundtime ----
     @opguess.command(name="toggle")
@@ -420,7 +458,7 @@ class OnePieceGuess(commands.Cog):
         reward = await self.engine.config.guild(ctx.guild).reward()
         await self.engine.reward(ctx.author, reward)
 
-        # ---- AAA3A Teams cog integration (direct) + note in embed ----
+        # --- Teams integration (+ visible note) ---
         award_note = ""
         try:
             tconf = await self.engine.config.guild(ctx.guild).team_api()
@@ -431,25 +469,27 @@ class OnePieceGuess(commands.Cog):
                     if mode == "teamscog":
                         teams_cog = self.bot.get_cog("Teams")
                         if teams_cog:
-                            # find the team this member belongs to
                             team = next(
                                 (t for t in teams_cog.teams.get(ctx.guild.id, {}).values() if ctx.author in t.members),
                                 None,
                             )
                             if team:
-                                manager = ctx.guild.me  # show as managed by the bot in history
+                                manager = ctx.guild.me
                                 try:
                                     await team.add_points(win_pts, ctx.author, manager)
                                     award_note = f" (**+{win_pts}** to **{team.display_name}**)"
                                 except Exception:
-                                    pass
+                                    award_note = " (**team points failed to apply**)"
+                            else:
+                                award_note = " (**no team — no points awarded**)"
+                        else:
+                            award_note = " (**Teams cog not loaded**)"
                     else:
-                        # HTTP mode (no team name known here)
                         try:
                             await self.engine.team_api.send_win(ctx.guild, ctx.author, title)
                             award_note = f" (**+{win_pts} team points**)"
                         except Exception:
-                            pass
+                            award_note = " (**team API error**)"
         except Exception:
             pass
 
