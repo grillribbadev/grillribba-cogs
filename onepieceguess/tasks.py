@@ -1,139 +1,148 @@
 from __future__ import annotations
-from discord.ext import tasks
-import discord
 import time
-import aiohttp
-from io import BytesIO
+from typing import Optional
 
-from redbot.core import commands
+import discord
+from discord.ext import tasks
+from redbot.core.bot import Red
 
-from .constants import COLOR_EMBED, INTERVAL_DEFAULT, ROUND_DEFAULT
 from .core import GuessEngine
 
 
 class GuessTasks:
-    """Background loop that posts/ends rounds on schedule."""
-    def __init__(self, cog: commands.Cog, engine: GuessEngine):
+    """Background loop that posts rounds, sends mid-round hints, and handles timeouts."""
+
+    def __init__(self, cog, engine: GuessEngine) -> None:
         self.cog = cog
+        self.bot: Red = cog.bot
         self.engine = engine
+        self._ticker.change_interval(seconds=5.0)
 
-    async def start(self):
-        if not self._tick.is_running():
-            self._tick.start()
+    async def start(self) -> None:
+        if not self._ticker.is_running():
+            self._ticker.start()
 
-    def cancel(self):
-        if self._tick.is_running():
-            self._tick.cancel()
+    def cancel(self) -> None:
+        if self._ticker.is_running():
+            self._ticker.cancel()
 
-    @tasks.loop(seconds=60.0)
-    async def _tick(self):
-        bot = self.cog.bot
-        for guild in list(bot.guilds):
-            gconf = await self.engine.config.guild(guild).all()
-            if not gconf.get("enabled"):
-                continue
-
-            channel_id = gconf.get("channel_id")
-            interval   = int(gconf.get("interval") or INTERVAL_DEFAULT)   # posting cadence
-            roundtime  = int(gconf.get("roundtime") or ROUND_DEFAULT)     # per-round timeout
-            if not channel_id or interval <= 0 or roundtime <= 0:
-                continue
-
-            active = gconf.get("active") or {}
-            title = active.get("title")
-            started_at = int(active.get("started_at") or 0)
-            expired = bool(active.get("expired"))
-            now = int(time.time())
-
-            # 1) If a round is active and not yet expired, enforce per-round timeout
-            if title and not expired:
-                if now - started_at >= roundtime:
-                    channel = guild.get_channel(int(channel_id))
-                    if channel:
-                        ctitle, _extract, img = await self.engine.fetch_page_brief(title)
-                        reveal = discord.Embed(
-                            title="⏰ Time's up!",
-                            description=f"No one guessed the correct character.\n**Answer:** {ctitle or title}",
-                            color=discord.Color.orange()
-                        )
-                        # Optional: attach unblurred image on reveal
-                        if img:
-                            try:
-                                async with aiohttp.ClientSession() as s:
-                                    async with s.get(img, timeout=12) as r:
-                                        if r.status == 200:
-                                            buf = BytesIO(await r.read()); buf.seek(0)
-                                            file = discord.File(buf, filename="opguess_reveal.png")
-                                            reveal.set_image(url="attachment://opguess_reveal.png")
-                                            await channel.send(embed=reveal, file=file)
-                                        else:
-                                            await channel.send(embed=reveal)
-                            except Exception:
-                                try:
-                                    await channel.send(embed=reveal)
-                                except Exception:
-                                    pass
-                        else:
-                            try:
-                                await channel.send(embed=reveal)
-                            except Exception:
-                                pass
-                    await self.engine.set_expired(guild, True)
-
-                # Still within cadence? then do nothing else this tick
-                if now - started_at < interval:
+    @tasks.loop(seconds=5.0)
+    async def _ticker(self) -> None:
+        now = int(time.time())
+        for guild in list(self.bot.guilds):
+            try:
+                gconf = await self.engine.config.guild(guild).all()
+                if not gconf.get("enabled"):
                     continue
 
-            # 2) Cadence gate ALWAYS (even if expired=True).
-            if title and (now - started_at) < interval:
-                continue
+                # Ensure channel exists
+                channel_id = gconf.get("channel_id")
+                channel: Optional[discord.TextChannel] = guild.get_channel(int(channel_id or 0))  # type: ignore
+                if not channel or not isinstance(channel, discord.TextChannel):
+                    continue
 
-            # 3) Post a new round
-            channel = guild.get_channel(int(channel_id))
-            if not channel:
-                continue
+                active = gconf.get("active") or {}
+                title = active.get("title")
+                expired = bool(active.get("expired"))
+                started_at = int(active.get("started_at") or 0)
+                interval = int(gconf.get("interval") or 1800)
+                roundtime = int(gconf.get("roundtime") or 120)
 
-            new_title = await self.engine.pick_random_title(guild)
-            if not new_title:
-                continue
+                # 1) If nothing active or expired and the cadence says it's time, post a new round
+                if (not title) or expired:
+                    # post only when cadence elapsed since last start (best-effort):
+                    if not started_at or now - started_at >= interval:
+                        try:
+                            await self.cog._post_once(guild)
+                        except Exception:
+                            pass
+                    continue  # don't process hint/timeout for expired or just-posted
 
-            ctitle, extract, image_url = await self.engine.fetch_page_brief(new_title)
+                # 2) A round is active — check timeout and mid-hint
+                elapsed = now - started_at if started_at else 0
 
-            emb = discord.Embed(
-                title="🗺️ Guess the One Piece Character!",
-                description="Reply with `.guess <name>` (prefix) or `/guess` if enabled.\n"
-                            "Typos and common aliases are accepted.",
-                color=COLOR_EMBED
-            )
-            # no spoilers here
-            emb.set_footer(text=f"Timer: {interval}s • Round timeout: {roundtime}s")
+                # 2a) timeout
+                if elapsed >= roundtime:
+                    # mark expired and announce timeout
+                    await self.engine.set_expired(guild, True)
+                    try:
+                        # fetch the posted message to reply under it
+                        posted_channel_id = int(active.get("posted_channel_id") or 0)
+                        posted_message_id = int(active.get("posted_message_id") or 0)
+                        if posted_channel_id and posted_message_id:
+                            ch = guild.get_channel(posted_channel_id)
+                            if isinstance(ch, discord.TextChannel):
+                                try:
+                                    msg = await ch.fetch_message(posted_message_id)
+                                except discord.NotFound:
+                                    msg = None
+                                if msg:
+                                    await ch.send(
+                                        f"⏰ Time! No one guessed **{title}**.",
+                                        reference=msg,
+                                        mention_author=False,
+                                    )
+                    except Exception:
+                        pass
+                    continue
 
-            # hint text
-            if gconf.get("hint_enabled") and extract:
-                maxn = int(gconf.get("hint_max_chars") or 200)
-                val = extract if len(extract) <= maxn else (extract[:maxn] + "…")
-                emb.add_field(name="Hint", value=val, inline=False)
+                # 2b) mid-round quote at half the time (once)
+                if gconf.get("hint_enabled") and not active.get("half_hint_sent") and elapsed >= roundtime / 2:
+                    # collect forbidden tokens (title + aliases) to avoid name reveal
+                    aliases = await self.engine.config.guild(guild).aliases()
+                    forbidden_names = [title] + aliases.get(title, [])
+                    # normalize to lowercase tokens
+                    toks = []
+                    for n in forbidden_names:
+                        n = (n or "").strip().lower()
+                        if not n:
+                            continue
+                        toks.append(n)
+                        toks.extend([p for p in n.replace(".", " ").split() if p])
+                    try:
+                        quote = await self.engine.get_random_quote(title, toks)
+                    except Exception:
+                        quote = None
 
-            # blurred image (respect BW toggle)
-            file = None
-            if image_url:
-                blur = gconf.get("blur") or {}
-                mode = str(blur.get("mode") or "gaussian").lower()
-                strength = int(blur.get("strength") or 8)
-                bw = bool(blur.get("bw"))
-                buf = await self.engine.make_blurred(image_url, mode=mode, strength=strength, bw=bw)
-                if buf:
-                    file = discord.File(buf, filename="opguess_blur.png")
-                    emb.set_image(url="attachment://opguess_blur.png")
+                    if quote:
+                        # clamp quote length: keep it readable
+                        maxlen = int(gconf.get("hint_max_chars") or 200)
+                        if len(quote) > maxlen:
+                            quote = quote[:maxlen] + "…"
 
-            try:
-                message = await channel.send(embed=emb, file=file) if file else await channel.send(embed=emb)
+                        # reply under the original round message if we can
+                        try:
+                            posted_channel_id = int(active.get("posted_channel_id") or 0)
+                            posted_message_id = int(active.get("posted_message_id") or 0)
+                            if posted_channel_id and posted_message_id:
+                                ch = guild.get_channel(posted_channel_id)
+                                if isinstance(ch, discord.TextChannel):
+                                    try:
+                                        msg = await ch.fetch_message(posted_message_id)
+                                    except discord.NotFound:
+                                        msg = None
+                                    if msg:
+                                        await ch.send(
+                                            f"💡 Hint (quote): {quote}",
+                                            reference=msg,
+                                            mention_author=False,
+                                        )
+                                        await self.engine.mark_half_hint_sent(guild)
+                                        continue
+                        except Exception:
+                            pass
+
+                        # fallback: post to the configured channel if we couldn't thread it
+                        try:
+                            await channel.send(f"💡 Hint (quote): {quote}")
+                            await self.engine.mark_half_hint_sent(guild)
+                        except Exception:
+                            pass
+
             except Exception:
+                # never let one guild break the loop
                 continue
 
-            await self.engine.set_active(guild, title=new_title, message=message)
-            await self.engine.set_expired(guild, False)
-
-    @_tick.before_loop
-    async def _before_tick(self):
-        await self.cog.bot.wait_until_red_ready()
+    @_ticker.before_loop
+    async def _before(self):
+        await self.bot.wait_until_red_ready()
