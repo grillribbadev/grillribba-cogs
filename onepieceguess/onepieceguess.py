@@ -6,6 +6,7 @@ from io import BytesIO
 import aiohttp
 import io
 import time
+import re
 
 import discord
 from redbot.core import commands
@@ -227,9 +228,71 @@ class OnePieceGuess(commands.Cog):
     @opguess_char.command(name="aliases")
     @commands.admin()
     async def opguess_char_aliases(self, ctx: commands.Context, title: str, *, comma_separated: str):
+        """Overwrite all aliases for a character."""
         aliases = [a.strip() for a in comma_separated.split(",") if a.strip()]
         await self.engine.upsert_aliases(ctx.guild, title, aliases)
         await ctx.reply(f"Aliases set for **{title}**: {', '.join(aliases) if aliases else '—'}")
+
+    # --- aliases management (view/add/remove/clear) ---
+    async def _resolve_title(self, guild: discord.Guild, title: str) -> str:
+        """Find the canonical title from configured characters (case-insensitive)."""
+        chars = await self.engine.config.guild(guild).characters()
+        return next((t for t in chars if t.lower() == title.lower()), title)
+
+    @opguess_char.command(name="aliasesview", aliases=["aliasshow", "aliasesget"])
+    @commands.admin()
+    async def opguess_char_aliases_view(self, ctx: commands.Context, *, title: str):
+        """Show current aliases for a character."""
+        title_key = await self._resolve_title(ctx.guild, title.strip())
+        aliases_map = await self.engine.config.guild(ctx.guild).aliases()
+        current = aliases_map.get(title_key, [])
+        if not current:
+            return await ctx.reply(f"**{title_key}** has no aliases saved.")
+        await ctx.reply(f"**{title_key}** aliases ({len(current)}): {', '.join(current)}")
+
+    @opguess_char.command(name="aliasadd", aliases=["addalias"])
+    @commands.admin()
+    async def opguess_char_alias_add(self, ctx: commands.Context, title: str, *, aliases: str):
+        """Add one or more aliases (comma-separated) without overwriting existing ones."""
+        title_key = await self._resolve_title(ctx.guild, title.strip())
+        aliases_map = await self.engine.config.guild(ctx.guild).aliases()
+        base = set(aliases_map.get(title_key, []))
+        new_items = {a.strip() for a in aliases.split(",") if a.strip()}
+        if not new_items:
+            return await ctx.reply("Provide at least one alias (comma-separated).")
+        updated = sorted(base | new_items, key=str.lower)
+        aliases_map[title_key] = updated
+        await self.engine.config.guild(ctx.guild).aliases.set(aliases_map)
+        added = len(updated) - len(base)
+        await ctx.reply(f"Added {added} alias(es) to **{title_key}**.\nNow: {', '.join(updated) if updated else '—'}")
+
+    @opguess_char.command(name="aliasremove", aliases=["remalias", "delalias"])
+    @commands.admin()
+    async def opguess_char_alias_remove(self, ctx: commands.Context, title: str, *, aliases: str):
+        """Remove one or more aliases (comma-separated)."""
+        title_key = await self._resolve_title(ctx.guild, title.strip())
+        aliases_map = await self.engine.config.guild(ctx.guild).aliases()
+        current = set(aliases_map.get(title_key, []))
+        if not current:
+            return await ctx.reply(f"**{title_key}** has no aliases to remove.")
+        to_remove = {a.strip() for a in aliases.split(",") if a.strip()}
+        new_set = current - to_remove
+        aliases_map[title_key] = sorted(new_set, key=str.lower)
+        await self.engine.config.guild(ctx.guild).aliases.set(aliases_map)
+        removed = len(current) - len(new_set)
+        await ctx.reply(f"Removed {removed} alias(es) from **{title_key}**.\nNow: {', '.join(aliases_map[title_key]) if aliases_map[title_key] else '—'}")
+
+    @opguess_char.command(name="aliasclear", aliases=["clearaliases"])
+    @commands.admin()
+    async def opguess_char_alias_clear(self, ctx: commands.Context, *, title: str):
+        """Clear all aliases for a character."""
+        title_key = await self._resolve_title(ctx.guild, title.strip())
+        aliases_map = await self.engine.config.guild(ctx.guild).aliases()
+        had = len(aliases_map.get(title_key, []))
+        if title_key in aliases_map:
+            aliases_map[title_key] = []
+            await self.engine.config.guild(ctx.guild).aliases.set(aliases_map)
+        await ctx.reply(f"Cleared {had} alias(es) for **{title_key}**.")
 
     # ---- import/export ----
     @opguess.command(name="import")
