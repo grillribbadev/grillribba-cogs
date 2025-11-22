@@ -251,14 +251,19 @@ class OnePieceGuess(commands.Cog):
         if not title:
             return
         ctitle, extract, image_url = await self.engine.fetch_page_brief(title)
+        interval = int(gconf.get("interval") or 1800)
+        roundtime = int(gconf.get("roundtime") or 120)
+
         emb = discord.Embed(
             title="🗺️ Guess the One Piece Character!",
             description="Reply with `.guess <name>` (prefix) or `/guess` if enabled.",
             color=COLOR_OK
         )
+        emb.set_footer(text=f"Timer: {interval}s • Round timeout: {roundtime}s")
+
         if gconf.get("hint_enabled") and extract:
             maxn = int(gconf.get("hint_max_chars") or 200)
-            val = extract if len(extract) <= maxn else (extract[:maxn] + "…")
+            val = extract if len(extract) <= maxn else (extract[:maxn] + '…')
             emb.add_field(name="Hint", value=val, inline=False)
 
         file = None
@@ -284,7 +289,23 @@ class OnePieceGuess(commands.Cog):
         if not title:
             return await ctx.reply("No active round — wait for the next prompt.")
         if not ok:
-            return await ctx.reply("Not quite. Try again!")
+            # ❌ Wrong answer behavior:
+            # - Prefix: react to the user's message.
+            # - Slash: send an ephemeral red X since we can't react to an interaction.
+            if getattr(ctx, "interaction", None):
+                try:
+                    if not ctx.interaction.response.is_done():
+                        await ctx.interaction.response.send_message("❌", ephemeral=True)
+                    else:
+                        await ctx.interaction.followup.send("❌", ephemeral=True)
+                except Exception:
+                    pass
+            else:
+                try:
+                    await ctx.message.add_reaction("❌")
+                except Exception:
+                    pass
+            return
 
         # Correct guess: mark expired (keep cadence until next interval)
         await self.engine.set_expired(ctx.guild, True)
