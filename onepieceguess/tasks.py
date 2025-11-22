@@ -2,7 +2,9 @@ from __future__ import annotations
 import time
 import re
 from typing import Optional
+from io import BytesIO
 
+import aiohttp
 import discord
 from discord.ext import tasks
 from redbot.core.bot import Red
@@ -35,7 +37,7 @@ class GuessTasks:
         for p in parts:
             if not p:
                 continue
-            # e.g. single letter token
+            # single-letter token
             if len(p) == 1 and p.isalpha():
                 initials.append(p.upper() + ".")
                 continue
@@ -83,7 +85,7 @@ class GuessTasks:
                 # 2a) timeout
                 if elapsed >= roundtime:
                     await self.engine.set_expired(guild, True)
-                    # announce timeout under the original round message
+                    # announce timeout under the original round message, with the unblurred image if possible
                     try:
                         posted_channel_id = int(active.get("posted_channel_id") or 0)
                         posted_message_id = int(active.get("posted_message_id") or 0)
@@ -94,9 +96,32 @@ class GuessTasks:
                                     msg = await ch.fetch_message(posted_message_id)
                                 except discord.NotFound:
                                     msg = None
+
+                                # Build embed + fetch original image
+                                emb = discord.Embed(
+                                    title="⏰ Time!",
+                                    description=f"No one guessed **{title}**.",
+                                    color=discord.Color.red(),
+                                )
+
+                                file = None
+                                try:
+                                    _t, _extract, image_url = await self.engine.fetch_page_brief(title)
+                                    if image_url:
+                                        async with aiohttp.ClientSession() as s:
+                                            async with s.get(image_url, timeout=12) as r:
+                                                if r.status == 200:
+                                                    buf = BytesIO(await r.read())
+                                                    buf.seek(0)
+                                                    file = discord.File(buf, filename="opguess_timeout.png")
+                                                    emb.set_image(url="attachment://opguess_timeout.png")
+                                except Exception:
+                                    file = None
+
                                 if msg:
                                     await ch.send(
-                                        f"⏰ Time! No one guessed **{title}**.",
+                                        embed=emb,
+                                        file=file if file else discord.utils.MISSING,
                                         reference=msg,
                                         mention_author=False,
                                     )
