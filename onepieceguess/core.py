@@ -20,7 +20,7 @@ FANDOM_API = "https://onepiece.fandom.com/api.php"
 class GuessEngine:
     def __init__(self, bot: Red) -> None:
         self.bot = bot
-        self.config = Config.get_conf(self, identifier=0x0NEP1ECE, force_registration=True)
+        self.config = Config.get_conf(self, identifier=2025111801, force_registration=True)
         self.config.register_guild(**DEFAULT_GUILD)
         self.config.register_user(**DEFAULT_USER)
 
@@ -168,3 +168,4 @@ class GuessEngine:
         aliases = await self.get_aliases(guild, title)
         ok = is_guess_match(user_guess, title, aliases)
         return ok, title
+
