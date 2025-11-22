@@ -18,7 +18,7 @@ TEAMAPI_DEFAULT = {
     "win_points": 1,
     "timeout_points": 0,
 
-    # HTTP fields are harmless if unused (for a future HTTP endpoint)
+    # HTTP fields are harmless if unused
     "base_url": "",
     "token": "",
     "endpoint_path": "/api/onepieceguess/event",
@@ -52,7 +52,7 @@ DEFAULT_GUILD = {
         "bw": False,               # black & white toggle
     },
 
-    # Teams integration block (this was missing for you before)
+    # Teams integration block
     "team_api": TEAMAPI_DEFAULT.copy(),
 
     # Active round state (runtime)
@@ -62,6 +62,8 @@ DEFAULT_GUILD = {
         "posted_channel_id": None,
         "started_at": 0,
         "expired": False,
+        # NEW: whether we already posted the mid-round quote
+        "half_hint_sent": False,
     },
 }
 
