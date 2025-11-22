@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Optional
 from io import BytesIO
 import aiohttp
+import io  # for export buffer
 
 import discord
 from redbot.core import commands
@@ -15,6 +16,7 @@ from .tasks import GuessTasks
 
 DATA_DIR = Path(__file__).parent / "data"
 SEED_FILE = DATA_DIR / "character_pool.json"
+
 
 class OnePieceGuess(commands.Cog):
     """Timed One Piece guessing game using Fandom API. Blurred images. Fully configurable."""
@@ -98,7 +100,7 @@ class OnePieceGuess(commands.Cog):
     @opguess.command(name="setinterval")
     @commands.admin()
     async def opguess_setinterval(self, ctx: commands.Context, seconds: int):
-        seconds = max(30, min(24*3600, int(seconds)))
+        seconds = max(30, min(24 * 3600, int(seconds)))
         await self.engine.config.guild(ctx.guild).interval.set(seconds)
         await ctx.reply(f"Interval set to **{seconds}s**")
 
@@ -114,7 +116,7 @@ class OnePieceGuess(commands.Cog):
     @commands.admin()
     async def opguess_setreward(self, ctx: commands.Context, amount: int):
         await self.engine.config.guild(ctx.guild).reward.set(max(0, int(amount)))
-        await ctx.reply(f"Reward set to **{max(0,int(amount))}**")
+        await ctx.reply(f"Reward set to **{max(0, int(amount))}**")
 
     # ---- admin: blur, strength, black & white, hints ----
     @opguess.group(name="blur", invoke_without_command=True)
@@ -216,7 +218,9 @@ class OnePieceGuess(commands.Cog):
             titles = [str(x) for x in payload.get("characters", [])]
             aliases = payload.get("aliases", {})
             await self.engine.config.guild(ctx.guild).characters.set(titles)
-            await self.engine.config.guild(ctx.guild).aliases.set({str(k): [str(v) for v in vs] for k,vs in aliases.items()})
+            await self.engine.config.guild(ctx.guild).aliases.set(
+                {str(k): [str(v) for v in vs] for k, vs in aliases.items()}
+            )
         else:
             return await ctx.reply("Unsupported JSON structure.")
         await ctx.reply(f"Imported **{len(await self.engine.config.guild(ctx.guild).characters())}** characters.")
@@ -224,11 +228,15 @@ class OnePieceGuess(commands.Cog):
     @opguess.command(name="export")
     @commands.admin()
     async def opguess_export(self, ctx: commands.Context):
+        """Export current pool + aliases as a JSON attachment."""
         titles = await self.engine.config.guild(ctx.guild).characters()
         aliases = await self.engine.config.guild(ctx.guild).aliases()
         payload = {"characters": titles, "aliases": aliases}
-        buf = json.dumps(payload, indent=2).encode("utf-8")
-        await ctx.reply(file=discord.File(fp=buf, filename="onepiece_characters.json"))
+
+        buf = io.BytesIO(json.dumps(payload, indent=2).encode("utf-8"))
+        buf.seek(0)
+
+        await ctx.reply(file=discord.File(buf, filename="onepiece_characters.json"))
 
     @opguess.command(name="forcepost")
     @commands.admin()
@@ -238,9 +246,56 @@ class OnePieceGuess(commands.Cog):
         if not ch:
             return await ctx.reply("No channel configured. Use `opguess setchannel`.")
         await self.engine.set_expired(ctx.guild, True)  # mark old round done
-        # quick single post using same logic as scheduler
         await self._post_once(ctx.guild)
         await ctx.reply("Round posted (if character pool is not empty).")
+
+    # Reveal the current answer (DM by default; can post here; can end round)
+    @opguess.command(name="reveal")
+    @commands.admin()
+    async def opguess_reveal(self, ctx: commands.Context, visibility: Optional[str] = "dm", end: Optional[bool] = False):
+        """
+        Reveal the current answer to yourself (DM) or in the channel.
+        visibility: 'dm' (default) or 'here'
+        end: if true, ends the round (keeps interval cadence)
+        """
+        active = await self.engine.get_active(ctx.guild)
+        title = (active or {}).get("title")
+        if not title:
+            return await ctx.reply("No active round to reveal.")
+
+        # Fetch original image
+        file = None
+        try:
+            ctitle, _extract, image_url = await self.engine.fetch_page_brief(title)
+            if image_url:
+                async with aiohttp.ClientSession() as s:
+                    async with s.get(image_url, timeout=12) as r:
+                        if r.status == 200:
+                            buf = BytesIO(await r.read()); buf.seek(0)
+                            file = discord.File(buf, filename="opguess_answer.png")
+        except Exception:
+            file = None
+
+        emb = discord.Embed(
+            title="🔎 Current Answer",
+            description=f"**{title}**",
+            color=discord.Color.blurple()
+        )
+        if file:
+            emb.set_image(url="attachment://opguess_answer.png")
+
+        vis = (visibility or "dm").lower()
+        if vis in {"here", "channel", "public"}:
+            await ctx.reply(embed=emb, file=file if file else discord.utils.MISSING)
+        else:
+            try:
+                await ctx.author.send(embed=emb, file=file if file else discord.utils.MISSING)
+                await ctx.reply("📬 Sent the current answer to your DMs.", allowed_mentions=discord.AllowedMentions.none())
+            except discord.Forbidden:
+                return await ctx.reply("I couldn't DM you. Use `[p]opguess reveal here` to post it in this channel.")
+
+        if end:
+            await self.engine.set_expired(ctx.guild, True)
 
     async def _post_once(self, guild):
         gconf = await self.engine.config.guild(guild).all()
@@ -257,13 +312,13 @@ class OnePieceGuess(commands.Cog):
         emb = discord.Embed(
             title="🗺️ Guess the One Piece Character!",
             description="Reply with `.guess <name>` (prefix) or `/guess` if enabled.",
-            color=COLOR_OK
+            color=COLOR_OK,
         )
         emb.set_footer(text=f"Timer: {interval}s • Round timeout: {roundtime}s")
 
         if gconf.get("hint_enabled") and extract:
             maxn = int(gconf.get("hint_max_chars") or 200)
-            val = extract if len(extract) <= maxn else (extract[:maxn] + '…')
+            val = extract if len(extract) <= maxn else (extract[:maxn] + "…")
             emb.add_field(name="Hint", value=val, inline=False)
 
         file = None
@@ -281,6 +336,7 @@ class OnePieceGuess(commands.Cog):
         await self.engine.set_active(guild, title=title, message=message)
         await self.engine.set_expired(guild, False)
 
+    # ---- player ----
     @commands.hybrid_command(name="guess")
     @commands.guild_only()
     async def guess(self, ctx: commands.Context, *, name: str):
@@ -289,35 +345,19 @@ class OnePieceGuess(commands.Cog):
         if not title:
             return await ctx.reply("No active round — wait for the next prompt.")
         if not ok:
-            # ❌ Wrong answer behavior:
-            # - Prefix: react to the user's message.
-            # - Slash: send an ephemeral red X since we can't react to an interaction.
-            if getattr(ctx, "interaction", None):
-                try:
-                    if not ctx.interaction.response.is_done():
-                        await ctx.interaction.response.send_message("❌", ephemeral=True)
-                    else:
-                        await ctx.interaction.followup.send("❌", ephemeral=True)
-                except Exception:
-                    pass
-            else:
-                try:
-                    await ctx.message.add_reaction("❌")
-                except Exception:
-                    pass
-            return
+            return await ctx.reply("Not quite. Try again!")
 
         # Correct guess: mark expired (keep cadence until next interval)
         await self.engine.set_expired(ctx.guild, True)
 
-        # Stats & reward
+        # Stats & (optional) reward (set reward 0 to disable payout cleanly)
         u = self.engine.config.user(ctx.author)
         wins = await u.wins() or 0
         await u.wins.set(wins + 1)
         reward = await self.engine.config.guild(ctx.guild).reward()
         await self.engine.reward(ctx.author, reward)
 
-        # Fetch original (unblurred) image and attach on the "Correct!" embed
+        # Fetch original (unblurred) image and attach on the “Correct!” embed
         file = None
         try:
             ctitle, _extract, image_url = await self.engine.fetch_page_brief(title)
@@ -334,7 +374,7 @@ class OnePieceGuess(commands.Cog):
         emb = discord.Embed(
             title="✅ Correct!",
             description=f"{ctx.author.mention} got it — **{title}**.",
-            color=COLOR_OK
+            color=COLOR_OK,
         )
         if file:
             emb.set_image(url="attachment://opguess_reveal.png")
@@ -342,8 +382,9 @@ class OnePieceGuess(commands.Cog):
         await ctx.reply(
             embed=emb,
             file=file if file else discord.utils.MISSING,
-            allowed_mentions=discord.AllowedMentions.none()
+            allowed_mentions=discord.AllowedMentions.none(),
         )
+
 
 async def setup(bot: Red):
     cog = OnePieceGuess(bot)
