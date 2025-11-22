@@ -420,7 +420,8 @@ class OnePieceGuess(commands.Cog):
         reward = await self.engine.config.guild(ctx.guild).reward()
         await self.engine.reward(ctx.author, reward)
 
-        # ---- AAA3A Teams cog integration (direct) ----
+        # ---- AAA3A Teams cog integration (direct) + note in embed ----
+        award_note = ""
         try:
             tconf = await self.engine.config.guild(ctx.guild).team_api()
             if tconf.get("enabled"):
@@ -439,12 +440,14 @@ class OnePieceGuess(commands.Cog):
                                 manager = ctx.guild.me  # show as managed by the bot in history
                                 try:
                                     await team.add_points(win_pts, ctx.author, manager)
+                                    award_note = f" (**+{win_pts}** to **{team.display_name}**)"
                                 except Exception:
                                     pass
                     else:
-                        # if you still use HTTP mode via team_api.py
+                        # HTTP mode (no team name known here)
                         try:
                             await self.engine.team_api.send_win(ctx.guild, ctx.author, title)
+                            award_note = f" (**+{win_pts} team points**)"
                         except Exception:
                             pass
         except Exception:
@@ -466,7 +469,7 @@ class OnePieceGuess(commands.Cog):
 
         emb = discord.Embed(
             title="✅ Correct!",
-            description=f"{ctx.author.mention} got it — **{title}**.",
+            description=f"{ctx.author.mention} got it — **{title}**.{award_note}",
             color=COLOR_OK,
         )
         if file:
