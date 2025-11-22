@@ -1,7 +1,7 @@
 from __future__ import annotations
 import json
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional
 
 import discord
 from redbot.core import commands
@@ -15,7 +15,7 @@ DATA_DIR = Path(__file__).parent / "data"
 SEED_FILE = DATA_DIR / "character_pool.json"
 
 class OnePieceGuess(commands.Cog):
-    """Timed One Piece guessing game using Fandom API. Fully configurable. Images are blurred."""
+    """Timed One Piece guessing game using Fandom API. Blurred images. Fully configurable."""
 
     def __init__(self, bot: Red) -> None:
         self.bot = bot
@@ -23,6 +23,7 @@ class OnePieceGuess(commands.Cog):
         self.tasks = GuessTasks(self, self.engine)
 
     async def cog_load(self) -> None:
+        # seed characters into config on first load if empty
         for guild in self.bot.guilds:
             chars = await self.engine.config.guild(guild).characters()
             if not chars and SEED_FILE.exists():
@@ -48,17 +49,24 @@ class OnePieceGuess(commands.Cog):
         g = await self.engine.config.guild(ctx.guild).all()
         enabled = "ON" if g.get("enabled") else "OFF"
         ch = ctx.guild.get_channel(g.get("channel_id") or 0)
+        blur = g.get("blur") or {}
         await ctx.reply(
-            f"Status: **{enabled}**\n"
-            f"Channel: {ch.mention if ch else '—'}\n"
-            f"Interval: **{g.get('interval')}s**\n"
-            f"Reward: **{g.get('reward')}**\n"
-            f"Blur: **{(g.get('blur') or {}).get('mode','gaussian')}** @ **{(g.get('blur') or {}).get('strength',8)}**\n"
-            f"Hint: **{'ON' if g.get('hint_enabled') else 'OFF'}** (max {g.get('hint_max_chars')} chars)",
+            "Status: **{enabled}**\nChannel: {channel}\nInterval: **{interval}s**\nRound timeout: **{roundtime}s**\n"
+            "Reward: **{reward}**\nBlur: **{mode}** @ **{strength}**\nHint: **{hint}** (max {maxc} chars)".format(
+                enabled=enabled,
+                channel=(ch.mention if ch else "—"),
+                interval=g.get("interval"),
+                roundtime=g.get("roundtime"),
+                reward=g.get("reward"),
+                mode=blur.get("mode", "gaussian"),
+                strength=blur.get("strength", 8),
+                hint=("ON" if g.get("hint_enabled") else "OFF"),
+                maxc=g.get("hint_max_chars"),
+            ),
             allowed_mentions=discord.AllowedMentions.none()
         )
 
-    # ---- admin: toggle/channel/interval/reward ----
+    # ---- admin: toggle/channel/interval/reward/roundtime ----
     @opguess.command(name="toggle")
     @commands.admin()
     async def opguess_toggle(self, ctx: commands.Context, on_off: Optional[bool] = None):
@@ -79,6 +87,14 @@ class OnePieceGuess(commands.Cog):
         await self.engine.config.guild(ctx.guild).interval.set(seconds)
         await ctx.reply(f"Interval set to **{seconds}s**")
 
+    @opguess.command(name="setroundtime")
+    @commands.admin()
+    async def opguess_setroundtime(self, ctx: commands.Context, seconds: int):
+        """Set how long a round stays open before timing out (seconds)."""
+        seconds = max(15, min(3600, int(seconds)))
+        await self.engine.config.guild(ctx.guild).roundtime.set(seconds)
+        await ctx.reply(f"Round timeout set to **{seconds}s**")
+
     @opguess.command(name="setreward")
     @commands.admin()
     async def opguess_setreward(self, ctx: commands.Context, amount: int):
@@ -89,14 +105,12 @@ class OnePieceGuess(commands.Cog):
     @opguess.group(name="blur", invoke_without_command=True)
     @commands.admin()
     async def opguess_blur(self, ctx: commands.Context):
-        """Show blur settings."""
         blur = await self.engine.config.guild(ctx.guild).blur()
         await ctx.reply(f"Blur mode: **{blur.get('mode','gaussian')}** • strength: **{blur.get('strength',8)}**")
 
     @opguess_blur.command(name="mode")
     @commands.admin()
     async def opguess_blur_mode(self, ctx: commands.Context, mode: str):
-        """Set blur mode: gaussian|pixelate"""
         mode = mode.lower().strip()
         if mode not in {"gaussian", "pixelate"}:
             return await ctx.reply("Mode must be `gaussian` or `pixelate`.")
@@ -108,7 +122,6 @@ class OnePieceGuess(commands.Cog):
     @opguess_blur.command(name="strength")
     @commands.admin()
     async def opguess_blur_strength(self, ctx: commands.Context, value: int):
-        """Set blur radius (gaussian) or block size (pixelate)."""
         value = max(1, min(64, int(value)))
         blur = await self.engine.config.guild(ctx.guild).blur()
         blur["strength"] = value
@@ -195,7 +208,8 @@ class OnePieceGuess(commands.Cog):
         ch = ctx.guild.get_channel(g.get("channel_id") or 0)
         if not ch:
             return await ctx.reply("No channel configured. Use `opguess setchannel`.")
-        await self.engine.clear_active(ctx.guild)
+        await self.engine.set_expired(ctx.guild, True)  # mark old round done
+        # quick single post using same logic as scheduler
         await self._post_once(ctx.guild)
         await ctx.reply("Round posted (if character pool is not empty).")
 
@@ -230,23 +244,19 @@ class OnePieceGuess(commands.Cog):
 
         message = await channel.send(embed=emb, file=file) if file else await channel.send(embed=emb)
         await self.engine.set_active(guild, title=title, message=message)
+        await self.engine.set_expired(guild, False)
 
-    @opguess.command(name="end")
-    @commands.admin()
-    async def opguess_end(self, ctx: commands.Context):
-        await self.engine.clear_active(ctx.guild)
-        await ctx.reply("Round cleared.")
-
-    # ---- user ----
     @commands.hybrid_command(name="guess")
     @commands.guild_only()
     async def guess(self, ctx: commands.Context, *, name: str):
+        """Guess the character name; typos/aliases accepted."""
         ok, title = await self.engine.check_guess(ctx.guild, name)
         if not title:
             return await ctx.reply("No active round — wait for the next prompt.")
         if not ok:
             return await ctx.reply("Not quite. Try again!")
-        await self.engine.clear_active(ctx.guild)
+        # win!
+        await self.engine.set_expired(ctx.guild, True)  # keep cadence until next interval
         u = self.engine.config.user(ctx.author)
         wins = await u.wins() or 0
         await u.wins.set(wins + 1)
