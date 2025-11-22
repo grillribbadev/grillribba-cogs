@@ -53,9 +53,6 @@ class OnePieceGuess(commands.Cog):
     def cog_unload(self) -> None:
         self.tasks.cancel()
 
-    def _core(self):
-        return self.bot.get_cog("BeriCore")
-
     # --------- status ---------
     @commands.hybrid_group(name="opguess", invoke_without_command=True)
     @commands.guild_only()
@@ -65,10 +62,12 @@ class OnePieceGuess(commands.Cog):
         enabled = "ON" if g.get("enabled") else "OFF"
         ch = ctx.guild.get_channel(g.get("channel_id") or 0)
         blur = g.get("blur") or {}
+        tap = g.get("team_api") or {}
         await ctx.reply(
             "Status: **{enabled}**\nChannel: {channel}\nInterval: **{interval}s**\nRound timeout: **{roundtime}s**\n"
             "Reward: **{reward}**\nBlur: **{mode}** @ **{strength}** • B/W: **{bw}**\n"
-            "Hint: **{hint}** (max {maxc} chars)".format(
+            "Hint: **{hint}** (max {maxc} chars)\n"
+            "Teams API: **{ta_status}** (base: {ta_base}, path: {ta_path}, win_pts: {winp}, timeout_pts: {top})".format(
                 enabled=enabled,
                 channel=(ch.mention if ch else "—"),
                 interval=g.get("interval"),
@@ -79,6 +78,11 @@ class OnePieceGuess(commands.Cog):
                 bw=("ON" if blur.get("bw") else "OFF"),
                 hint=("ON" if g.get("hint_enabled") else "OFF"),
                 maxc=g.get("hint_max_chars"),
+                ta_status=("ON" if tap.get("enabled") else "OFF"),
+                ta_base=(tap.get("base_url") or "—"),
+                ta_path=(tap.get("endpoint_path") or "—"),
+                winp=int(tap.get("win_points") or 0),
+                top=int(tap.get("timeout_points") or 0),
             ),
             allowed_mentions=discord.AllowedMentions.none()
         )
@@ -235,7 +239,6 @@ class OnePieceGuess(commands.Cog):
 
         buf = io.BytesIO(json.dumps(payload, indent=2).encode("utf-8"))
         buf.seek(0)
-
         await ctx.reply(file=discord.File(buf, filename="onepiece_characters.json"))
 
     @opguess.command(name="forcepost")
@@ -316,10 +319,17 @@ class OnePieceGuess(commands.Cog):
         )
         emb.set_footer(text=f"Timer: {interval}s • Round timeout: {roundtime}s")
 
-        if gconf.get("hint_enabled") and extract:
-            maxn = int(gconf.get("hint_max_chars") or 200)
-            val = extract if len(extract) <= maxn else (extract[:maxn] + "…")
-            emb.add_field(name="Hint", value=val, inline=False)
+        if gconf.get("hint_enabled"):
+            # prefer custom hint if you added that to core; else wiki extract
+            try:
+                custom = await self.engine.get_hint(guild, title)  # exists if you took the custom hints patch
+            except Exception:
+                custom = None
+            text = custom if custom else extract
+            if text:
+                maxn = int(gconf.get("hint_max_chars") or 200)
+                val = text if len(text) <= maxn else (text[:maxn] + "…")
+                emb.add_field(name="Hint", value=val, inline=False)
 
         file = None
         if image_url:
@@ -340,22 +350,54 @@ class OnePieceGuess(commands.Cog):
     @commands.hybrid_command(name="guess")
     @commands.guild_only()
     async def guess(self, ctx: commands.Context, *, name: str):
-        """Guess the character name; typos/aliases accepted."""
+        """Guess the character name; typos/aliases accepted.
+        Wrong answers react with ❌ (no reply).
+        """
         ok, title = await self.engine.check_guess(ctx.guild, name)
-        if not title:
-            return await ctx.reply("No active round — wait for the next prompt.")
-        if not ok:
-            return await ctx.reply("Not quite. Try again!")
 
-        # Correct guess: mark expired (keep cadence until next interval)
+        # No active round — still tell the user quietly
+        if not title:
+            if getattr(ctx, "interaction", None):
+                if not ctx.interaction.response.is_done():
+                    await ctx.interaction.response.send_message(
+                        "No active round — wait for the next prompt.", ephemeral=True
+                    )
+            else:
+                await ctx.reply("No active round — wait for the next prompt.", delete_after=5)
+            return
+
+        # Wrong guess → react with ❌ (no chat reply)
+        if not ok:
+            if getattr(ctx, "message", None):
+                try:
+                    await ctx.message.add_reaction("❌")
+                    return
+                except (discord.Forbidden, discord.HTTPException):
+                    pass
+            # Slash or missing Add Reactions → tiny fallback
+            if getattr(ctx, "interaction", None) and not ctx.interaction.response.is_done():
+                await ctx.interaction.response.send_message("❌", ephemeral=True)
+            else:
+                await ctx.reply("❌", delete_after=2)
+            return
+
+        # ---- Correct guess flow ----
         await self.engine.set_expired(ctx.guild, True)
 
-        # Stats & (optional) reward (set reward 0 to disable payout cleanly)
+        # Stats & optional reward (set reward to 0 to disable payout cleanly)
         u = self.engine.config.user(ctx.author)
         wins = await u.wins() or 0
         await u.wins.set(wins + 1)
         reward = await self.engine.config.guild(ctx.guild).reward()
         await self.engine.reward(ctx.author, reward)
+
+        # If you added Teams API client in core.py, report win (guarded)
+        try:
+            api = getattr(self.engine, "team_api", None)
+            if api:
+                await api.send_win(ctx.guild, ctx.author, title)
+        except Exception:
+            pass
 
         # Fetch original (unblurred) image and attach on the “Correct!” embed
         file = None
@@ -379,11 +421,19 @@ class OnePieceGuess(commands.Cog):
         if file:
             emb.set_image(url="attachment://opguess_reveal.png")
 
-        await ctx.reply(
-            embed=emb,
-            file=file if file else discord.utils.MISSING,
-            allowed_mentions=discord.AllowedMentions.none(),
-        )
+        # For slash, respond if not yet; for prefix, normal reply.
+        if getattr(ctx, "interaction", None) and not ctx.interaction.response.is_done():
+            await ctx.interaction.response.send_message(
+                embed=emb,
+                file=file if file else discord.utils.MISSING,
+                allowed_mentions=discord.AllowedMentions.none()
+            )
+        else:
+            await ctx.reply(
+                embed=emb,
+                file=file if file else discord.utils.MISSING,
+                allowed_mentions=discord.AllowedMentions.none()
+            )
 
 
 async def setup(bot: Red):
