@@ -20,12 +20,16 @@ FANDOM_API = "https://onepiece.fandom.com/api.php"
 class GuessEngine:
     def __init__(self, bot: Red) -> None:
         self.bot = bot
+        # use a normal integer identifier (must be stable + unique-ish)
         self.config = Config.get_conf(self, identifier=2025111801, force_registration=True)
         self.config.register_guild(**DEFAULT_GUILD)
         self.config.register_user(**DEFAULT_USER)
 
     # ---------- fandom ----------
     async def fetch_page_brief(self, title: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+        """
+        Return (canonical_title, extract_intro, image_url) using MediaWiki Action API.
+        """
         params = {
             "action": "query",
             "format": "json",
@@ -69,7 +73,6 @@ class GuessEngine:
     def _blur_pixelate(im: Image.Image, block: int) -> Image.Image:
         block = max(4, min(64, int(block)))
         w, h = im.size
-        # downscale then upscale to pixelate
         im_small = im.resize((max(1, w // block), max(1, h // block)), Image.NEAREST)
         return im_small.resize((w, h), Image.NEAREST)
 
@@ -137,14 +140,28 @@ class GuessEngine:
             "title": title,
             "posted_message_id": message.id,
             "posted_channel_id": message.channel.id,
-            "started_at": int(time.time())
+            "started_at": int(time.time()),
+            "expired": False
         })
 
     async def get_active(self, guild: discord.Guild) -> Dict[str, Any]:
         return await self.config.guild(guild).active()
 
     async def clear_active(self, guild: discord.Guild) -> None:
-        await self.config.guild(guild).active.set({"title": None, "posted_message_id": None, "posted_channel_id": None, "started_at": 0})
+        await self.config.guild(guild).active.set({
+            "title": None,
+            "posted_message_id": None,
+            "posted_channel_id": None,
+            "started_at": 0,
+            "expired": False
+        })
+
+    async def set_expired(self, guild: discord.Guild, expired: bool = True) -> None:
+        active = await self.config.guild(guild).active()
+        if not active:
+            active = {}
+        active["expired"] = bool(expired)
+        await self.config.guild(guild).active.set(active)
 
     # ---------- reward ----------
     def _core(self):
@@ -160,12 +177,12 @@ class GuessEngine:
             pass
 
     # ---------- matching ----------
-    async def check_guess(self, guild: discord.Guild, user_guess: str) -> Tuple[bool, Optional[str]]:
+    async def check_guess(self, guild: discord.Guild, user_guess: str):
         active = await self.get_active(guild)
-        title = active.get("title")
-        if not title:
+        title = (active or {}).get("title")
+        expired = bool((active or {}).get("expired"))
+        if not title or expired:
             return False, None
         aliases = await self.get_aliases(guild, title)
         ok = is_guess_match(user_guess, title, aliases)
         return ok, title
-
