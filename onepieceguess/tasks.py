@@ -9,19 +9,20 @@ from .constants import COLOR_EMBED
 from .core import GuessEngine
 
 class GuessTasks:
+    """Encapsulates the background loop that posts new rounds."""
     def __init__(self, cog: commands.Cog, engine: GuessEngine):
         self.cog = cog
         self.engine = engine
-        self.loop = tasks.Loop(self._tick, seconds=60.0)
 
     async def start(self):
-        if not self.loop.is_running():
-            self.loop.start()
+        if not self._tick.is_running():
+            self._tick.start()
 
     def cancel(self):
-        if self.loop.is_running():
-            self.loop.cancel()
+        if self._tick.is_running():
+            self._tick.cancel()
 
+    @tasks.loop(seconds=60.0)
     async def _tick(self):
         bot = self.cog.bot
         for guild in list(bot.guilds):
@@ -37,6 +38,7 @@ class GuessTasks:
             last_start = int(active.get("started_at") or 0)
             now = int(time.time())
             if active.get("title") and (now - last_start) < interval:
+                # Round still “fresh”; wait until interval elapses
                 continue
 
             channel = guild.get_channel(int(channel_id))
@@ -50,7 +52,6 @@ class GuessTasks:
             ctitle, extract, image_url = await self.engine.fetch_page_brief(title)
             display_title = ctitle or title
 
-            # Build embed
             emb = discord.Embed(
                 title="🗺️ Guess the One Piece Character!",
                 description="Reply with `.guess <name>` (prefix) or `/guess` if enabled.\n"
@@ -60,11 +61,10 @@ class GuessTasks:
             emb.set_footer(text=f"Timer: {interval}s • Title seeded from: {display_title}")
 
             # Text hint?
-            if gconf.get("hint_enabled"):
-                if extract:
-                    maxn = int(gconf.get("hint_max_chars") or 200)
-                    val = extract if len(extract) <= maxn else (extract[:maxn] + "…")
-                    emb.add_field(name="Hint", value=val, inline=False)
+            if gconf.get("hint_enabled") and extract:
+                maxn = int(gconf.get("hint_max_chars") or 200)
+                val = extract if len(extract) <= maxn else (extract[:maxn] + "…")
+                emb.add_field(name="Hint", value=val, inline=False)
 
             # Blurred image
             file = None
@@ -83,3 +83,8 @@ class GuessTasks:
                 continue
 
             await self.engine.set_active(guild, title=title, message=message)
+
+    @_tick.before_loop
+    async def _before_tick(self):
+        # Wait until Red + the bot are ready
+        await self.cog.bot.wait_until_red_ready()
