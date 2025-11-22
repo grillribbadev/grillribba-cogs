@@ -66,17 +66,24 @@ class GuessEngine:
 
     @staticmethod
     def _blur_gaussian(im: Image.Image, radius: int) -> Image.Image:
-        radius = max(1, min(64, int(radius)))
+        # cap raised to 250
+        radius = max(1, min(250, int(radius)))
         return im.filter(ImageFilter.GaussianBlur(radius=radius))
 
     @staticmethod
     def _blur_pixelate(im: Image.Image, block: int) -> Image.Image:
-        block = max(4, min(64, int(block)))
+        # cap block size to 250 and to half of the short edge to avoid degenerate sizes
         w, h = im.size
+        max_block_by_size = max(4, min(w, h) // 2)
+        block = max(4, min(250, max_block_by_size, int(block)))
         im_small = im.resize((max(1, w // block), max(1, h // block)), Image.NEAREST)
         return im_small.resize((w, h), Image.NEAREST)
 
-    async def make_blurred(self, image_url: str, *, mode: str, strength: int) -> Optional[BytesIO]:
+    async def make_blurred(self, image_url: str, *, mode: str, strength: int, bw: bool = False) -> Optional[BytesIO]:
+        """
+        Download image, optionally convert to black & white, then blur.
+        Returns a BytesIO PNG buffer ready for discord.File.
+        """
         data = await self._download_image(image_url)
         if not data:
             return None
@@ -84,10 +91,19 @@ class GuessEngine:
             im = Image.open(BytesIO(data)).convert("RGBA")
         except Exception:
             return None
+
+        # optional black & white mode (grayscale), keep alpha if present
+        if bw:
+            # convert to L (grayscale), then back to RGBA for consistent PNG with alpha channel
+            gray = im.convert("L")
+            im = Image.merge("RGBA", (gray, gray, gray, im.split()[-1] if im.mode == "RGBA" else Image.new("L", im.size, 255)))
+
+        # blur
         if mode == "pixelate":
             out = self._blur_pixelate(im, strength)
         else:
             out = self._blur_gaussian(im, strength)
+
         buf = BytesIO()
         out.save(buf, format="PNG")
         buf.seek(0)
