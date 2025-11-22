@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Optional
 from io import BytesIO
 import aiohttp
-import io  # for export buffer
+import io
 
 import discord
 from redbot.core import commands
@@ -67,7 +67,7 @@ class OnePieceGuess(commands.Cog):
             "Status: **{enabled}**\nChannel: {channel}\nInterval: **{interval}s**\nRound timeout: **{roundtime}s**\n"
             "Reward: **{reward}**\nBlur: **{mode}** @ **{strength}** • B/W: **{bw}**\n"
             "Hint: **{hint}** (max {maxc} chars)\n"
-            "Teams API: **{ta_status}** (base: {ta_base}, path: {ta_path}, win_pts: {winp}, timeout_pts: {top})".format(
+            "Teams: **{ta_status}** (mode: {mode}, win_pts: {winp}, timeout_pts: {top})".format(
                 enabled=enabled,
                 channel=(ch.mention if ch else "—"),
                 interval=g.get("interval"),
@@ -79,8 +79,7 @@ class OnePieceGuess(commands.Cog):
                 hint=("ON" if g.get("hint_enabled") else "OFF"),
                 maxc=g.get("hint_max_chars"),
                 ta_status=("ON" if tap.get("enabled") else "OFF"),
-                ta_base=(tap.get("base_url") or "—"),
-                ta_path=(tap.get("endpoint_path") or "—"),
+                mode=(tap.get("mode") or "teamscog"),
                 winp=int(tap.get("win_points") or 0),
                 top=int(tap.get("timeout_points") or 0),
             ),
@@ -203,7 +202,7 @@ class OnePieceGuess(commands.Cog):
         await self.engine.upsert_aliases(ctx.guild, title, aliases)
         await ctx.reply(f"Aliases set for **{title}**: {', '.join(aliases) if aliases else '—'}")
 
-    # ---- admin: import/export ----
+    # ---- import/export ----
     @opguess.command(name="import")
     @commands.admin()
     async def opguess_import(self, ctx: commands.Context):
@@ -221,9 +220,13 @@ class OnePieceGuess(commands.Cog):
         elif isinstance(payload, dict):
             titles = [str(x) for x in payload.get("characters", [])]
             aliases = payload.get("aliases", {})
+            hints = payload.get("hints", {})
             await self.engine.config.guild(ctx.guild).characters.set(titles)
             await self.engine.config.guild(ctx.guild).aliases.set(
                 {str(k): [str(v) for v in vs] for k, vs in aliases.items()}
+            )
+            await self.engine.config.guild(ctx.guild).hints.set(
+                {str(k): str(v) for k, v in hints.items()}
             )
         else:
             return await ctx.reply("Unsupported JSON structure.")
@@ -232,11 +235,10 @@ class OnePieceGuess(commands.Cog):
     @opguess.command(name="export")
     @commands.admin()
     async def opguess_export(self, ctx: commands.Context):
-        """Export current pool + aliases as a JSON attachment."""
         titles = await self.engine.config.guild(ctx.guild).characters()
         aliases = await self.engine.config.guild(ctx.guild).aliases()
-        payload = {"characters": titles, "aliases": aliases}
-
+        hints = await self.engine.config.guild(ctx.guild).hints()
+        payload = {"characters": titles, "aliases": aliases, "hints": hints}
         buf = io.BytesIO(json.dumps(payload, indent=2).encode("utf-8"))
         buf.seek(0)
         await ctx.reply(file=discord.File(buf, filename="onepiece_characters.json"))
@@ -252,7 +254,53 @@ class OnePieceGuess(commands.Cog):
         await self._post_once(ctx.guild)
         await ctx.reply("Round posted (if character pool is not empty).")
 
-    # Reveal the current answer (DM by default; can post here; can end round)
+    # ---- Teams settings (simple): toggle + mode + points ----
+    @opguess.group(name="teamapi", invoke_without_command=True)
+    @commands.admin()
+    async def opguess_teamapi(self, ctx: commands.Context):
+        t = await self.engine.config.guild(ctx.guild).team_api()
+        await ctx.reply(
+            "Teams is **{state}** | mode: `{mode}` | win_pts: **{winp}** | timeout_pts: **{top}**".format(
+                state=("ON" if t.get("enabled") else "OFF"),
+                mode=(t.get("mode") or "teamscog"),
+                winp=int(t.get("win_points") or 0),
+                top=int(t.get("timeout_points") or 0),
+            )
+        )
+
+    @opguess_teamapi.command(name="toggle")
+    @commands.admin()
+    async def opguess_teamapi_toggle(self, ctx: commands.Context, on_off: Optional[bool] = None):
+        t = await self.engine.config.guild(ctx.guild).team_api()
+        new = (not bool(t.get("enabled"))) if on_off is None else bool(on_off)
+        t["enabled"] = new
+        # default to teamscog mode since we have the cog
+        t["mode"] = t.get("mode") or "teamscog"
+        await self.engine.config.guild(ctx.guild).team_api.set(t)
+        await ctx.reply(f"Teams integration **{'enabled' if new else 'disabled'}** (mode: {t['mode']}).")
+
+    @opguess_teamapi.command(name="mode")
+    @commands.admin()
+    async def opguess_teamapi_mode(self, ctx: commands.Context, mode: str):
+        """Set integration mode: teamscog | http"""
+        mode = mode.lower().strip()
+        if mode not in {"teamscog", "http"}:
+            return await ctx.reply("Mode must be `teamscog` or `http`.")
+        t = await self.engine.config.guild(ctx.guild).team_api()
+        t["mode"] = mode
+        await self.engine.config.guild(ctx.guild).team_api.set(t)
+        await ctx.reply(f"Teams mode set to **{mode}**")
+
+    @opguess_teamapi.command(name="setpoints")
+    @commands.admin()
+    async def opguess_teamapi_setpoints(self, ctx: commands.Context, win_points: int, timeout_points: int = 0):
+        t = await self.engine.config.guild(ctx.guild).team_api()
+        t["win_points"] = int(win_points)
+        t["timeout_points"] = int(timeout_points)
+        await self.engine.config.guild(ctx.guild).team_api.set(t)
+        await ctx.reply(f"Set points — win: {int(win_points)}, timeout: {int(timeout_points)}")
+
+    # ---- reveal ----
     @opguess.command(name="reveal")
     @commands.admin()
     async def opguess_reveal(self, ctx: commands.Context, visibility: Optional[str] = "dm", end: Optional[bool] = False):
@@ -320,9 +368,9 @@ class OnePieceGuess(commands.Cog):
         emb.set_footer(text=f"Timer: {interval}s • Round timeout: {roundtime}s")
 
         if gconf.get("hint_enabled"):
-            # prefer custom hint if you added that to core; else wiki extract
+            # prefer custom hint if available; else wiki extract
             try:
-                custom = await self.engine.get_hint(guild, title)  # exists if you took the custom hints patch
+                custom = await self.engine.get_hint(guild, title)
             except Exception:
                 custom = None
             text = custom if custom else extract
@@ -350,12 +398,9 @@ class OnePieceGuess(commands.Cog):
     @commands.hybrid_command(name="guess")
     @commands.guild_only()
     async def guess(self, ctx: commands.Context, *, name: str):
-        """Guess the character name; typos/aliases accepted.
-        Wrong answers react with ❌ (no reply).
-        """
+        """Guess the character; wrong answers get a ❌ reaction."""
         ok, title = await self.engine.check_guess(ctx.guild, name)
 
-        # No active round — still tell the user quietly
         if not title:
             if getattr(ctx, "interaction", None):
                 if not ctx.interaction.response.is_done():
@@ -366,7 +411,6 @@ class OnePieceGuess(commands.Cog):
                 await ctx.reply("No active round — wait for the next prompt.", delete_after=5)
             return
 
-        # Wrong guess → react with ❌ (no chat reply)
         if not ok:
             if getattr(ctx, "message", None):
                 try:
@@ -374,32 +418,53 @@ class OnePieceGuess(commands.Cog):
                     return
                 except (discord.Forbidden, discord.HTTPException):
                     pass
-            # Slash or missing Add Reactions → tiny fallback
             if getattr(ctx, "interaction", None) and not ctx.interaction.response.is_done():
                 await ctx.interaction.response.send_message("❌", ephemeral=True)
             else:
                 await ctx.reply("❌", delete_after=2)
             return
 
-        # ---- Correct guess flow ----
+        # Correct!
         await self.engine.set_expired(ctx.guild, True)
 
-        # Stats & optional reward (set reward to 0 to disable payout cleanly)
+        # Stats & optional local reward
         u = self.engine.config.user(ctx.author)
         wins = await u.wins() or 0
         await u.wins.set(wins + 1)
         reward = await self.engine.config.guild(ctx.guild).reward()
         await self.engine.reward(ctx.author, reward)
 
-        # If you added Teams API client in core.py, report win (guarded)
+        # ---- AAA3A Teams cog integration (direct) ----
         try:
-            api = getattr(self.engine, "team_api", None)
-            if api:
-                await api.send_win(ctx.guild, ctx.author, title)
+            tconf = await self.engine.config.guild(ctx.guild).team_api()
+            if tconf.get("enabled"):
+                win_pts = int(tconf.get("win_points") or 0)
+                mode = (tconf.get("mode") or "teamscog").lower()
+                if win_pts > 0:
+                    if mode == "teamscog":
+                        teams_cog = self.bot.get_cog("Teams")
+                        if teams_cog:
+                            # find the team this member belongs to
+                            team = next(
+                                (t for t in teams_cog.teams.get(ctx.guild.id, {}).values() if ctx.author in t.members),
+                                None,
+                            )
+                            if team:
+                                manager = ctx.guild.me  # show as managed by the bot in history
+                                try:
+                                    await team.add_points(win_pts, ctx.author, manager)
+                                except Exception:
+                                    pass
+                    else:
+                        # if you still want HTTP mode, keep this; otherwise you can remove
+                        try:
+                            await self.engine.team_api.send_win(ctx.guild, ctx.author, title)
+                        except Exception:
+                            pass
         except Exception:
             pass
 
-        # Fetch original (unblurred) image and attach on the “Correct!” embed
+        # Unblurred reveal on correct guess
         file = None
         try:
             ctitle, _extract, image_url = await self.engine.fetch_page_brief(title)
@@ -421,7 +486,6 @@ class OnePieceGuess(commands.Cog):
         if file:
             emb.set_image(url="attachment://opguess_reveal.png")
 
-        # For slash, respond if not yet; for prefix, normal reply.
         if getattr(ctx, "interaction", None) and not ctx.interaction.response.is_done():
             await ctx.interaction.response.send_message(
                 embed=emb,
