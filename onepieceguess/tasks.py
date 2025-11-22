@@ -2,6 +2,8 @@ from __future__ import annotations
 from discord.ext import tasks
 import discord
 import time
+import aiohttp
+from io import BytesIO
 
 from redbot.core import commands
 
@@ -9,7 +11,7 @@ from .constants import COLOR_EMBED
 from .core import GuessEngine
 
 class GuessTasks:
-    """Encapsulates the background loop that posts new rounds."""
+    """Background loop that posts/ends rounds on schedule."""
     def __init__(self, cog: commands.Cog, engine: GuessEngine):
         self.cog = cog
         self.engine = engine
@@ -29,28 +31,74 @@ class GuessTasks:
             gconf = await self.engine.config.guild(guild).all()
             if not gconf.get("enabled"):
                 continue
+
             channel_id = gconf.get("channel_id")
-            interval = int(gconf.get("interval") or 0)
-            if not channel_id or interval <= 0:
+            interval   = int(gconf.get("interval") or 0)   # cadence
+            roundtime  = int(gconf.get("roundtime") or 0)  # per-round timeout
+            if not channel_id or interval <= 0 or roundtime <= 0:
                 continue
 
             active = gconf.get("active") or {}
-            last_start = int(active.get("started_at") or 0)
+            title = active.get("title")
+            started_at = int(active.get("started_at") or 0)
+            expired = bool(active.get("expired"))
             now = int(time.time())
-            if active.get("title") and (now - last_start) < interval:
-                # Round still “fresh”; wait until interval elapses
-                continue
 
+            # 1) If a round is active and not expired, enforce roundtime
+            if title and not expired:
+                if now - started_at >= roundtime:
+                    channel = guild.get_channel(int(channel_id))
+                    if channel:
+                        ctitle, _extract, img = await self.engine.fetch_page_brief(title)
+                        reveal = discord.Embed(
+                            title="⏰ Time's up!",
+                            description=f"No one guessed the correct character.\n**Answer:** {ctitle or title}",
+                            color=discord.Color.orange()
+                        )
+                        # (optional) attach unblurred image on reveal
+                        if img:
+                            try:
+                                async with aiohttp.ClientSession() as s:
+                                    async with s.get(img, timeout=12) as r:
+                                        if r.status == 200:
+                                            buf = BytesIO(await r.read()); buf.seek(0)
+                                            file = discord.File(buf, filename="opguess_reveal.png")
+                                            reveal.set_image(url="attachment://opguess_reveal.png")
+                                            await channel.send(embed=reveal, file=file)
+                                            file = None
+                                            reveal = None
+                                            # fallthrough
+                                            pass
+                                        else:
+                                            await channel.send(embed=reveal)
+                            except Exception:
+                                try:
+                                    await channel.send(embed=reveal)
+                                except Exception:
+                                    pass
+                        else:
+                            try:
+                                await channel.send(embed=reveal)
+                            except Exception:
+                                pass
+                    # lock this round until cadence says it's time for a new one
+                    await self.engine.set_expired(guild, True)
+
+                # While within the cadence window, do not post a new round
+                if now - started_at < interval:
+                    continue
+
+            # 2) If cadence window passed (or no active), post a new round
             channel = guild.get_channel(int(channel_id))
             if not channel:
                 continue
 
-            title = await self.engine.pick_random_title(guild)
-            if not title:
+            new_title = await self.engine.pick_random_title(guild)
+            if not new_title:
                 continue
 
-            ctitle, extract, image_url = await self.engine.fetch_page_brief(title)
-            display_title = ctitle or title
+            ctitle, extract, image_url = await self.engine.fetch_page_brief(new_title)
+            display_title = ctitle or new_title
 
             emb = discord.Embed(
                 title="🗺️ Guess the One Piece Character!",
@@ -58,15 +106,15 @@ class GuessTasks:
                             "Typos and common aliases are accepted.",
                 color=COLOR_EMBED
             )
-            emb.set_footer(text=f"Timer: {interval}s • Title seeded from: {display_title}")
+            emb.set_footer(text=f"Timer: {interval}s • Round timeout: {roundtime}s • Title seeded from: {display_title}")
 
-            # Text hint?
+            # hint text
             if gconf.get("hint_enabled") and extract:
                 maxn = int(gconf.get("hint_max_chars") or 200)
                 val = extract if len(extract) <= maxn else (extract[:maxn] + "…")
                 emb.add_field(name="Hint", value=val, inline=False)
 
-            # Blurred image
+            # blurred image
             file = None
             if image_url:
                 blur = gconf.get("blur") or {}
@@ -82,9 +130,9 @@ class GuessTasks:
             except Exception:
                 continue
 
-            await self.engine.set_active(guild, title=title, message=message)
+            await self.engine.set_active(guild, title=new_title, message=message)
+            await self.engine.set_expired(guild, False)
 
     @_tick.before_loop
     async def _before_tick(self):
-        # Wait until Red + the bot are ready
         await self.cog.bot.wait_until_red_ready()
