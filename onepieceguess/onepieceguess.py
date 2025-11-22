@@ -63,28 +63,19 @@ class OnePieceGuess(commands.Cog):
         ch = ctx.guild.get_channel(g.get("channel_id") or 0)
         blur = g.get("blur") or {}
         tap = g.get("team_api") or {}
-        await ctx.reply(
-            "Status: **{enabled}**\nChannel: {channel}\nInterval: **{interval}s**\nRound timeout: **{roundtime}s**\n"
-            "Reward: **{reward}**\nBlur: **{mode}** @ **{strength}** • B/W: **{bw}**\n"
-            "Hint: **{hint}** (max {maxc} chars)\n"
-            "Teams: **{ta_status}** (mode: {mode}, win_pts: {winp}, timeout_pts: {top})".format(
-                enabled=enabled,
-                channel=(ch.mention if ch else "—"),
-                interval=g.get("interval"),
-                roundtime=g.get("roundtime"),
-                reward=g.get("reward"),
-                mode=blur.get("mode", "gaussian"),
-                strength=blur.get("strength", 8),
-                bw=("ON" if blur.get("bw") else "OFF"),
-                hint=("ON" if g.get("hint_enabled") else "OFF"),
-                maxc=g.get("hint_max_chars"),
-                ta_status=("ON" if tap.get("enabled") else "OFF"),
-                mode=(tap.get("mode") or "teamscog"),
-                winp=int(tap.get("win_points") or 0),
-                top=int(tap.get("timeout_points") or 0),
-            ),
-            allowed_mentions=discord.AllowedMentions.none()
+
+        status = (
+            f"Status: **{enabled}**\n"
+            f"Channel: {ch.mention if ch else '—'}\n"
+            f"Interval: **{g.get('interval')}s**\n"
+            f"Round timeout: **{g.get('roundtime')}s**\n"
+            f"Reward: **{g.get('reward')}**\n"
+            f"Blur: **{blur.get('mode','gaussian')}** @ **{blur.get('strength',8)}** • B/W: **{'ON' if blur.get('bw') else 'OFF'}**\n"
+            f"Hint: **{'ON' if g.get('hint_enabled') else 'OFF'}** (max {g.get('hint_max_chars')} chars)\n"
+            f"Teams: **{'ON' if tap.get('enabled') else 'OFF'}** (mode: {tap.get('mode') or 'teamscog'}, "
+            f"win_pts: {int(tap.get('win_points') or 0)}, timeout_pts: {int(tap.get('timeout_points') or 0)})"
         )
+        await ctx.reply(status, allowed_mentions=discord.AllowedMentions.none())
 
     # ---- admin: toggle/channel/interval/reward/roundtime ----
     @opguess.command(name="toggle")
@@ -260,12 +251,8 @@ class OnePieceGuess(commands.Cog):
     async def opguess_teamapi(self, ctx: commands.Context):
         t = await self.engine.config.guild(ctx.guild).team_api()
         await ctx.reply(
-            "Teams is **{state}** | mode: `{mode}` | win_pts: **{winp}** | timeout_pts: **{top}**".format(
-                state=("ON" if t.get("enabled") else "OFF"),
-                mode=(t.get("mode") or "teamscog"),
-                winp=int(t.get("win_points") or 0),
-                top=int(t.get("timeout_points") or 0),
-            )
+            f"Teams is **{'ON' if t.get('enabled') else 'OFF'}** | mode: `{t.get('mode') or 'teamscog'}` | "
+            f"win_pts: **{int(t.get('win_points') or 0)}** | timeout_pts: **{int(t.get('timeout_points') or 0)}**"
         )
 
     @opguess_teamapi.command(name="toggle")
@@ -274,7 +261,6 @@ class OnePieceGuess(commands.Cog):
         t = await self.engine.config.guild(ctx.guild).team_api()
         new = (not bool(t.get("enabled"))) if on_off is None else bool(on_off)
         t["enabled"] = new
-        # default to teamscog mode since we have the cog
         t["mode"] = t.get("mode") or "teamscog"
         await self.engine.config.guild(ctx.guild).team_api.set(t)
         await ctx.reply(f"Teams integration **{'enabled' if new else 'disabled'}** (mode: {t['mode']}).")
@@ -456,7 +442,7 @@ class OnePieceGuess(commands.Cog):
                                 except Exception:
                                     pass
                     else:
-                        # if you still want HTTP mode, keep this; otherwise you can remove
+                        # if you still use HTTP mode via team_api.py
                         try:
                             await self.engine.team_api.send_win(ctx.guild, ctx.author, title)
                         except Exception:
