@@ -27,10 +27,10 @@ class GuessEngine:
         self.config.register_guild(**DEFAULT_GUILD)
         self.config.register_user(**DEFAULT_USER)
 
-    # ---------------- migration helpers ----------------
+    # ---------------- migrations ----------------
 
     async def ensure_mode_migrated(self, guild: discord.Guild) -> None:
-        """Seed blur_by_mode from legacy blur if needed; ensure current_mode exists."""
+        """Seed per-mode blur from legacy blur; ensure current_mode & half_hint_sent exist."""
         g = await self.config.guild(guild).all()
         if not g.get("blur_by_mode"):
             legacy = g.get("blur") or {"mode": "gaussian", "strength": 8, "bw": False}
@@ -45,6 +45,17 @@ class GuessEngine:
         if "half_hint_sent" not in act:
             act["half_hint_sent"] = False
             await self.config.guild(guild).active.set(act)
+
+    async def ensure_pool_migrated(self, guild: discord.Guild) -> None:
+        """Move legacy `characters` into characters_by_mode['characters'] if empty."""
+        g = await self.config.guild(guild).all()
+        by = g.get("characters_by_mode") or {}
+        if not by:
+            by = {"characters": [], "devilfruits": [], "ships": []}
+        legacy = g.get("characters") or []
+        if legacy and not by.get("characters"):
+            by["characters"] = list(legacy)
+        await self.config.guild(guild).characters_by_mode.set(by)
 
     # ---------------- active round helpers ----------------
 
@@ -83,10 +94,11 @@ class GuessEngine:
         mode = await self.get_current_mode(guild)
         bm = await self.config.guild(guild).blur_by_mode()
         prof = bm.get(mode) or bm.get("characters") or {"mode": "gaussian", "strength": 8, "bw": False}
-        # sanity clamp
-        prof["mode"] = str(prof.get("mode") or "gaussian").lower()
-        prof["strength"] = max(1, min(250, int(prof.get("strength") or 8)))
-        prof["bw"] = bool(prof.get("bw"))
+        prof = {
+            "mode": str(prof.get("mode") or "gaussian").lower(),
+            "strength": max(1, min(250, int(prof.get("strength") or 8))),
+            "bw": bool(prof.get("bw")),
+        }
         return prof
 
     async def update_blur_for_mode(self, guild: discord.Guild, **entries) -> Dict[str, object]:
@@ -99,25 +111,40 @@ class GuessEngine:
         await self.config.guild(guild).blur_by_mode.set(bm)
         return cur
 
-    # ---------------- pool & aliases ----------------
+    # ---------------- per-mode pools ----------------
+
+    async def _get_pool_for_current_mode(self, guild: discord.Guild) -> List[str]:
+        mode = (await self.config.guild(guild).current_mode()) or "characters"
+        by = await self.config.guild(guild).characters_by_mode()
+        return list(by.get(mode, []))
+
+    async def _set_pool_for_current_mode(self, guild: discord.Guild, new_list: List[str]) -> None:
+        mode = (await self.config.guild(guild).current_mode()) or "characters"
+        by = await self.config.guild(guild).characters_by_mode()
+        by[mode] = list(new_list)
+        await self.config.guild(guild).characters_by_mode.set(by)
 
     async def list_characters(self, guild: discord.Guild) -> List[str]:
-        return await self.config.guild(guild).characters()
+        """List entries for the CURRENT MODE."""
+        return await self._get_pool_for_current_mode(guild)
 
     async def add_character(self, guild: discord.Guild, title: str) -> bool:
-        items = await self.config.guild(guild).characters()
+        """Add entry to CURRENT MODE pool."""
+        items = await self._get_pool_for_current_mode(guild)
         if title in items:
             return False
         items.append(title)
-        await self.config.guild(guild).characters.set(items)
+        await self._set_pool_for_current_mode(guild, items)
         return True
 
     async def remove_character(self, guild: discord.Guild, title: str) -> bool:
-        items = await self.config.guild(guild).characters()
+        """Remove entry from CURRENT MODE pool (also cleans aliases/hints for that title)."""
+        items = await self._get_pool_for_current_mode(guild)
         if title not in items:
             return False
         items.remove(title)
-        await self.config.guild(guild).characters.set(items)
+        await self._set_pool_for_current_mode(guild, items)
+        # cleanup optional hint & aliases
         aliases = await self.config.guild(guild).aliases()
         aliases.pop(title, None)
         await self.config.guild(guild).aliases.set(aliases)
@@ -126,29 +153,24 @@ class GuessEngine:
         await self.config.guild(guild).hints.set(hints)
         return True
 
-    async def upsert_aliases(self, guild: discord.Guild, title: str, aliases: List[str]) -> None:
-        m = await self.config.guild(guild).aliases()
-        m[str(title)] = list(dict.fromkeys([a for a in aliases if a]))  # dedup/preserve order
-        await self.config.guild(guild).aliases.set(m)
-
-    async def get_hint(self, guild: discord.Guild, title: str) -> Optional[str]:
-        hints = await self.config.guild(guild).hints()
-        return hints.get(title)
-
     async def pick_random_title(self, guild: discord.Guild) -> Optional[str]:
-        items = await self.config.guild(guild).characters()
+        """Pick from CURRENT MODE pool."""
+        items = await self._get_pool_for_current_mode(guild)
         return random.choice(items) if items else None
 
     # ---------------- answer checking ----------------
 
     async def check_guess(self, guild: discord.Guild, user_input: str) -> Tuple[bool, Optional[str]]:
         active = await self.get_active(guild)
+        # No round or expired → treat as no active round
         if not active or not active.get("title") or active.get("expired"):
             return False, None
+
         title = active["title"]
         aliases = await self.config.guild(guild).aliases()
         keys = [title] + aliases.get(title, [])
         normalized_guess = self._normalize(user_input)
+
         for key in keys:
             if self._is_match(normalized_guess, key):
                 return True, title
@@ -172,9 +194,12 @@ class GuessEngine:
         k_tokens = set(t for t in k.split() if len(t) >= 3)
         return bool(g_tokens & k_tokens)
 
-    # ---------------- fandom API ----------------
+    # ---------------- fandom API helpers ----------------
 
     async def fetch_page_brief(self, title: str):
+        """
+        Return (normalized_title, extract_text, main_image_url)
+        """
         params = {
             "action": "query",
             "prop": "extracts|pageimages",
@@ -196,48 +221,71 @@ class GuessEngine:
         return normalized_title, extract, image_url
 
     async def get_random_quote(self, title: str, forbidden: List[str]) -> Optional[str]:
-        # get "Quotes" section index
+        # 1) find the section index for 'Quotes'
         params = {"action": "parse", "page": title, "prop": "sections", "format": "json"}
         async with aiohttp.ClientSession() as s:
             async with s.get(ONEPIECE_API, params=params, timeout=15) as r:
                 data = await r.json()
+
         sections = data.get("parse", {}).get("sections", []) or []
         quotes_idx = None
         for sec in sections:
             if "quotes" in (sec.get("line") or "").lower():
-                quotes_idx = sec.get("index"); break
+                quotes_idx = sec.get("index")
+                break
         if quotes_idx is None:
             return None
-        # fetch quotes section wikitext
-        params = {"action": "parse", "page": title, "section": quotes_idx, "prop": "wikitext", "format": "json"}
+
+        # 2) fetch the section wikitext and extract bullet lines
+        params = {
+            "action": "parse",
+            "page": title,
+            "section": quotes_idx,
+            "prop": "wikitext",
+            "format": "json",
+        }
         async with aiohttp.ClientSession() as s:
             async with s.get(ONEPIECE_API, params=params, timeout=15) as r:
                 data = await r.json()
+
         wikitext = (data.get("parse", {}).get("wikitext", {}) or {}).get("*", "") or ""
         if not wikitext:
             return None
+
+        # split by lines starting with *
         lines = [ln.strip() for ln in wikitext.splitlines() if ln.strip().startswith("*")]
-        if not lines: return None
+        if not lines:
+            return None
+
+        # strip simple wiki markup and filter
         import re as _re
-        cands: List[str] = []
+        candidates: List[str] = []
         for ln in lines:
             text = ln.lstrip("*").strip()
-            # strip simple wiki markup
+            # strip links
             text = _re.sub(r"\[\[([^|\]]+)\|([^\]]+)\]\]", r"\2", text)
             text = _re.sub(r"\[\[([^\]]+)\]\]", r"\1", text)
-            text = text.replace("'''''","").replace("'''","").replace("''","")
+            # italics/bold
+            text = text.replace("'''''", "").replace("'''", "").replace("''", "")
+            # templates
             text = _re.sub(r"\{\{[^}]+\}\}", "", text)
-            text = _re.sub(r"<ref[^>]*>.*?</ref>", "", text, flags=_re.DOTALL|_re.IGNORECASE)
+            # refs
+            text = _re.sub(r"<ref[^>]*>.*?</ref>", "", text, flags=_re.DOTALL | _re.IGNORECASE)
             text = _re.sub(r"<ref[^/]*/>", "", text, flags=_re.IGNORECASE)
+            # html tags
             text = _re.sub(r"<[^>]+>", "", text)
+            # leading "Name: "
             text = _re.sub(r"^[^:]{1,40}:\s+", "", text).strip()
-            if not text: continue
+            if not text:
+                continue
             low = text.lower()
             if any(tok in low for tok in forbidden):
                 continue
-            cands.append(text)
-        if not cands: return None
-        return random.choice(cands)
+            candidates.append(text)
+
+        if not candidates:
+            return None
+        return random.choice(candidates)
 
     # ---------------- image processing ----------------
 
@@ -272,5 +320,8 @@ class GuessEngine:
         buf.seek(0)
         return buf
 
+    # ---------------- local reward hook ----------------
+
     async def reward(self, member: discord.Member, amount: int) -> None:
+        # placeholder for coins/other reward systems; no-op if amount == 0
         return
