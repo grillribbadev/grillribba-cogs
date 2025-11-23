@@ -6,7 +6,6 @@ from io import BytesIO
 import aiohttp
 import io
 import time
-import re
 
 import discord
 from redbot.core import commands
@@ -20,6 +19,18 @@ DATA_DIR = Path(__file__).parent / "data"
 SEED_FILE = DATA_DIR / "character_pool.json"
 
 
+def _mode_label(mode: str) -> str:
+    if mode == "fruit":
+        return "Devil Fruit"
+    if mode == "ship":
+        return "Ship"
+    return "One Piece Character"
+
+
+def _plural_label(mode: str) -> str:
+    return {"fruit": "Devil Fruits", "ship": "Ships"}.get(mode, "Characters")
+
+
 class OnePieceGuess(commands.Cog):
     """Timed One Piece guessing game using Fandom API. Blurred images. Fully configurable."""
 
@@ -29,7 +40,7 @@ class OnePieceGuess(commands.Cog):
         self.tasks = GuessTasks(self, self.engine)
 
     async def cog_load(self) -> None:
-        # seed characters into config on first load if empty
+        # seed characters into config on first load if empty (back-compat only)
         for guild in self.bot.guilds:
             chars = await self.engine.config.guild(guild).characters()
             if not chars and SEED_FILE.exists():
@@ -49,6 +60,19 @@ class OnePieceGuess(commands.Cog):
             if "expired" not in active:
                 active["expired"] = False
                 await self.engine.config.guild(guild).active.set(active)
+            if "mode" not in g:
+                await self.engine.config.guild(guild).mode.set("character")
+            # ensure new pools exist
+            for key in ("fruits", "fruit_aliases", "fruit_hints", "ships", "ship_aliases", "ship_hints"):
+                if key not in g:
+                    await getattr(self.engine.config.guild(guild), key).set([] if key in ("fruits", "ships") else {})
+            # image failsafe defaults
+            if "require_image" not in g:
+                await self.engine.config.guild(guild).require_image.set(
+                    {"character": False, "fruit": True, "ship": True}
+                )
+            if "noimage_max_retries" not in g:
+                await self.engine.config.guild(guild).noimage_max_retries.set(6)
 
         await self.tasks.start()
 
@@ -61,12 +85,16 @@ class OnePieceGuess(commands.Cog):
     async def opguess(self, ctx: commands.Context):
         """OnePieceGuess: admin & status."""
         g = await self.engine.config.guild(ctx.guild).all()
+        mode = (g.get("mode") or "character").lower()
         enabled = "ON" if g.get("enabled") else "OFF"
         ch = ctx.guild.get_channel(g.get("channel_id") or 0)
         blur = g.get("blur") or {}
         tap = g.get("team_api") or {}
+        ri = g.get("require_image") or {}
+        retries = int(g.get("noimage_max_retries") or 6)
 
         status = (
+            f"Mode: **{mode}** ({_plural_label(mode)})\n"
             f"Status: **{enabled}**\n"
             f"Channel: {ch.mention if ch else '—'}\n"
             f"Interval: **{g.get('interval')}s**\n"
@@ -74,47 +102,22 @@ class OnePieceGuess(commands.Cog):
             f"Reward: **{g.get('reward')}**\n"
             f"Blur: **{blur.get('mode','gaussian')}** @ **{blur.get('strength',8)}** • B/W: **{'ON' if blur.get('bw') else 'OFF'}**\n"
             f"Hint: **{'ON' if g.get('hint_enabled') else 'OFF'}** (max {g.get('hint_max_chars')} chars)\n"
+            f"Require image: **{'ON' if ri.get(mode, mode in {'fruit','ship'}) else 'OFF'}** • Retries: **{retries}**\n"
             f"Teams: **{'ON' if tap.get('enabled') else 'OFF'}** (mode: {tap.get('mode') or 'teamscog'}, "
             f"win_pts: {int(tap.get('win_points') or 0)}, timeout_pts: {int(tap.get('timeout_points') or 0)})"
         )
         await ctx.reply(status, allowed_mentions=discord.AllowedMentions.none())
 
-    @opguess.command(name="status")
+    # ---- mode switch ----
+    @opguess.command(name="mode")
     @commands.admin()
-    @commands.guild_only()
-    async def opguess_status(self, ctx: commands.Context):
-        """Show the current round status: answer, jump link, and remaining time."""
-        active = await self.engine.get_active(ctx.guild)
-        if not active or not active.get("title"):
-            return await ctx.reply("No active round right now.")
-        title: str = active.get("title")
-        msg_id = active.get("posted_message_id")
-        chan_id = active.get("posted_channel_id")
-        started_at = active.get("started_at") or 0
-
-        g = await self.engine.config.guild(ctx.guild).all()
-        roundtime = int(g.get("roundtime") or 120)
-        elapsed = int(max(0, time.time() - started_at)) if started_at else 0
-        remaining = max(0, roundtime - elapsed)
-
-        jump = None
-        if chan_id and msg_id:
-            ch = ctx.guild.get_channel(int(chan_id))
-            if isinstance(ch, discord.TextChannel):
-                try:
-                    msg = await ch.fetch_message(int(msg_id))
-                    jump = msg.jump_url
-                except Exception:
-                    pass
-
-        emb = discord.Embed(
-            title="🧭 Current Round Status",
-            color=discord.Color.blurple(),
-            description=f"**Answer:** {title}\n**Time remaining:** {remaining}s (of {roundtime}s)",
-        )
-        if jump:
-            emb.add_field(name="Round Message", value=f"[Jump to message]({jump})", inline=False)
-        await ctx.reply(embed=emb, allowed_mentions=discord.AllowedMentions.none())
+    async def opguess_mode(self, ctx: commands.Context, mode: str):
+        """Set game mode: character | fruit | ship."""
+        mode = mode.lower().strip()
+        if mode not in {"character", "fruit", "ship"}:
+            return await ctx.reply("Mode must be `character` or `fruit` or `ship`.")
+        await self.engine.config.guild(ctx.guild).mode.set(mode)
+        await ctx.reply(f"Mode set to **{mode}** ({_plural_label(mode)}).")
 
     # ---- admin: toggle/channel/interval/reward/roundtime ----
     @opguess.command(name="toggle")
@@ -150,6 +153,27 @@ class OnePieceGuess(commands.Cog):
     async def opguess_setreward(self, ctx: commands.Context, amount: int):
         await self.engine.config.guild(ctx.guild).reward.set(max(0, int(amount)))
         await ctx.reply(f"Reward set to **{max(0, int(amount))}**")
+
+    # ---- image failsafe controls ----
+    @opguess.command(name="requireimage")
+    @commands.admin()
+    async def opguess_requireimage(self, ctx: commands.Context, on_off: Optional[bool] = None):
+        """Toggle 'require image' for the CURRENT mode (default: fruit/ship ON, character OFF)."""
+        mode = (await self.engine.get_mode(ctx.guild))
+        ri = await self.engine.config.guild(ctx.guild).require_image()
+        current = bool((ri or {}).get(mode, mode in {"fruit", "ship"}))
+        new = (not current) if on_off is None else bool(on_off)
+        ri[mode] = new
+        await self.engine.config.guild(ctx.guild).require_image.set(ri)
+        await ctx.reply(f"Require image for **{mode}**: **{'ON' if new else 'OFF'}**")
+
+    @opguess.command(name="noimageretries")
+    @commands.admin()
+    async def opguess_noimageretries(self, ctx: commands.Context, attempts: int):
+        """Set how many different entries to try if the chosen one has no image (1–20)."""
+        attempts = max(1, min(20, int(attempts)))
+        await self.engine.config.guild(ctx.guild).noimage_max_retries.set(attempts)
+        await ctx.reply(f"No-image max retries set to **{attempts}**")
 
     # ---- admin: blur, strength, black & white, hints ----
     @opguess.group(name="blur", invoke_without_command=True)
@@ -203,15 +227,17 @@ class OnePieceGuess(commands.Cog):
         g = await self.engine.config.guild(ctx.guild).all()
         await ctx.reply(f"Hint **{'ON' if g.get('hint_enabled') else 'OFF'}**, max **{g.get('hint_max_chars')}** chars.")
 
-    # ---- admin: characters & aliases ----
+    # ---- POOL management (works on CURRENT mode) ----
     @opguess.group(name="char", invoke_without_command=True)
     @commands.admin()
     async def opguess_char(self, ctx: commands.Context):
-        chars = await self.engine.list_characters(ctx.guild)
-        if not chars:
-            return await ctx.reply("No characters configured. Use `[p]opguess char add <title>` or `[p]opguess import`.")
-        sample = ", ".join(chars[:10]) + (" …" if len(chars) > 10 else "")
-        await ctx.reply(f"Characters: **{len(chars)}**\nSample: {sample}")
+        """Manage entries for the CURRENT mode (characters/fruits/ships)."""
+        mode = await self.engine.get_mode(ctx.guild)
+        entries = await self.engine.list_characters(ctx.guild)
+        if not entries:
+            return await ctx.reply(f"No entries in **{_plural_label(mode)}**. Use `opguess char add <title>` or `opguess import`.")
+        sample = ", ".join(entries[:10]) + (" …" if len(entries) > 10 else "")
+        await ctx.reply(f"{_plural_label(mode)}: **{len(entries)}**\nSample: {sample}")
 
     @opguess_char.command(name="add")
     @commands.admin()
@@ -228,23 +254,24 @@ class OnePieceGuess(commands.Cog):
     @opguess_char.command(name="aliases")
     @commands.admin()
     async def opguess_char_aliases(self, ctx: commands.Context, title: str, *, comma_separated: str):
-        """Overwrite all aliases for a character."""
+        """Overwrite all aliases for the entry (current mode)."""
         aliases = [a.strip() for a in comma_separated.split(",") if a.strip()]
         await self.engine.upsert_aliases(ctx.guild, title, aliases)
-        await ctx.reply(f"Aliases set for **{title}**: {', '.join(aliases) if aliases else '—'}")
+        mode = await self.engine.get_mode(ctx.guild)
+        await ctx.reply(f"Aliases set for **{title}** ({_plural_label(mode)}): {', '.join(aliases) if aliases else '—'}")
 
     # --- aliases management (view/add/remove/clear) ---
     async def _resolve_title(self, guild: discord.Guild, title: str) -> str:
-        """Find the canonical title from configured characters (case-insensitive)."""
-        chars = await self.engine.config.guild(guild).characters()
-        return next((t for t in chars if t.lower() == title.lower()), title)
+        """Find canonical title from current pool (case-insensitive)."""
+        entries = await self.engine.list_characters(guild)
+        return next((t for t in entries if t.lower() == title.lower()), title)
 
     @opguess_char.command(name="aliasesview", aliases=["aliasshow", "aliasesget"])
     @commands.admin()
     async def opguess_char_aliases_view(self, ctx: commands.Context, *, title: str):
-        """Show current aliases for a character."""
+        """Show current aliases for an entry (current mode)."""
         title_key = await self._resolve_title(ctx.guild, title.strip())
-        aliases_map = await self.engine.config.guild(ctx.guild).aliases()
+        aliases_map = await self.engine.get_aliases_map(ctx.guild)
         current = aliases_map.get(title_key, [])
         if not current:
             return await ctx.reply(f"**{title_key}** has no aliases saved.")
@@ -253,87 +280,88 @@ class OnePieceGuess(commands.Cog):
     @opguess_char.command(name="aliasadd", aliases=["addalias"])
     @commands.admin()
     async def opguess_char_alias_add(self, ctx: commands.Context, title: str, *, aliases: str):
-        """Add one or more aliases (comma-separated) without overwriting existing ones."""
+        """Add alias(es) without overwriting (current mode)."""
         title_key = await self._resolve_title(ctx.guild, title.strip())
-        aliases_map = await self.engine.config.guild(ctx.guild).aliases()
+        aliases_map = await self.engine.get_aliases_map(ctx.guild)
         base = set(aliases_map.get(title_key, []))
         new_items = {a.strip() for a in aliases.split(",") if a.strip()}
         if not new_items:
             return await ctx.reply("Provide at least one alias (comma-separated).")
         updated = sorted(base | new_items, key=str.lower)
-        aliases_map[title_key] = updated
-        await self.engine.config.guild(ctx.guild).aliases.set(aliases_map)
-        added = len(updated) - len(base)
-        await ctx.reply(f"Added {added} alias(es) to **{title_key}**.\nNow: {', '.join(updated) if updated else '—'}")
+        await self.engine.upsert_aliases(ctx.guild, title_key, updated)
+        await ctx.reply(f"Added {len(updated) - len(base)} alias(es) to **{title_key}**.\nNow: {', '.join(updated) if updated else '—'}")
 
     @opguess_char.command(name="aliasremove", aliases=["remalias", "delalias"])
     @commands.admin()
     async def opguess_char_alias_remove(self, ctx: commands.Context, title: str, *, aliases: str):
-        """Remove one or more aliases (comma-separated)."""
+        """Remove alias(es) (current mode)."""
         title_key = await self._resolve_title(ctx.guild, title.strip())
-        aliases_map = await self.engine.config.guild(ctx.guild).aliases()
+        aliases_map = await self.engine.get_aliases_map(ctx.guild)
         current = set(aliases_map.get(title_key, []))
         if not current:
             return await ctx.reply(f"**{title_key}** has no aliases to remove.")
         to_remove = {a.strip() for a in aliases.split(",") if a.strip()}
         new_set = current - to_remove
-        aliases_map[title_key] = sorted(new_set, key=str.lower)
-        await self.engine.config.guild(ctx.guild).aliases.set(aliases_map)
-        removed = len(current) - len(new_set)
-        await ctx.reply(f"Removed {removed} alias(es) from **{title_key}**.\nNow: {', '.join(aliases_map[title_key]) if aliases_map[title_key] else '—'}")
+        await self.engine.upsert_aliases(ctx.guild, title_key, sorted(new_set, key=str.lower))
+        await ctx.reply(f"Removed {len(current) - len(new_set)} alias(es) from **{title_key}**.\nNow: {', '.join(sorted(new_set, key=str.lower)) if new_set else '—'}")
 
     @opguess_char.command(name="aliasclear", aliases=["clearaliases"])
     @commands.admin()
     async def opguess_char_alias_clear(self, ctx: commands.Context, *, title: str):
-        """Clear all aliases for a character."""
+        """Clear all aliases for an entry (current mode)."""
         title_key = await self._resolve_title(ctx.guild, title.strip())
-        aliases_map = await self.engine.config.guild(ctx.guild).aliases()
-        had = len(aliases_map.get(title_key, []))
-        if title_key in aliases_map:
-            aliases_map[title_key] = []
-            await self.engine.config.guild(ctx.guild).aliases.set(aliases_map)
-        await ctx.reply(f"Cleared {had} alias(es) for **{title_key}**.")
+        await self.engine.upsert_aliases(ctx.guild, title_key, [])
+        await ctx.reply(f"Cleared aliases for **{title_key}**.")
 
-    # ---- import/export ----
+    # ---- import/export (current mode only) ----
     @opguess.command(name="import")
     @commands.admin()
     async def opguess_import(self, ctx: commands.Context):
+        """Import entries for the CURRENT mode. Accepts a JSON list or an object with keys: entries/aliases/hints."""
+        mode = await self.engine.get_mode(ctx.guild)
         if not ctx.message.attachments:
-            return await ctx.reply("Attach a JSON file with a list or object.")
+            return await ctx.reply("Attach a JSON file with a list or with { entries[], aliases{}, hints{} }.")
         att = ctx.message.attachments[0]
         raw = await att.read()
         try:
             payload = json.loads(raw.decode("utf-8"))
         except Exception:
             return await ctx.reply("Invalid JSON.")
+
         if isinstance(payload, list):
             titles = [str(x) for x in payload]
-            await self.engine.config.guild(ctx.guild).characters.set(titles)
+            titles_key, _, _ = self.engine._pool_keys(mode)
+            await getattr(self.engine.config.guild(ctx.guild), titles_key).set(titles)
         elif isinstance(payload, dict):
-            titles = [str(x) for x in payload.get("characters", [])]
+            titles = [str(x) for x in payload.get("entries") or payload.get("characters") or []]
             aliases = payload.get("aliases", {})
             hints = payload.get("hints", {})
-            await self.engine.config.guild(ctx.guild).characters.set(titles)
-            await self.engine.config.guild(ctx.guild).aliases.set(
+            titles_key, aliases_key, hints_key = self.engine._pool_keys(mode)
+            await getattr(self.engine.config.guild(ctx.guild), titles_key).set(titles)
+            await getattr(self.engine.config.guild(ctx.guild), aliases_key).set(
                 {str(k): [str(v) for v in vs] for k, vs in aliases.items()}
             )
-            await self.engine.config.guild(ctx.guild).hints.set(
+            await getattr(self.engine.config.guild(ctx.guild), hints_key).set(
                 {str(k): str(v) for k, v in hints.items()}
             )
         else:
             return await ctx.reply("Unsupported JSON structure.")
-        await ctx.reply(f"Imported **{len(await self.engine.config.guild(ctx.guild).characters())}** characters.")
+        entries = await self.engine.list_characters(ctx.guild)
+        await ctx.reply(f"Imported **{len(entries)}** to **{_plural_label(mode)}**.")
 
     @opguess.command(name="export")
     @commands.admin()
     async def opguess_export(self, ctx: commands.Context):
-        titles = await self.engine.config.guild(ctx.guild).characters()
-        aliases = await self.engine.config.guild(ctx.guild).aliases()
-        hints = await self.engine.config.guild(ctx.guild).hints()
-        payload = {"characters": titles, "aliases": aliases, "hints": hints}
+        """Export entries for the CURRENT mode."""
+        mode = await self.engine.get_mode(ctx.guild)
+        titles_key, aliases_key, hints_key = self.engine._pool_keys(mode)
+        titles = await getattr(self.engine.config.guild(ctx.guild), titles_key)()
+        aliases = await getattr(self.engine.config.guild(ctx.guild), aliases_key)()
+        hints = await getattr(self.engine.config.guild(ctx.guild), hints_key)()
+        payload = {"mode": mode, "entries": titles, "aliases": aliases, "hints": hints}
         buf = io.BytesIO(json.dumps(payload, indent=2).encode("utf-8"))
         buf.seek(0)
-        await ctx.reply(file=discord.File(buf, filename="onepiece_characters.json"))
+        await ctx.reply(file=discord.File(buf, filename=f"onepiece_{mode}.json"))
 
     @opguess.command(name="forcepost")
     @commands.admin()
@@ -344,7 +372,7 @@ class OnePieceGuess(commands.Cog):
             return await ctx.reply("No channel configured. Use `opguess setchannel`.")
         await self.engine.set_expired(ctx.guild, True)  # mark old round done
         await self._post_once(ctx.guild)
-        await ctx.reply("Round posted (if character pool is not empty).")
+        await ctx.reply("Round posted (if pool is not empty).")
 
     # ---- Teams settings (simple): toggle + mode + points ----
     @opguess.group(name="teamapi", invoke_without_command=True)
@@ -387,7 +415,44 @@ class OnePieceGuess(commands.Cog):
         await self.engine.config.guild(ctx.guild).team_api.set(t)
         await ctx.reply(f"Set points — win: {int(win_points)}, timeout: {int(timeout_points)}")
 
-    # ---- reveal ----
+    # ---- status/reveal ----
+    @opguess.command(name="status")
+    @commands.admin()
+    @commands.guild_only()
+    async def opguess_status(self, ctx: commands.Context):
+        """Show the current round status: answer, jump link, and remaining time."""
+        active = await self.engine.get_active(ctx.guild)
+        if not active or not active.get("title"):
+            return await ctx.reply("No active round right now.")
+        title: str = active.get("title")
+        msg_id = active.get("posted_message_id")
+        chan_id = active.get("posted_channel_id")
+        started_at = active.get("started_at") or 0
+
+        g = await self.engine.config.guild(ctx.guild).all()
+        roundtime = int(g.get("roundtime") or 120)
+        elapsed = int(max(0, time.time() - started_at)) if started_at else 0
+        remaining = max(0, roundtime - elapsed)
+
+        jump = None
+        if chan_id and msg_id:
+            ch = ctx.guild.get_channel(int(chan_id))
+            if isinstance(ch, discord.TextChannel):
+                try:
+                    msg = await ch.fetch_message(int(msg_id))
+                    jump = msg.jump_url
+                except Exception:
+                    pass
+
+        emb = discord.Embed(
+            title="🧭 Current Round Status",
+            color=discord.Color.blurple(),
+            description=f"**Answer:** {title}\n**Time remaining:** {remaining}s (of {roundtime}s)",
+        )
+        if jump:
+            emb.add_field(name="Round Message", value=f"[Jump to message]({jump})", inline=False)
+        await ctx.reply(embed=emb, allowed_mentions=discord.AllowedMentions.none())
+
     @opguess.command(name="reveal")
     @commands.admin()
     async def opguess_reveal(self, ctx: commands.Context, visibility: Optional[str] = "dm", end: Optional[bool] = False):
@@ -435,20 +500,61 @@ class OnePieceGuess(commands.Cog):
         if end:
             await self.engine.set_expired(ctx.guild, True)
 
+    # ---------- posting ----------
     async def _post_once(self, guild):
         gconf = await self.engine.config.guild(guild).all()
         channel = guild.get_channel(int(gconf.get("channel_id") or 0))
         if not channel:
             return
-        title = await self.engine.pick_random_title(guild)
+
+        mode = (gconf.get("mode") or "character").lower()
+        require_map = gconf.get("require_image") or {}
+        require_image = bool(require_map.get(mode, mode in {"fruit", "ship"}))
+        max_retries = int(gconf.get("noimage_max_retries") or 6)
+
+        title = None
+        extract = ""
+        image_url = None
+
+        # Try multiple random entries until we find one with an image (if required)
+        for _ in range(max_retries):
+            cand = await self.engine.pick_random_title(guild)
+            if not cand:
+                break
+            ctitle, cextract, cimg = await self.engine.fetch_page_brief(cand)
+            if not require_image or cimg:
+                title, extract, image_url = ctitle, cextract, cimg
+                break
+
         if not title:
+            # nothing to post this cycle; delay the next attempt so we don't spam
+            import time as _t
+            active = await self.engine.get_active(guild)
+            active.update({
+                "title": None,
+                "posted_message_id": None,
+                "posted_channel_id": None,
+                "started_at": int(_t.time()),  # push cadence forward
+                "expired": True,
+                "half_hint_sent": False,
+            })
+            await self.engine.config.guild(guild).active.set(active)
+            try:
+                await channel.send("⚠️ Skipping this round (no image found).")
+            except Exception:
+                pass
             return
-        ctitle, extract, image_url = await self.engine.fetch_page_brief(title)
+
         interval = int(gconf.get("interval") or 1800)
         roundtime = int(gconf.get("roundtime") or 120)
 
+        heading = {
+            "fruit": "🗺️ Guess the Devil Fruit!",
+            "ship": "🗺️ Guess the Ship!",
+        }.get(mode, "🗺️ Guess the One Piece Character!")
+
         emb = discord.Embed(
-            title="🗺️ Guess the One Piece Character!",
+            title=heading,
             description="Reply with `.guess <name>` (prefix) or `/guess` if enabled.",
             color=COLOR_OK,
         )
@@ -469,10 +575,10 @@ class OnePieceGuess(commands.Cog):
         file = None
         if image_url:
             blur = gconf.get("blur") or {}
-            mode = str(blur.get("mode") or "gaussian").lower()
+            mode_blur = str(blur.get("mode") or "gaussian").lower()
             strength = int(blur.get("strength") or 8)
             bw = bool(blur.get("bw"))
-            buf = await self.engine.make_blurred(image_url, mode=mode, strength=strength, bw=bw)
+            buf = await self.engine.make_blurred(image_url, mode=mode_blur, strength=strength, bw=bw)
             if buf:
                 file = discord.File(buf, filename="opguess_blur.png")
                 emb.set_image(url="attachment://opguess_blur.png")
@@ -485,7 +591,7 @@ class OnePieceGuess(commands.Cog):
     @commands.hybrid_command(name="guess")
     @commands.guild_only()
     async def guess(self, ctx: commands.Context, *, name: str):
-        """Guess the character; wrong answers get a ❌ reaction."""
+        """Guess the entry; wrong answers get a ❌ reaction."""
         ok, title = await self.engine.check_guess(ctx.guild, name)
 
         if not title:
@@ -527,9 +633,9 @@ class OnePieceGuess(commands.Cog):
             tconf = await self.engine.config.guild(ctx.guild).team_api()
             if tconf.get("enabled"):
                 win_pts = int(tconf.get("win_points") or 0)
-                mode = (tconf.get("mode") or "teamscog").lower()
+                mode_api = (tconf.get("mode") or "teamscog").lower()
                 if win_pts > 0:
-                    if mode == "teamscog":
+                    if mode_api == "teamscog":
                         teams_cog = self.bot.get_cog("Teams")
                         if teams_cog:
                             team = next(
