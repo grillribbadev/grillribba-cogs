@@ -2,6 +2,7 @@ from __future__ import annotations
 import random
 import re
 import time
+import difflib
 from io import BytesIO
 from typing import Dict, List, Optional, Tuple
 
@@ -51,14 +52,16 @@ class GuessEngine:
     # ---------------- active round helpers ----------------
 
     async def set_active(self, guild: discord.Guild, *, title: str, message: discord.Message) -> None:
-        await self.config.guild(guild).active.set({
-            "title": title,
-            "posted_message_id": message.id,
-            "posted_channel_id": message.channel.id,
-            "started_at": _now(),
-            "expired": False,
-            "half_hint_sent": False,  # reset for new round
-        })
+        await self.config.guild(guild).active.set(
+            {
+                "title": title,
+                "posted_message_id": message.id,
+                "posted_channel_id": message.channel.id,
+                "started_at": _now(),
+                "expired": False,
+                "half_hint_sent": False,  # reset for new round
+            }
+        )
 
     async def set_expired(self, guild: discord.Guild, value: bool) -> None:
         active = await self.config.guild(guild).active()
@@ -156,7 +159,7 @@ class GuessEngine:
                 return True, title
         return False, title
 
-        @staticmethod
+    @staticmethod
     def _normalize(s: str) -> str:
         # lower, remove non-alnum, collapse spaces
         s = s.lower()
@@ -206,7 +209,6 @@ class GuessEngine:
                 return True
 
         return False
-
 
     # ---------------- fandom API helpers ----------------
 
@@ -313,7 +315,14 @@ class GuessEngine:
 
     # ---------------- image processing ----------------
 
-    async def make_blurred(self, image_url: str, *, mode: str = "gaussian", strength: int = 8, bw: bool = False) -> Optional[BytesIO]:
+    async def make_blurred(
+        self,
+        image_url: str,
+        *,
+        mode: str = "gaussian",
+        strength: int = 8,
+        bw: bool = False,
+    ) -> Optional[BytesIO]:
         try:
             async with aiohttp.ClientSession() as s:
                 async with s.get(image_url, timeout=15) as r:
