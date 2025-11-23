@@ -156,26 +156,57 @@ class GuessEngine:
                 return True, title
         return False, title
 
-    @staticmethod
+        @staticmethod
     def _normalize(s: str) -> str:
+        # lower, remove non-alnum, collapse spaces
         s = s.lower()
         s = re.sub(r"[^a-z0-9]+", " ", s)
         return re.sub(r"\s+", " ", s).strip()
 
     def _is_match(self, guess: str, key: str) -> bool:
+        """Lenient but safe matcher:
+        - exact normalized match
+        - token-subset match with at least one token length >= 4
+        - single-token match if that token (>=4 chars) appears as a full token in the answer
+        - fuzzy similarity >= 0.85 when both strings are at least 4 chars
+        """
+        g = self._normalize(guess)
         k = self._normalize(key)
-        if not k:
+        if not g or not k:
             return False
-        # exact normalized
-        if guess == k:
+
+        # 0) exact
+        if g == k:
             return True
-        # containment
-        if k in guess or guess in k:
+
+        # Guard: don't allow 1–2 char guesses to ever match
+        if len(g) < 3:
+            return False
+
+        # token sets
+        g_tokens = [t for t in g.split() if t]
+        k_tokens = [t for t in k.split() if t]
+        g_set = set(g_tokens)
+        k_set = set(k_tokens)
+
+        # 1) token-subset rule: all guessed tokens are in answer tokens,
+        #    and at least one token has length >= 4
+        if g_set.issubset(k_set) and any(len(t) >= 4 for t in g_set):
             return True
-        # token overlap for >=3 chars (helps typos/aliases)
-        g_tokens = set(t for t in guess.split() if len(t) >= 3)
-        k_tokens = set(t for t in k.split() if len(t) >= 3)
-        return bool(g_tokens & k_tokens)
+
+        # 2) single-token "surname/nickname" rule:
+        #    allow if guess is a single token (>=4 chars) and matches a token in the answer
+        if len(g_tokens) == 1 and len(g_tokens[0]) >= 4 and g_tokens[0] in k_set:
+            return True
+
+        # 3) fuzzy similarity (difflib) for inputs 4+ chars
+        if len(g) >= 4 and len(k) >= 4:
+            ratio = difflib.SequenceMatcher(None, g, k).ratio()
+            if ratio >= 0.85:
+                return True
+
+        return False
+
 
     # ---------------- fandom API helpers ----------------
 
