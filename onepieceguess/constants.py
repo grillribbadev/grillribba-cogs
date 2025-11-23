@@ -35,7 +35,7 @@ DEFAULT_GUILD = {
     # optional local reward (set to 0 to noop)
     "reward": REWARD_DEFAULT,
 
-    # character pool + matching helpers
+    # pool + matching helpers
     "characters": [],              # list[str]
     "aliases": {},                 # title -> list[str]
 
@@ -44,26 +44,17 @@ DEFAULT_GUILD = {
     "hint_max_chars": 200,
     "hints": {},                   # title -> str (optional override)
 
-    # Legacy single blur key (kept for migration)
-    "blur": {
-        "mode": "gaussian",
-        "strength": 8,
-        "bw": False,
-    },
+    # Legacy single blur (kept for migration)
+    "blur": {"mode": "gaussian", "strength": 8, "bw": False},
 
-    # NEW: per-category blur profiles
-    # _default applies to all; category-specific override keys may include any of: mode/strength/bw
-    "blur_profiles": {
-        "_default": {"mode": "gaussian", "strength": 8, "bw": False},
-        # examples users might fill:
-        # "characters": {},
-        # "devilfruits": {"strength": 1},  # e.g. no blur there
-        # "ships": {},
+    # >>> Per-mode blur <<<
+    "current_mode": "characters",
+    "blur_by_mode": {
+        # tweak these defaults as you like
+        "characters": {"mode": "gaussian", "strength": 64, "bw": False},
+        "devilfruits": {"mode": "gaussian", "strength": 1,  "bw": False},
+        "ships":       {"mode": "gaussian", "strength": 64, "bw": False},
     },
-
-    # NEW: title -> category name mapping, and a default category
-    "categories": {},               # e.g., {"Gomu Gomu no Mi": "devilfruits"}
-    "default_category": "characters",
 
     # Teams integration block
     "team_api": TEAMAPI_DEFAULT.copy(),
@@ -80,6 +71,4 @@ DEFAULT_GUILD = {
 }
 
 # User-level stats (simple win counter)
-DEFAULT_USER = {
-    "wins": 0
-}
+DEFAULT_USER = {"wins": 0}
