@@ -17,7 +17,6 @@ TEAMAPI_DEFAULT = {
     "mode": "teamscog",            # "teamscog" (direct to Teams cog) or "http"
     "win_points": 1,
     "timeout_points": 0,
-
     # HTTP fields are harmless if unused
     "base_url": "",
     "token": "",
@@ -29,9 +28,6 @@ DEFAULT_GUILD = {
     "enabled": False,
     "channel_id": None,
 
-    # current game mode: "character" | "fruit" | "ship"
-    "mode": "character",
-
     # posting cadence & per-round timeout
     "interval": INTERVAL_DEFAULT,  # seconds between round posts
     "roundtime": ROUND_DEFAULT,    # seconds until a round times out
@@ -39,40 +35,35 @@ DEFAULT_GUILD = {
     # optional local reward (set to 0 to noop)
     "reward": REWARD_DEFAULT,
 
-    # --- POOLS (per-mode) ---
-    # Characters
+    # character pool + matching helpers
     "characters": [],              # list[str]
     "aliases": {},                 # title -> list[str]
-    "hints": {},                   # title -> str (optional override)
-
-    # Devil Fruits
-    "fruits": [],
-    "fruit_aliases": {},
-    "fruit_hints": {},
-
-    # Ships
-    "ships": [],
-    "ship_aliases": {},
-    "ship_hints": {},
 
     # hints (wiki extract or custom)
     "hint_enabled": True,
     "hint_max_chars": 200,
+    "hints": {},                   # title -> str (optional override)
 
-    # Image settings (blur + optional black & white)
+    # Legacy single blur key (kept for migration)
     "blur": {
-        "mode": "gaussian",        # "gaussian" or "pixelate"
-        "strength": 8,             # clamped in code up to 250
-        "bw": False,               # black & white toggle
+        "mode": "gaussian",
+        "strength": 8,
+        "bw": False,
     },
 
-    # NEW: image failsafe controls
-    "require_image": {          # per-mode toggle
-        "character": False,
-        "fruit": True,
-        "ship": True,
+    # NEW: per-category blur profiles
+    # _default applies to all; category-specific override keys may include any of: mode/strength/bw
+    "blur_profiles": {
+        "_default": {"mode": "gaussian", "strength": 8, "bw": False},
+        # examples users might fill:
+        # "characters": {},
+        # "devilfruits": {"strength": 1},  # e.g. no blur there
+        # "ships": {},
     },
-    "noimage_max_retries": 6,   # how many picks to try before skipping the cycle
+
+    # NEW: title -> category name mapping, and a default category
+    "categories": {},               # e.g., {"Gomu Gomu no Mi": "devilfruits"}
+    "default_category": "characters",
 
     # Teams integration block
     "team_api": TEAMAPI_DEFAULT.copy(),
@@ -84,7 +75,6 @@ DEFAULT_GUILD = {
         "posted_channel_id": None,
         "started_at": 0,
         "expired": False,
-        # whether we already posted the mid-round quote/initials
         "half_hint_sent": False,
     },
 }
