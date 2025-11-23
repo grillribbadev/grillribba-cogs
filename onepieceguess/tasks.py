@@ -37,7 +37,6 @@ class GuessTasks:
         for p in parts:
             if not p:
                 continue
-            # single-letter token
             if len(p) == 1 and p.isalpha():
                 initials.append(p.upper() + ".")
                 continue
@@ -97,7 +96,6 @@ class GuessTasks:
                                 except discord.NotFound:
                                     msg = None
 
-                                # Build embed + fetch original image
                                 emb = discord.Embed(
                                     title="⏰ Time!",
                                     description=f"No one guessed **{title}**.",
@@ -130,13 +128,13 @@ class GuessTasks:
                     continue
 
                 # 2b) mid-round hint at half time (post once)
-                # NOTE: This is independent of the 'hint_enabled' toggle so it can't be silently blocked.
+                # NOTE: Independent of 'hint_enabled' so it can't be silently blocked.
                 if not half_hint_sent and elapsed >= roundtime / 2:
                     hint_text: Optional[str] = None
 
-                    # Try a safe quote first (no name/aliases) — mode-aware aliases map
+                    # Try a safe quote first (no name/aliases)
                     try:
-                        aliases = await self.engine.get_aliases_map(guild)
+                        aliases = await self.engine.config.guild(guild).aliases()
                         forbidden_names = [title] + aliases.get(title, [])
                         toks = []
                         for n in forbidden_names:
@@ -190,7 +188,7 @@ class GuessTasks:
                             except Exception:
                                 pass
 
-                        # mark as sent (even if the send failed silently—we don't want spam)
+                        # mark as sent
                         try:
                             await self.engine.mark_half_hint_sent(guild)
                         except Exception:
