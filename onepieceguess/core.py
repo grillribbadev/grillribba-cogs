@@ -1,6 +1,4 @@
 from __future__ import annotations
-import asyncio
-import json
 import random
 import re
 import time
@@ -31,23 +29,22 @@ class GuessEngine:
 
     # ---------------- migration helpers ----------------
 
-    async def ensure_profiles_migrated(self, guild: discord.Guild) -> None:
-        """If old single 'blur' exists and profiles not initialized, seed _default from it."""
+    async def ensure_mode_migrated(self, guild: discord.Guild) -> None:
+        """Seed blur_by_mode from legacy blur if needed; ensure current_mode exists."""
         g = await self.config.guild(guild).all()
-        if "blur_profiles" not in g or not g.get("blur_profiles"):
-            # seed from legacy blur
+        if not g.get("blur_by_mode"):
             legacy = g.get("blur") or {"mode": "gaussian", "strength": 8, "bw": False}
-            await self.config.guild(guild).blur_profiles.set({"_default": legacy})
-        # ensure keys exist
-        if "categories" not in g:
-            await self.config.guild(guild).categories.set({})
-        if "default_category" not in g:
-            await self.config.guild(guild).default_category.set("characters")
-        # ensure active.half_hint_sent is present
-        active = g.get("active") or {}
-        if "half_hint_sent" not in active:
-            active["half_hint_sent"] = False
-            await self.config.guild(guild).active.set(active)
+            await self.config.guild(guild).blur_by_mode.set({
+                "characters": legacy,
+                "devilfruits": {"mode": "gaussian", "strength": 1, "bw": False},
+                "ships": {"mode": "gaussian", "strength": legacy.get("strength", 8), "bw": legacy.get("bw", False)}
+            })
+        if not g.get("current_mode"):
+            await self.config.guild(guild).current_mode.set("characters")
+        act = g.get("active") or {}
+        if "half_hint_sent" not in act:
+            act["half_hint_sent"] = False
+            await self.config.guild(guild).active.set(act)
 
     # ---------------- active round helpers ----------------
 
@@ -58,7 +55,7 @@ class GuessEngine:
             "posted_channel_id": message.channel.id,
             "started_at": _now(),
             "expired": False,
-            "half_hint_sent": False,  # reset for new round
+            "half_hint_sent": False,
         })
 
     async def set_expired(self, guild: discord.Guild, value: bool) -> None:
@@ -74,47 +71,35 @@ class GuessEngine:
         active["half_hint_sent"] = True
         await self.config.guild(guild).active.set(active)
 
-    # ---------------- category & blur profile helpers ----------------
+    # ---------------- mode & blur helpers ----------------
 
-    async def get_category(self, guild: discord.Guild, title: str) -> str:
-        cats = await self.config.guild(guild).categories()
-        default_cat = await self.config.guild(guild).default_category()
-        return cats.get(title, default_cat or "characters")
+    async def get_current_mode(self, guild: discord.Guild) -> str:
+        return await self.config.guild(guild).current_mode()
 
-    async def set_category(self, guild: discord.Guild, title: str, category: str) -> None:
-        cats = await self.config.guild(guild).categories()
-        cats[str(title)] = str(category)
-        await self.config.guild(guild).categories.set(cats)
+    async def set_current_mode(self, guild: discord.Guild, mode: str) -> None:
+        await self.config.guild(guild).current_mode.set(mode)
 
-    async def set_default_category(self, guild: discord.Guild, category: str) -> None:
-        await self.config.guild(guild).default_category.set(str(category))
-
-    async def get_blur_for_title(self, guild: discord.Guild, title: str) -> Dict[str, object]:
-        """Return merged blur profile for title's category (category overrides on top of _default)."""
-        profiles = await self.config.guild(guild).blur_profiles()
-        _default = profiles.get("_default", {"mode": "gaussian", "strength": 8, "bw": False})
-        cat = await self.get_category(guild, title)
-        override = profiles.get(cat, {}) or {}
-        merged = dict(_default)
-        merged.update({k: v for k, v in override.items() if v is not None})
-        return merged
-
-    async def update_blur_profile(self, guild: discord.Guild, category: str, **entries) -> Dict[str, object]:
-        profiles = await self.config.guild(guild).blur_profiles()
-        prof = dict(profiles.get(category, {}))
-        for k, v in entries.items():
-            prof[k] = v
-        profiles[category] = prof
-        await self.config.guild(guild).blur_profiles.set(profiles)
+    async def get_blur_for_mode(self, guild: discord.Guild) -> Dict[str, object]:
+        mode = await self.get_current_mode(guild)
+        bm = await self.config.guild(guild).blur_by_mode()
+        prof = bm.get(mode) or bm.get("characters") or {"mode": "gaussian", "strength": 8, "bw": False}
+        # sanity clamp
+        prof["mode"] = str(prof.get("mode") or "gaussian").lower()
+        prof["strength"] = max(1, min(250, int(prof.get("strength") or 8)))
+        prof["bw"] = bool(prof.get("bw"))
         return prof
 
-    async def clear_blur_profile(self, guild: discord.Guild, category: str) -> None:
-        profiles = await self.config.guild(guild).blur_profiles()
-        if category in profiles and category != "_default":
-            profiles[category] = {}
-            await self.config.guild(guild).blur_profiles.set(profiles)
+    async def update_blur_for_mode(self, guild: discord.Guild, **entries) -> Dict[str, object]:
+        mode = await self.get_current_mode(guild)
+        bm = await self.config.guild(guild).blur_by_mode()
+        cur = dict(bm.get(mode, {}))
+        for k, v in entries.items():
+            cur[k] = v
+        bm[mode] = cur
+        await self.config.guild(guild).blur_by_mode.set(bm)
+        return cur
 
-    # ---------------- character pool & aliases ----------------
+    # ---------------- pool & aliases ----------------
 
     async def list_characters(self, guild: discord.Guild) -> List[str]:
         return await self.config.guild(guild).characters()
@@ -133,16 +118,12 @@ class GuessEngine:
             return False
         items.remove(title)
         await self.config.guild(guild).characters.set(items)
-        # cleanup optional hint & aliases & category
         aliases = await self.config.guild(guild).aliases()
         aliases.pop(title, None)
         await self.config.guild(guild).aliases.set(aliases)
         hints = await self.config.guild(guild).hints()
         hints.pop(title, None)
         await self.config.guild(guild).hints.set(hints)
-        cats = await self.config.guild(guild).categories()
-        cats.pop(title, None)
-        await self.config.guild(guild).categories.set(cats)
         return True
 
     async def upsert_aliases(self, guild: discord.Guild, title: str, aliases: List[str]) -> None:
@@ -162,17 +143,12 @@ class GuessEngine:
 
     async def check_guess(self, guild: discord.Guild, user_input: str) -> Tuple[bool, Optional[str]]:
         active = await self.get_active(guild)
-        # Treat no round OR expired round as "no active round"
         if not active or not active.get("title") or active.get("expired"):
             return False, None
-
         title = active["title"]
-
-        # build candidate keywords (title + aliases)
         aliases = await self.config.guild(guild).aliases()
         keys = [title] + aliases.get(title, [])
         normalized_guess = self._normalize(user_input)
-
         for key in keys:
             if self._is_match(normalized_guess, key):
                 return True, title
@@ -188,23 +164,17 @@ class GuessEngine:
         k = self._normalize(key)
         if not k:
             return False
-        # exact normalized
         if guess == k:
             return True
-        # containment
         if k in guess or guess in k:
             return True
-        # token overlap for >=3 chars
         g_tokens = set(t for t in guess.split() if len(t) >= 3)
         k_tokens = set(t for t in k.split() if len(t) >= 3)
         return bool(g_tokens & k_tokens)
 
-    # ---------------- fandom API helpers ----------------
+    # ---------------- fandom API ----------------
 
-    async def fetch_page_brief(self, title: str) -> Tuple[str, str, Optional[str]]:
-        """
-        Return (normalized_title, extract_text, main_image_url)
-        """
+    async def fetch_page_brief(self, title: str):
         params = {
             "action": "query",
             "prop": "extracts|pageimages",
@@ -226,81 +196,48 @@ class GuessEngine:
         return normalized_title, extract, image_url
 
     async def get_random_quote(self, title: str, forbidden: List[str]) -> Optional[str]:
-        """
-        Try to grab a random quote from the page's 'Quotes' section.
-        Filters out quotes that mention the character's name or aliases.
-        Returns a plain-text quote (no speaker prefix), or None.
-        """
-        # 1) find the section index for 'Quotes'
+        # get "Quotes" section index
         params = {"action": "parse", "page": title, "prop": "sections", "format": "json"}
         async with aiohttp.ClientSession() as s:
             async with s.get(ONEPIECE_API, params=params, timeout=15) as r:
                 data = await r.json()
-
         sections = data.get("parse", {}).get("sections", []) or []
         quotes_idx = None
         for sec in sections:
             if "quotes" in (sec.get("line") or "").lower():
-                quotes_idx = sec.get("index")
-                break
+                quotes_idx = sec.get("index"); break
         if quotes_idx is None:
             return None
-
-        # 2) fetch the section wikitext and extract bullet lines
-        params = {
-            "action": "parse",
-            "page": title,
-            "section": quotes_idx,
-            "prop": "wikitext",
-            "format": "json",
-        }
+        # fetch quotes section wikitext
+        params = {"action": "parse", "page": title, "section": quotes_idx, "prop": "wikitext", "format": "json"}
         async with aiohttp.ClientSession() as s:
             async with s.get(ONEPIECE_API, params=params, timeout=15) as r:
                 data = await r.json()
-
         wikitext = (data.get("parse", {}).get("wikitext", {}) or {}).get("*", "") or ""
         if not wikitext:
             return None
-
-        # split by lines starting with * (wiki bullets)
         lines = [ln.strip() for ln in wikitext.splitlines() if ln.strip().startswith("*")]
-        if not lines:
-            return None
-
-        # Convert simple wiki markup to plain text and filter
-        candidates: List[str] = []
+        if not lines: return None
+        import re as _re
+        cands: List[str] = []
         for ln in lines:
             text = ln.lstrip("*").strip()
-            text = self._strip_wikicode(text)
-            # remove leading speaker "Name: " if present
-            text = re.sub(r"^[^:]{1,40}:\s+", "", text).strip()
-            if not text:
-                continue
+            # strip simple wiki markup
+            text = _re.sub(r"\[\[([^|\]]+)\|([^\]]+)\]\]", r"\2", text)
+            text = _re.sub(r"\[\[([^\]]+)\]\]", r"\1", text)
+            text = text.replace("'''''","").replace("'''","").replace("''","")
+            text = _re.sub(r"\{\{[^}]+\}\}", "", text)
+            text = _re.sub(r"<ref[^>]*>.*?</ref>", "", text, flags=_re.DOTALL|_re.IGNORECASE)
+            text = _re.sub(r"<ref[^/]*/>", "", text, flags=_re.IGNORECASE)
+            text = _re.sub(r"<[^>]+>", "", text)
+            text = _re.sub(r"^[^:]{1,40}:\s+", "", text).strip()
+            if not text: continue
             low = text.lower()
-            # skip if it includes the name/aliases tokens
             if any(tok in low for tok in forbidden):
                 continue
-            candidates.append(text)
-
-        if not candidates:
-            return None
-        return random.choice(candidates)
-
-    @staticmethod
-    def _strip_wikicode(s: str) -> str:
-        # strip links [[A|B]] or [[A]]
-        s = re.sub(r"\[\[([^|\]]+)\|([^\]]+)\]\]", r"\2", s)
-        s = re.sub(r"\[\[([^\]]+)\]\]", r"\1", s)
-        # strip italics/bold
-        s = s.replace("'''''", "").replace("'''", "").replace("''", "")
-        # strip templates {{...}}
-        s = re.sub(r"\{\{[^}]+\}\}", "", s)
-        # strip refs <ref>...</ref> and <ref .../>
-        s = re.sub(r"<ref[^>]*>.*?</ref>", "", s, flags=re.DOTALL | re.IGNORECASE)
-        s = re.sub(r"<ref[^/]*/>", "", s, flags=re.IGNORECASE)
-        # strip HTML tags
-        s = re.sub(r"<[^>]+>", "", s)
-        return s.strip()
+            cands.append(text)
+        if not cands: return None
+        return random.choice(cands)
 
     # ---------------- image processing ----------------
 
@@ -323,7 +260,6 @@ class GuessEngine:
             im = ImageOps.grayscale(im).convert("RGBA")
 
         if mode == "pixelate":
-            # downscale then upscale
             w, h = im.size
             block = max(1, min(250, int(strength)))
             im = im.resize((max(1, w // block), max(1, h // block)), Image.NEAREST).resize((w, h), Image.NEAREST)
@@ -336,8 +272,5 @@ class GuessEngine:
         buf.seek(0)
         return buf
 
-    # ---------------- local reward hook ----------------
-
     async def reward(self, member: discord.Member, amount: int) -> None:
-        # placeholder for coins/other reward systems; no-op if amount == 0
         return
