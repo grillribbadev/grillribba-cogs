@@ -2,22 +2,21 @@ from __future__ import annotations
 
 # Embed colors
 COLOR_EMBED = 0x00BFFF
-COLOR_OK = 0x32CD32
-COLOR_WARN = 0xFFA500
-COLOR_ERR = 0xCC3333
+COLOR_OK    = 0x32CD32
+COLOR_WARN  = 0xFFA500
+COLOR_ERR   = 0xCC3333
 
 # Timing defaults
 INTERVAL_DEFAULT = 1800   # seconds between posts (cadence)
-REWARD_DEFAULT = 0        # optional local reward (0 = off)
-ROUND_DEFAULT = 120       # seconds a round stays open before timing out
+REWARD_DEFAULT   = 0      # local reward disabled by default
+ROUND_DEFAULT    = 120    # seconds a round stays open before timing out
 
-# ---- Teams integration (AAA3A Teams cog or HTTP passthrough) ----
+# ---- Teams integration (AAA3A Teams cog, or HTTP if you keep it) ----
 TEAMAPI_DEFAULT = {
     "enabled": False,
-    "mode": "teamscog",            # "teamscog" (direct to Teams cog) or "http"
+    "mode": "teamscog",
     "win_points": 1,
     "timeout_points": 0,
-    # HTTP fields are harmless if unused
     "base_url": "",
     "token": "",
     "endpoint_path": "/api/onepieceguess/event",
@@ -28,44 +27,52 @@ DEFAULT_GUILD = {
     "enabled": False,
     "channel_id": None,
 
-    # cadence & per-round timeout
+    # current game mode
+    "mode": "character",
+
+    # cadence & timeout
     "interval": INTERVAL_DEFAULT,
     "roundtime": ROUND_DEFAULT,
 
-    # optional local reward
+    # local reward
     "reward": REWARD_DEFAULT,
 
-    # LEGACY global pool (kept for migration)
+    # POOLS (per-mode)
     "characters": [],
+    "aliases": {},
+    "hints": {},
 
-    # NEW: per-mode pools (characters/devilfruits/ships by default)
-    "characters_by_mode": {
-        "characters": [],
-        "devilfruits": [],
-        "ships": []
-    },
+    "fruits": [],
+    "fruit_aliases": {},
+    "fruit_hints": {},
 
-    # matching helpers & metadata
-    "aliases": {},                 # title -> list[str]
-    "hints": {},                   # title -> str (optional override)
+    "ships": [],
+    "ship_aliases": {},
+    "ship_hints": {},
+
+    # hints (embed field)
     "hint_enabled": True,
     "hint_max_chars": 200,
 
-    # LEGACY single blur (kept for migration)
-    "blur": {"mode": "gaussian", "strength": 8, "bw": False},
-
-    # Per-mode blur profiles
-    "current_mode": "characters",
-    "blur_by_mode": {
-        "characters": {"mode": "gaussian", "strength": 64, "bw": False},
-        "devilfruits": {"mode": "gaussian", "strength": 1,  "bw": False},
-        "ships": {"mode": "gaussian", "strength": 64, "bw": False},
+    # Image settings (blur + optional black & white)
+    "blur": {
+        "mode": "gaussian",
+        "strength": 8,
+        "bw": False,
     },
 
-    # Teams integration block
+    # NEW: image failsafe
+    "require_image": {          # per-mode toggle
+        "character": False,
+        "fruit": True,
+        "ship": True,
+    },
+    "noimage_max_retries": 6,   # how many picks to try before skipping the cycle
+
+    # Teams integration
     "team_api": TEAMAPI_DEFAULT.copy(),
 
-    # Active round state (runtime only)
+    # Active round state (runtime)
     "active": {
         "title": None,
         "posted_message_id": None,
@@ -77,4 +84,6 @@ DEFAULT_GUILD = {
 }
 
 # User-level stats (simple win counter)
-DEFAULT_USER = {"wins": 0}
+DEFAULT_USER = {
+    "wins": 0
+}
