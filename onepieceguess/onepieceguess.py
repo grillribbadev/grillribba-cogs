@@ -28,16 +28,21 @@ class OnePieceGuess(commands.Cog):
         self.tasks = GuessTasks(self, self.engine)
 
     async def cog_load(self) -> None:
+        # migrate per-mode blur & pools
         for guild in self.bot.guilds:
             await self.engine.ensure_mode_migrated(guild)
-            chars = await self.engine.config.guild(guild).characters()
-            if not chars and SEED_FILE.exists():
-                try:
-                    seed = json.loads(SEED_FILE.read_text(encoding="utf-8"))
-                    if isinstance(seed, list) and seed:
-                        await self.engine.config.guild(guild).characters.set([str(s) for s in seed])
-                except Exception:
-                    pass
+            await self.engine.ensure_pool_migrated(guild)
+            # optional: if you want to seed legacy SEED_FILE only when *all* pools are empty
+            try:
+                if SEED_FILE.exists():
+                    # do not overwrite if there are already entries in current mode
+                    current = await self.engine.list_characters(guild)
+                    if not current:
+                        seed = json.loads(SEED_FILE.read_text(encoding="utf-8"))
+                        if isinstance(seed, list) and seed:
+                            await self.engine._set_pool_for_current_mode(guild, [str(s) for s in seed])
+            except Exception:
+                pass
         await self.tasks.start()
 
     def cog_unload(self) -> None:
@@ -55,11 +60,12 @@ class OnePieceGuess(commands.Cog):
         bmap = g.get("blur_by_mode") or {}
         prof = (bmap.get(current_mode) or bmap.get("characters") or {"mode":"gaussian","strength":8,"bw":False})
         tap = g.get("team_api") or {}
+        entries_count = len(await self.engine.list_characters(ctx.guild))
 
         status = (
             f"Status: **{enabled}**\n"
             f"Channel: {ch.mention if ch else '—'}\n"
-            f"Mode: **{current_mode}**\n"
+            f"Mode: **{current_mode}** • Entries in this mode: **{entries_count}**\n"
             f"Interval: **{g.get('interval')}s**\n"
             f"Round timeout: **{g.get('roundtime')}s**\n"
             f"Reward: **{g.get('reward')}**\n"
@@ -84,7 +90,7 @@ class OnePieceGuess(commands.Cog):
         await self.engine.set_current_mode(ctx.guild, name.strip().lower())
         await ctx.reply(f"Mode set to **{name.strip().lower()}**")
 
-    # ---- basic settings ----
+    # ---- game control ----
     @opguess.command(name="toggle")
     @commands.admin()
     async def opguess_toggle(self, ctx: commands.Context, on_off: Optional[bool] = None):
@@ -170,7 +176,7 @@ class OnePieceGuess(commands.Cog):
         g = await self.engine.config.guild(ctx.guild).all()
         await ctx.reply(f"Hint **{'ON' if g.get('hint_enabled') else 'OFF'}**, max **{g.get('hint_max_chars')}** chars.")
 
-    # ---- import/export (unchanged) ----
+    # ------------ IMPORT / EXPORT ------------
     @opguess.command(name="import")
     @commands.admin()
     async def opguess_import(self, ctx: commands.Context):
@@ -184,26 +190,31 @@ class OnePieceGuess(commands.Cog):
             return await ctx.reply("Invalid JSON.")
         if isinstance(payload, list):
             titles = [str(x) for x in payload]
-            await self.engine.config.guild(ctx.guild).characters.set(titles)
+            await self.engine._set_pool_for_current_mode(ctx.guild, titles)
+            return await ctx.reply(f"Imported **{len(titles)}** entries into current mode.")
         elif isinstance(payload, dict):
             titles = [str(x) for x in payload.get("characters", [])]
             aliases = payload.get("aliases", {})
             hints = payload.get("hints", {})
-            await self.engine.config.guild(ctx.guild).characters.set(titles)
+            if titles:
+                await self.engine._set_pool_for_current_mode(ctx.guild, titles)
             await self.engine.config.guild(ctx.guild).aliases.set(
                 {str(k): [str(v) for v in vs] for k, vs in aliases.items()}
             )
             await self.engine.config.guild(ctx.guild).hints.set(
                 {str(k): str(v) for k, v in hints.items()}
             )
+            return await ctx.reply(
+                f"Imported **{len(await self.engine.list_characters(ctx.guild))}** entries for this mode, "
+                f"{len(aliases)} alias maps, {len(hints)} hints."
+            )
         else:
             return await ctx.reply("Unsupported JSON structure.")
-        await ctx.reply(f"Imported **{len(await self.engine.config.guild(ctx.guild).characters())}** entries.")
 
     @opguess.command(name="export")
     @commands.admin()
     async def opguess_export(self, ctx: commands.Context):
-        titles = await self.engine.config.guild(ctx.guild).characters()
+        titles = await self.engine.list_characters(ctx.guild)
         aliases = await self.engine.config.guild(ctx.guild).aliases()
         hints = await self.engine.config.guild(ctx.guild).hints()
         payload = {"characters": titles, "aliases": aliases, "hints": hints}
@@ -211,15 +222,14 @@ class OnePieceGuess(commands.Cog):
         buf.seek(0)
         await ctx.reply(file=discord.File(buf, filename="onepiece_characters.json"))
 
-    # ---- characters & aliases (as you had) ----
+    # ---- character pool & aliases (operate on CURRENT MODE pool) ----
     @opguess.group(name="char", invoke_without_command=True)
     @commands.admin()
     async def opguess_char(self, ctx: commands.Context):
+        mode = await self.engine.get_current_mode(ctx.guild)
         chars = await self.engine.list_characters(ctx.guild)
-        if not chars:
-            return await ctx.reply("No characters configured. Use `[p]opguess char add <title>` or `[p]opguess import`.")
         sample = ", ".join(chars[:10]) + (" …" if len(chars) > 10 else "")
-        await ctx.reply(f"Characters: **{len(chars)}**\nSample: {sample}")
+        await ctx.reply(f"**{mode}** entries: **{len(chars)}**\nSample: {sample or '—'}")
 
     @opguess_char.command(name="add")
     @commands.admin()
@@ -240,62 +250,63 @@ class OnePieceGuess(commands.Cog):
         await self.engine.upsert_aliases(ctx.guild, title, aliases)
         await ctx.reply(f"Aliases set for **{title}**: {', '.join(aliases) if aliases else '—'}")
 
+    # --- aliases management (view/add/remove/clear) ---
+    async def _resolve_title(self, guild: discord.Guild, title: str) -> str:
+        chars = await self.engine.list_characters(guild)
+        return next((t for t in chars if t.lower() == title.lower()), title)
+
     @opguess_char.command(name="aliasesview", aliases=["aliasshow", "aliasesget"])
     @commands.admin()
     async def opguess_char_aliases_view(self, ctx: commands.Context, *, title: str):
-        chars = await self.engine.config.guild(ctx.guild).characters()
-        key = next((t for t in chars if t.lower() == title.lower()), title)
-        amap = await self.engine.config.guild(ctx.guild).aliases()
-        cur = amap.get(key, [])
-        if not cur:
-            return await ctx.reply(f"**{key}** has no aliases saved.")
-        await ctx.reply(f"**{key}** aliases ({len(cur)}): {', '.join(cur)}")
+        title_key = await self._resolve_title(ctx.guild, title.strip())
+        aliases_map = await self.engine.config.guild(ctx.guild).aliases()
+        current = aliases_map.get(title_key, [])
+        if not current:
+            return await ctx.reply(f"**{title_key}** has no aliases saved.")
+        await ctx.reply(f"**{title_key}** aliases ({len(current)}): {', '.join(current)}")
 
     @opguess_char.command(name="aliasadd", aliases=["addalias"])
     @commands.admin()
     async def opguess_char_alias_add(self, ctx: commands.Context, title: str, *, aliases: str):
-        chars = await self.engine.config.guild(ctx.guild).characters()
-        key = next((t for t in chars if t.lower() == title.lower()), title)
-        amap = await self.engine.config.guild(ctx.guild).aliases()
-        base = set(amap.get(key, []))
+        title_key = await self._resolve_title(ctx.guild, title.strip())
+        aliases_map = await self.engine.config.guild(ctx.guild).aliases()
+        base = set(aliases_map.get(title_key, []))
         new_items = {a.strip() for a in aliases.split(",") if a.strip()}
         if not new_items:
             return await ctx.reply("Provide at least one alias (comma-separated).")
         updated = sorted(base | new_items, key=str.lower)
-        amap[key] = updated
-        await self.engine.config.guild(ctx.guild).aliases.set(amap)
+        aliases_map[title_key] = updated
+        await self.engine.config.guild(ctx.guild).aliases.set(aliases_map)
         added = len(updated) - len(base)
-        await ctx.reply(f"Added {added} alias(es) to **{key}**.\nNow: {', '.join(updated) if updated else '—'}")
+        await ctx.reply(f"Added {added} alias(es) to **{title_key}**.\nNow: {', '.join(updated) if updated else '—'}")
 
     @opguess_char.command(name="aliasremove", aliases=["remalias", "delalias"])
     @commands.admin()
     async def opguess_char_alias_remove(self, ctx: commands.Context, title: str, *, aliases: str):
-        chars = await self.engine.config.guild(ctx.guild).characters()
-        key = next((t for t in chars if t.lower() == title.lower()), title)
-        amap = await self.engine.config.guild(ctx.guild).aliases()
-        current = set(amap.get(key, []))
+        title_key = await self._resolve_title(ctx.guild, title.strip())
+        aliases_map = await self.engine.config.guild(ctx.guild).aliases()
+        current = set(aliases_map.get(title_key, []))
         if not current:
-            return await ctx.reply(f"**{key}** has no aliases to remove.")
+            return await ctx.reply(f"**{title_key}** has no aliases to remove.")
         to_remove = {a.strip() for a in aliases.split(",") if a.strip()}
         new_set = current - to_remove
-        amap[key] = sorted(new_set, key=str.lower)
-        await self.engine.config.guild(ctx.guild).aliases.set(amap)
+        aliases_map[title_key] = sorted(new_set, key=str.lower)
+        await self.engine.config.guild(ctx.guild).aliases.set(aliases_map)
         removed = len(current) - len(new_set)
-        await ctx.reply(f"Removed {removed} alias(es) from **{key}**.\nNow: {', '.join(amap[key]) if amap[key] else '—'}")
+        await ctx.reply(f"Removed {removed} alias(es) from **{title_key}**.\nNow: {', '.join(aliases_map[title_key]) if aliases_map[title_key] else '—'}")
 
     @opguess_char.command(name="aliasclear", aliases=["clearaliases"])
     @commands.admin()
     async def opguess_char_alias_clear(self, ctx: commands.Context, *, title: str):
-        chars = await self.engine.config.guild(ctx.guild).characters()
-        key = next((t for t in chars if t.lower() == title.lower()), title)
-        amap = await self.engine.config.guild(ctx.guild).aliases()
-        had = len(amap.get(key, []))
-        if key in amap:
-            amap[key] = []
-            await self.engine.config.guild(ctx.guild).aliases.set(amap)
-        await ctx.reply(f"Cleared {had} alias(es) for **{key}**.")
+        title_key = await self._resolve_title(ctx.guild, title.strip())
+        aliases_map = await self.engine.config.guild(ctx.guild).aliases()
+        had = len(aliases_map.get(title_key, []))
+        if title_key in aliases_map:
+            aliases_map[title_key] = []
+            await self.engine.config.guild(ctx.guild).aliases.set(aliases_map)
+        await ctx.reply(f"Cleared {had} alias(es) for **{title_key}**.")
 
-    # ---- status / reveal / forcepost (unchanged except blur source) ----
+    # ---- status / reveal / forcepost ----
     @opguess.command(name="status")
     @commands.admin()
     @commands.guild_only()
@@ -373,7 +384,7 @@ class OnePieceGuess(commands.Cog):
         await self._post_once(ctx.guild)
         await ctx.reply("Round posted (if pool not empty).")
 
-    # ---- posting (uses per-mode blur) ----
+    # ---- posting (uses per-mode blur & per-mode pool) ----
     async def _post_once(self, guild):
         gconf = await self.engine.config.guild(guild).all()
         channel = guild.get_channel(int(gconf.get("channel_id") or 0))
@@ -431,6 +442,7 @@ class OnePieceGuess(commands.Cog):
             else:
                 await ctx.reply("No active round — wait for the next prompt.", delete_after=5)
             return
+
         if not ok:
             if getattr(ctx, "message", None):
                 try:
@@ -445,13 +457,15 @@ class OnePieceGuess(commands.Cog):
 
         # Correct!
         await self.engine.set_expired(ctx.guild, True)
+
+        # Stats & optional local reward
         u = self.engine.config.user(ctx.author)
         wins = await u.wins() or 0
         await u.wins.set(wins + 1)
         reward = await self.engine.config.guild(ctx.guild).reward()
         await self.engine.reward(ctx.author, reward)
 
-        # Teams points note (same as before)
+        # Teams integration (AAA3A Teams cog mode)
         award_note = ""
         try:
             tconf = await self.engine.config.guild(ctx.guild).team_api()
@@ -475,11 +489,8 @@ class OnePieceGuess(commands.Cog):
                         else:
                             award_note = " (**Teams cog not loaded**)"
                     else:
-                        try:
-                            await self.engine.team_api.send_win(ctx.guild, ctx.author, title)  # optional external
-                            award_note = f" (**+{win_pts} team points**)"
-                        except Exception:
-                            award_note = " (**team API error**)"
+                        # optional HTTP integration if you decide to wire it later
+                        award_note = f" (**+{win_pts} team points**)"
         except Exception:
             pass
 
