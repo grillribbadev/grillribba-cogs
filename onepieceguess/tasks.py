@@ -134,9 +134,9 @@ class GuessTasks:
                 if not half_hint_sent and elapsed >= roundtime / 2:
                     hint_text: Optional[str] = None
 
-                    # Try a safe quote first (no name/aliases)
+                    # Try a safe quote first (no name/aliases) — mode-aware aliases map
                     try:
-                        aliases = await self.engine.config.guild(guild).aliases()
+                        aliases = await self.engine.get_aliases_map(guild)
                         forbidden_names = [title] + aliases.get(title, [])
                         toks = []
                         for n in forbidden_names:
