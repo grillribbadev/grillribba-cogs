@@ -1,4 +1,6 @@
 from __future__ import annotations
+import asyncio
+import json
 import random
 import re
 import time
@@ -27,26 +29,25 @@ class GuessEngine:
         self.config.register_guild(**DEFAULT_GUILD)
         self.config.register_user(**DEFAULT_USER)
 
-    # ---------------- mode helpers ----------------
+    # ---------------- migration helpers ----------------
 
-    async def get_mode(self, guild: discord.Guild) -> str:
-        mode = await self.config.guild(guild).mode()
-        mode = (mode or "character").lower()
-        return "character" if mode not in {"character", "fruit", "ship"} else mode
-
-    def _pool_keys(self, mode: str) -> Tuple[str, str, str]:
-        """Return (titles_key, aliases_key, hints_key) for config based on mode."""
-        if mode == "fruit":
-            return "fruits", "fruit_aliases", "fruit_hints"
-        if mode == "ship":
-            return "ships", "ship_aliases", "ship_hints"
-        # default: character
-        return "characters", "aliases", "hints"
-
-    async def get_aliases_map(self, guild: discord.Guild) -> Dict[str, List[str]]:
-        mode = await self.get_mode(guild)
-        _, aliases_key, _ = self._pool_keys(mode)
-        return await getattr(self.config.guild(guild), aliases_key)()
+    async def ensure_profiles_migrated(self, guild: discord.Guild) -> None:
+        """If old single 'blur' exists and profiles not initialized, seed _default from it."""
+        g = await self.config.guild(guild).all()
+        if "blur_profiles" not in g or not g.get("blur_profiles"):
+            # seed from legacy blur
+            legacy = g.get("blur") or {"mode": "gaussian", "strength": 8, "bw": False}
+            await self.config.guild(guild).blur_profiles.set({"_default": legacy})
+        # ensure keys exist
+        if "categories" not in g:
+            await self.config.guild(guild).categories.set({})
+        if "default_category" not in g:
+            await self.config.guild(guild).default_category.set("characters")
+        # ensure active.half_hint_sent is present
+        active = g.get("active") or {}
+        if "half_hint_sent" not in active:
+            active["half_hint_sent"] = False
+            await self.config.guild(guild).active.set(active)
 
     # ---------------- active round helpers ----------------
 
@@ -73,67 +74,88 @@ class GuessEngine:
         active["half_hint_sent"] = True
         await self.config.guild(guild).active.set(active)
 
-    # ---------------- pool & aliases (mode-aware) ----------------
+    # ---------------- category & blur profile helpers ----------------
 
-    async def list_entries(self, guild: discord.Guild) -> List[str]:
-        mode = await self.get_mode(guild)
-        titles_key, _, _ = self._pool_keys(mode)
-        return await getattr(self.config.guild(guild), titles_key)()
+    async def get_category(self, guild: discord.Guild, title: str) -> str:
+        cats = await self.config.guild(guild).categories()
+        default_cat = await self.config.guild(guild).default_category()
+        return cats.get(title, default_cat or "characters")
 
-    # Back-compat names used by the cog:
+    async def set_category(self, guild: discord.Guild, title: str, category: str) -> None:
+        cats = await self.config.guild(guild).categories()
+        cats[str(title)] = str(category)
+        await self.config.guild(guild).categories.set(cats)
+
+    async def set_default_category(self, guild: discord.Guild, category: str) -> None:
+        await self.config.guild(guild).default_category.set(str(category))
+
+    async def get_blur_for_title(self, guild: discord.Guild, title: str) -> Dict[str, object]:
+        """Return merged blur profile for title's category (category overrides on top of _default)."""
+        profiles = await self.config.guild(guild).blur_profiles()
+        _default = profiles.get("_default", {"mode": "gaussian", "strength": 8, "bw": False})
+        cat = await self.get_category(guild, title)
+        override = profiles.get(cat, {}) or {}
+        merged = dict(_default)
+        merged.update({k: v for k, v in override.items() if v is not None})
+        return merged
+
+    async def update_blur_profile(self, guild: discord.Guild, category: str, **entries) -> Dict[str, object]:
+        profiles = await self.config.guild(guild).blur_profiles()
+        prof = dict(profiles.get(category, {}))
+        for k, v in entries.items():
+            prof[k] = v
+        profiles[category] = prof
+        await self.config.guild(guild).blur_profiles.set(profiles)
+        return prof
+
+    async def clear_blur_profile(self, guild: discord.Guild, category: str) -> None:
+        profiles = await self.config.guild(guild).blur_profiles()
+        if category in profiles and category != "_default":
+            profiles[category] = {}
+            await self.config.guild(guild).blur_profiles.set(profiles)
+
+    # ---------------- character pool & aliases ----------------
+
     async def list_characters(self, guild: discord.Guild) -> List[str]:
-        return await self.list_entries(guild)
+        return await self.config.guild(guild).characters()
 
-    async def add_entry(self, guild: discord.Guild, title: str) -> bool:
-        mode = await self.get_mode(guild)
-        titles_key, _, _ = self._pool_keys(mode)
-        items = await getattr(self.config.guild(guild), titles_key)()
+    async def add_character(self, guild: discord.Guild, title: str) -> bool:
+        items = await self.config.guild(guild).characters()
         if title in items:
             return False
         items.append(title)
-        await getattr(self.config.guild(guild), titles_key).set(items)
-        return True
-
-    async def add_character(self, guild: discord.Guild, title: str) -> bool:
-        return await self.add_entry(guild, title)
-
-    async def remove_entry(self, guild: discord.Guild, title: str) -> bool:
-        mode = await self.get_mode(guild)
-        titles_key, aliases_key, hints_key = self._pool_keys(mode)
-        items = await getattr(self.config.guild(guild), titles_key)()
-        if title not in items:
-            return False
-        items.remove(title)
-        await getattr(self.config.guild(guild), titles_key).set(items)
-        # cleanup optional hint & aliases
-        aliases = await getattr(self.config.guild(guild), aliases_key)()
-        aliases.pop(title, None)
-        await getattr(self.config.guild(guild), aliases_key).set(aliases)
-        hints = await getattr(self.config.guild(guild), hints_key)()
-        hints.pop(title, None)
-        await getattr(self.config.guild(guild), hints_key).set(hints)
+        await self.config.guild(guild).characters.set(items)
         return True
 
     async def remove_character(self, guild: discord.Guild, title: str) -> bool:
-        return await self.remove_entry(guild, title)
+        items = await self.config.guild(guild).characters()
+        if title not in items:
+            return False
+        items.remove(title)
+        await self.config.guild(guild).characters.set(items)
+        # cleanup optional hint & aliases & category
+        aliases = await self.config.guild(guild).aliases()
+        aliases.pop(title, None)
+        await self.config.guild(guild).aliases.set(aliases)
+        hints = await self.config.guild(guild).hints()
+        hints.pop(title, None)
+        await self.config.guild(guild).hints.set(hints)
+        cats = await self.config.guild(guild).categories()
+        cats.pop(title, None)
+        await self.config.guild(guild).categories.set(cats)
+        return True
 
     async def upsert_aliases(self, guild: discord.Guild, title: str, aliases: List[str]) -> None:
-        mode = await self.get_mode(guild)
-        _, aliases_key, _ = self._pool_keys(mode)
-        m = await getattr(self.config.guild(guild), aliases_key)()
+        m = await self.config.guild(guild).aliases()
         m[str(title)] = list(dict.fromkeys([a for a in aliases if a]))  # dedup/preserve order
-        await getattr(self.config.guild(guild), aliases_key).set(m)
+        await self.config.guild(guild).aliases.set(m)
 
     async def get_hint(self, guild: discord.Guild, title: str) -> Optional[str]:
-        mode = await self.get_mode(guild)
-        _, _, hints_key = self._pool_keys(mode)
-        hints = await getattr(self.config.guild(guild), hints_key)()
+        hints = await self.config.guild(guild).hints()
         return hints.get(title)
 
     async def pick_random_title(self, guild: discord.Guild) -> Optional[str]:
-        mode = await self.get_mode(guild)
-        titles_key, _, _ = self._pool_keys(mode)
-        items = await getattr(self.config.guild(guild), titles_key)()
+        items = await self.config.guild(guild).characters()
         return random.choice(items) if items else None
 
     # ---------------- answer checking ----------------
@@ -146,9 +168,9 @@ class GuessEngine:
 
         title = active["title"]
 
-        # build candidate keywords (title + aliases) from current mode
-        aliases_map = await self.get_aliases_map(guild)
-        keys = [title] + aliases_map.get(title, [])
+        # build candidate keywords (title + aliases)
+        aliases = await self.config.guild(guild).aliases()
+        keys = [title] + aliases.get(title, [])
         normalized_guess = self._normalize(user_input)
 
         for key in keys:
@@ -172,7 +194,7 @@ class GuessEngine:
         # containment
         if k in guess or guess in k:
             return True
-        # token overlap for >=3 chars (helps typos/aliases)
+        # token overlap for >=3 chars
         g_tokens = set(t for t in guess.split() if len(t) >= 3)
         k_tokens = set(t for t in k.split() if len(t) >= 3)
         return bool(g_tokens & k_tokens)
@@ -206,7 +228,7 @@ class GuessEngine:
     async def get_random_quote(self, title: str, forbidden: List[str]) -> Optional[str]:
         """
         Try to grab a random quote from the page's 'Quotes' section.
-        Filters out quotes that mention the entry's name or aliases.
+        Filters out quotes that mention the character's name or aliases.
         Returns a plain-text quote (no speaker prefix), or None.
         """
         # 1) find the section index for 'Quotes'
