@@ -14,9 +14,11 @@ ROUND_DEFAULT    = 120    # seconds a round stays open before timing out
 # ---- Teams integration (AAA3A Teams cog, or HTTP if you keep it) ----
 TEAMAPI_DEFAULT = {
     "enabled": False,
-    "mode": "teamscog",
+    "mode": "teamscog",            # "teamscog" (direct to Teams cog) or "http"
     "win_points": 1,
     "timeout_points": 0,
+
+    # HTTP fields are harmless if unused
     "base_url": "",
     "token": "",
     "endpoint_path": "/api/onepieceguess/event",
@@ -27,41 +29,44 @@ DEFAULT_GUILD = {
     "enabled": False,
     "channel_id": None,
 
-    # current game mode
+    # current game mode: "character" | "fruit" | "ship"
     "mode": "character",
 
-    # cadence & timeout
-    "interval": INTERVAL_DEFAULT,
-    "roundtime": ROUND_DEFAULT,
+    # posting cadence & per-round timeout
+    "interval": INTERVAL_DEFAULT,  # seconds between round posts
+    "roundtime": ROUND_DEFAULT,    # seconds until a round times out
 
-    # local reward
+    # optional local reward (set to 0 to noop)
     "reward": REWARD_DEFAULT,
 
-    # POOLS (per-mode)
-    "characters": [],
-    "aliases": {},
-    "hints": {},
+    # --- POOLS (per-mode) ---
+    # Characters
+    "characters": [],              # list[str]
+    "aliases": {},                 # title -> list[str]
+    "hints": {},                   # title -> str (optional override)
 
+    # Devil Fruits
     "fruits": [],
     "fruit_aliases": {},
     "fruit_hints": {},
 
+    # Ships
     "ships": [],
     "ship_aliases": {},
     "ship_hints": {},
 
-    # hints (embed field)
+    # hints (wiki extract or custom)
     "hint_enabled": True,
     "hint_max_chars": 200,
 
     # Image settings (blur + optional black & white)
     "blur": {
-        "mode": "gaussian",
-        "strength": 8,
-        "bw": False,
+        "mode": "gaussian",        # "gaussian" or "pixelate"
+        "strength": 8,             # clamped in code up to 250
+        "bw": False,               # black & white toggle
     },
 
-    # NEW: image failsafe
+    # NEW: image failsafe controls
     "require_image": {          # per-mode toggle
         "character": False,
         "fruit": True,
@@ -69,7 +74,7 @@ DEFAULT_GUILD = {
     },
     "noimage_max_retries": 6,   # how many picks to try before skipping the cycle
 
-    # Teams integration
+    # Teams integration block
     "team_api": TEAMAPI_DEFAULT.copy(),
 
     # Active round state (runtime)
@@ -79,6 +84,7 @@ DEFAULT_GUILD = {
         "posted_channel_id": None,
         "started_at": 0,
         "expired": False,
+        # whether we already posted the mid-round quote/initials
         "half_hint_sent": False,
     },
 }
