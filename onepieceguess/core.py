@@ -1,6 +1,4 @@
 from __future__ import annotations
-import asyncio
-import json
 import random
 import re
 import time
@@ -29,6 +27,27 @@ class GuessEngine:
         self.config.register_guild(**DEFAULT_GUILD)
         self.config.register_user(**DEFAULT_USER)
 
+    # ---------------- mode helpers ----------------
+
+    async def get_mode(self, guild: discord.Guild) -> str:
+        mode = await self.config.guild(guild).mode()
+        mode = (mode or "character").lower()
+        return "character" if mode not in {"character", "fruit", "ship"} else mode
+
+    def _pool_keys(self, mode: str) -> Tuple[str, str, str]:
+        """Return (titles_key, aliases_key, hints_key) for config based on mode."""
+        if mode == "fruit":
+            return "fruits", "fruit_aliases", "fruit_hints"
+        if mode == "ship":
+            return "ships", "ship_aliases", "ship_hints"
+        # default: character
+        return "characters", "aliases", "hints"
+
+    async def get_aliases_map(self, guild: discord.Guild) -> Dict[str, List[str]]:
+        mode = await self.get_mode(guild)
+        _, aliases_key, _ = self._pool_keys(mode)
+        return await getattr(self.config.guild(guild), aliases_key)()
+
     # ---------------- active round helpers ----------------
 
     async def set_active(self, guild: discord.Guild, *, title: str, message: discord.Message) -> None:
@@ -54,45 +73,67 @@ class GuessEngine:
         active["half_hint_sent"] = True
         await self.config.guild(guild).active.set(active)
 
-    # ---------------- character pool & aliases ----------------
+    # ---------------- pool & aliases (mode-aware) ----------------
 
+    async def list_entries(self, guild: discord.Guild) -> List[str]:
+        mode = await self.get_mode(guild)
+        titles_key, _, _ = self._pool_keys(mode)
+        return await getattr(self.config.guild(guild), titles_key)()
+
+    # Back-compat names used by the cog:
     async def list_characters(self, guild: discord.Guild) -> List[str]:
-        return await self.config.guild(guild).characters()
+        return await self.list_entries(guild)
 
-    async def add_character(self, guild: discord.Guild, title: str) -> bool:
-        items = await self.config.guild(guild).characters()
+    async def add_entry(self, guild: discord.Guild, title: str) -> bool:
+        mode = await self.get_mode(guild)
+        titles_key, _, _ = self._pool_keys(mode)
+        items = await getattr(self.config.guild(guild), titles_key)()
         if title in items:
             return False
         items.append(title)
-        await self.config.guild(guild).characters.set(items)
+        await getattr(self.config.guild(guild), titles_key).set(items)
         return True
 
-    async def remove_character(self, guild: discord.Guild, title: str) -> bool:
-        items = await self.config.guild(guild).characters()
+    async def add_character(self, guild: discord.Guild, title: str) -> bool:
+        return await self.add_entry(guild, title)
+
+    async def remove_entry(self, guild: discord.Guild, title: str) -> bool:
+        mode = await self.get_mode(guild)
+        titles_key, aliases_key, hints_key = self._pool_keys(mode)
+        items = await getattr(self.config.guild(guild), titles_key)()
         if title not in items:
             return False
         items.remove(title)
-        await self.config.guild(guild).characters.set(items)
+        await getattr(self.config.guild(guild), titles_key).set(items)
         # cleanup optional hint & aliases
-        aliases = await self.config.guild(guild).aliases()
+        aliases = await getattr(self.config.guild(guild), aliases_key)()
         aliases.pop(title, None)
-        await self.config.guild(guild).aliases.set(aliases)
-        hints = await self.config.guild(guild).hints()
+        await getattr(self.config.guild(guild), aliases_key).set(aliases)
+        hints = await getattr(self.config.guild(guild), hints_key)()
         hints.pop(title, None)
-        await self.config.guild(guild).hints.set(hints)
+        await getattr(self.config.guild(guild), hints_key).set(hints)
         return True
 
+    async def remove_character(self, guild: discord.Guild, title: str) -> bool:
+        return await self.remove_entry(guild, title)
+
     async def upsert_aliases(self, guild: discord.Guild, title: str, aliases: List[str]) -> None:
-        m = await self.config.guild(guild).aliases()
+        mode = await self.get_mode(guild)
+        _, aliases_key, _ = self._pool_keys(mode)
+        m = await getattr(self.config.guild(guild), aliases_key)()
         m[str(title)] = list(dict.fromkeys([a for a in aliases if a]))  # dedup/preserve order
-        await self.config.guild(guild).aliases.set(m)
+        await getattr(self.config.guild(guild), aliases_key).set(m)
 
     async def get_hint(self, guild: discord.Guild, title: str) -> Optional[str]:
-        hints = await self.config.guild(guild).hints()
+        mode = await self.get_mode(guild)
+        _, _, hints_key = self._pool_keys(mode)
+        hints = await getattr(self.config.guild(guild), hints_key)()
         return hints.get(title)
 
     async def pick_random_title(self, guild: discord.Guild) -> Optional[str]:
-        items = await self.config.guild(guild).characters()
+        mode = await self.get_mode(guild)
+        titles_key, _, _ = self._pool_keys(mode)
+        items = await getattr(self.config.guild(guild), titles_key)()
         return random.choice(items) if items else None
 
     # ---------------- answer checking ----------------
@@ -105,9 +146,9 @@ class GuessEngine:
 
         title = active["title"]
 
-        # build candidate keywords (title + aliases)
-        aliases = await self.config.guild(guild).aliases()
-        keys = [title] + aliases.get(title, [])
+        # build candidate keywords (title + aliases) from current mode
+        aliases_map = await self.get_aliases_map(guild)
+        keys = [title] + aliases_map.get(title, [])
         normalized_guess = self._normalize(user_input)
 
         for key in keys:
@@ -131,7 +172,7 @@ class GuessEngine:
         # containment
         if k in guess or guess in k:
             return True
-        # token overlap for >=3 chars
+        # token overlap for >=3 chars (helps typos/aliases)
         g_tokens = set(t for t in guess.split() if len(t) >= 3)
         k_tokens = set(t for t in k.split() if len(t) >= 3)
         return bool(g_tokens & k_tokens)
@@ -165,7 +206,7 @@ class GuessEngine:
     async def get_random_quote(self, title: str, forbidden: List[str]) -> Optional[str]:
         """
         Try to grab a random quote from the page's 'Quotes' section.
-        Filters out quotes that mention the character's name or aliases.
+        Filters out quotes that mention the entry's name or aliases.
         Returns a plain-text quote (no speaker prefix), or None.
         """
         # 1) find the section index for 'Quotes'
