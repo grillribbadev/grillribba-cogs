@@ -6,6 +6,7 @@ from io import BytesIO
 import aiohttp
 import io
 import time
+import difflib  # added for fuzzy title fallback
 
 import discord
 from redbot.core import commands
@@ -363,16 +364,115 @@ class OnePieceGuess(commands.Cog):
         buf.seek(0)
         await ctx.reply(file=discord.File(buf, filename=f"onepiece_{mode}.json"))
 
+    # ---- Force post (now supports specific title) ----
     @opguess.command(name="forcepost")
     @commands.admin()
-    async def opguess_forcepost(self, ctx: commands.Context):
+    async def opguess_forcepost(self, ctx: commands.Context, *, title: Optional[str] = None):
+        """
+        Force post a round immediately.
+        - `.opguess forcepost` → random from current mode pool (unchanged)
+        - `.opguess forcepost <title>` → specific entry (case-insensitive; fuzzy fallback)
+        """
         g = await self.engine.config.guild(ctx.guild).all()
         ch = ctx.guild.get_channel(g.get("channel_id") or 0)
         if not ch:
             return await ctx.reply("No channel configured. Use `opguess setchannel`.")
-        await self.engine.set_expired(ctx.guild, True)  # mark old round done
-        await self._post_once(ctx.guild)
-        await ctx.reply("Round posted (if pool is not empty).")
+
+        # end any current round so we can post anew
+        await self.engine.set_expired(ctx.guild, True)
+
+        if not title:
+            await self._post_once(ctx.guild)
+            return await ctx.reply("Round posted (random from current mode).")
+
+        # resolve title within CURRENT mode pool
+        pool = await self.engine.list_characters(ctx.guild)
+        if not pool:
+            return await ctx.reply("The current mode pool is empty.")
+
+        wanted = title.strip()
+        match = next((t for t in pool if t.lower() == wanted.lower()), None)
+        if not match:
+            # fuzzy best match to help with minor typos
+            cand = difflib.get_close_matches(wanted, pool, n=1, cutoff=0.75)
+            if cand:
+                match = cand[0]
+
+        if not match:
+            sample = ", ".join(pool[:10]) + (" …" if len(pool) > 10 else "")
+            return await ctx.reply(
+                f"Couldn't find **{wanted}** in the current mode pool.\n"
+                f"Sample entries: {sample or '—'}"
+            )
+
+        ok = await self._post_specific(ctx.guild, match)
+        if not ok:
+            return await ctx.reply(
+                f"Couldn't post **{match}** (likely no image and `requireimage` is enabled)."
+            )
+        await ctx.reply(f"Round posted with **{match}**.")
+
+    async def _post_specific(self, guild: discord.Guild, title: str) -> bool:
+        """Post a round for a specific title. Respects blur/BW, hints, and require_image settings."""
+        gconf = await self.engine.config.guild(guild).all()
+        channel = guild.get_channel(int(gconf.get("channel_id") or 0))
+        if not channel:
+            return False
+
+        mode = (gconf.get("mode") or "character").lower()
+        # fetch wiki data
+        ctitle, extract, image_url = await self.engine.fetch_page_brief(title)
+
+        # require image behavior (same as _post_once)
+        require_map = gconf.get("require_image") or {}
+        require_image = bool(require_map.get(mode, mode in {"fruit", "ship"}))
+        if require_image and not image_url:
+            return False
+
+        interval = int(gconf.get("interval") or 1800)
+        roundtime = int(gconf.get("roundtime") or 120)
+
+        heading = {
+            "fruit": "🗺️ Guess the Devil Fruit!",
+            "ship": "🗺️ Guess the Ship!",
+        }.get(mode, "🗺️ Guess the One Piece Character!")
+
+        emb = discord.Embed(
+            title=heading,
+            description="Reply with `.guess <name>` (prefix) or `/guess` if enabled.",
+            color=COLOR_OK,
+        )
+        emb.set_footer(text=f"Timer: {interval}s • Round timeout: {roundtime}s")
+
+        if gconf.get("hint_enabled"):
+            # same behavior as _post_once: prefer custom hint; else wiki extract (no redaction here to match current)
+            try:
+                custom = await self.engine.get_hint(guild, title)
+            except Exception:
+                custom = None
+            text = custom if custom else extract
+            if text:
+                maxn = int(gconf.get("hint_max_chars") or 200)
+                val = text if len(text) <= maxn else (text[:maxn] + "…")
+                emb.add_field(name="Hint", value=val, inline=False)
+
+        file = None
+        if image_url:
+            blur = gconf.get("blur") or {}
+            mode_blur = str(blur.get("mode") or "gaussian").lower()
+            strength = int(blur.get("strength") or 8)
+            bw = bool(blur.get("bw"))
+            buf = await self.engine.make_blurred(image_url, mode=mode_blur, strength=strength, bw=bw)
+            if buf:
+                file = discord.File(buf, filename="opguess_blur.png")
+                emb.set_image(url="attachment://opguess_blur.png")
+            elif require_image:
+                return False
+
+        message = await channel.send(embed=emb, file=file) if file else await channel.send(embed=emb)
+        await self.engine.set_active(guild, title=ctitle, message=message)
+        await self.engine.set_expired(guild, False)
+        return True
 
     # ---- Teams settings (simple): toggle + mode + points ----
     @opguess.group(name="teamapi", invoke_without_command=True)
