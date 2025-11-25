@@ -151,12 +151,18 @@ class GuessEngine:
 
         # build candidate keywords (title + aliases) from current mode
         aliases_map = await self.get_aliases_map(guild)
-        keys = [title] + aliases_map.get(title, [])
+        alias_list = aliases_map.get(title, [])
         normalized_guess = self._normalize(user_input)
 
-        for key in keys:
-            if self._is_match(normalized_guess, key):
+        # 1) try the main title (not alias)
+        if self._is_match(normalized_guess, title, alias=False):
+            return True, title
+
+        # 2) try aliases (looser single-token allowed here)
+        for alias_key in alias_list:
+            if self._is_match(normalized_guess, alias_key, alias=True):
                 return True, title
+
         return False, title
 
     @staticmethod
@@ -166,11 +172,13 @@ class GuessEngine:
         s = re.sub(r"[^a-z0-9]+", " ", s)
         return re.sub(r"\s+", " ", s).strip()
 
-    def _is_match(self, guess: str, key: str) -> bool:
+    def _is_match(self, guess: str, key: str, *, alias: bool = False) -> bool:
         """Lenient but safe matcher:
         - exact normalized match
-        - token-subset match with at least one token length >= 4
-        - single-token match if that token (>=4 chars) appears as a full token in the answer
+        - token-subset match with at least one token length >= 4 (multi-token)
+        - single-token:
+            * if alias=True → allow single-token (>=4) exact token match
+            * if alias=False → allow only when that token (>=4) matches a NON-FIRST token in the title
         - fuzzy similarity >= 0.85 when both strings are at least 4 chars
         """
         g = self._normalize(guess)
@@ -192,15 +200,23 @@ class GuessEngine:
         g_set = set(g_tokens)
         k_set = set(k_tokens)
 
-        # 1) token-subset rule: all guessed tokens are in answer tokens,
-        #    and at least one token has length >= 4
-        if g_set.issubset(k_set) and any(len(t) >= 4 for t in g_set):
+        # 1) token-subset rule: multi-token subset with at least one token len >= 4
+        if g_set.issubset(k_set) and any(len(t) >= 4 for t in g_set) and len(g_tokens) > 1:
             return True
 
-        # 2) single-token "surname/nickname" rule:
-        #    allow if guess is a single token (>=4 chars) and matches a token in the answer
-        if len(g_tokens) == 1 and len(g_tokens[0]) >= 4 and g_tokens[0] in k_set:
-            return True
+        # 2) single-token handling (surname/nickname cases)
+        if len(g_tokens) == 1 and len(g_tokens[0]) >= 4:
+            tok = g_tokens[0]
+            if tok in k_set:
+                if alias:
+                    # alias match: allow single-token (e.g., "blackbeard")
+                    return True
+                else:
+                    # title match: only allow if it's NOT the first token
+                    # prevents "charlotte" from matching "Charlotte Linlin"
+                    if len(k_tokens) >= 2 and tok != k_tokens[0]:
+                        return True
+                    return False
 
         # 3) fuzzy similarity (difflib) for inputs 4+ chars
         if len(g) >= 4 and len(k) >= 4:
