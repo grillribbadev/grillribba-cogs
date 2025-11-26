@@ -731,7 +731,9 @@ class OnePieceGuess(commands.Cog):
         # Award Beri and get actual amount awarded
         beri_awarded = await self.engine.reward(ctx.author, reward)
 
-        # --- Teams integration (+ visible note) ---
+        # Replace lines 741-763 in your OnePieceGuess cog with this updated version:
+
+        # --- Teams integration (+ visible note + AMPLIFIER SUPPORT) ---
         award_note = ""
         try:
             tconf = await self.engine.config.guild(ctx.guild).team_api()
@@ -741,18 +743,45 @@ class OnePieceGuess(commands.Cog):
                 if win_pts > 0:
                     if mode_api == "teamscog":
                         teams_cog = self.bot.get_cog("Teams")
+                        amp_cog = self.bot.get_cog("BeriAmplifier")  # ⚡ GET AMPLIFIER COG
+                        
                         if teams_cog:
                             team = next(
                                 (t for t in teams_cog.teams.get(ctx.guild.id, {}).values() if ctx.author in t.members),
                                 None,
                             )
                             if team:
-                                manager = ctx.guild.me
-                                try:
-                                    await team.add_points(win_pts, ctx.author, manager)
-                                    award_note = f" (**+{win_pts}** to **{team.display_name}**)"
-                                except Exception:
-                                    award_note = " (**team points failed to apply**)"
+                                # ⚡ USE AMPLIFIER IF AVAILABLE
+                                if amp_cog:
+                                    try:
+                                        total_points = await amp_cog.add_amplified_points(
+                                            ctx.author,
+                                            win_pts,
+                                            "guessing_game_win",
+                                            notification_channel=None  # Don't send separate notification
+                                        )
+                                        bonus = total_points - win_pts
+                                        if bonus > 0:
+                                            award_note = f" (**+{win_pts}** base + **+{bonus}** amplifier = **{total_points}** to **{team.display_name}**)"
+                                        else:
+                                            award_note = f" (**+{total_points}** to **{team.display_name}**)"
+                                    except Exception as e:
+                                        # Fallback to regular points if amplifier fails
+                                        print(f"[OnePieceGuess] Amplifier error: {e}")
+                                        manager = ctx.guild.me
+                                        try:
+                                            await team.add_points(win_pts, ctx.author, manager)
+                                            award_note = f" (**+{win_pts}** to **{team.display_name}**)"
+                                        except Exception:
+                                            award_note = " (**team points failed to apply**)"
+                                else:
+                                    # No amplifier cog - use regular points
+                                    manager = ctx.guild.me
+                                    try:
+                                        await team.add_points(win_pts, ctx.author, manager)
+                                        award_note = f" (**+{win_pts}** to **{team.display_name}**)"
+                                    except Exception:
+                                        award_note = " (**team points failed to apply**)"
                             else:
                                 award_note = " (**no team — no points awarded**)"
                         else:
@@ -763,7 +792,8 @@ class OnePieceGuess(commands.Cog):
                             award_note = f" (**+{win_pts} team points**)"
                         except Exception:
                             award_note = " (**team API error**)"
-        except Exception:
+        except Exception as e:
+            print(f"[OnePieceGuess] Teams integration error: {e}")
             pass
 
         # Unblurred reveal on correct guess
