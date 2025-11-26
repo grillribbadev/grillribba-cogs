@@ -720,12 +720,16 @@ class OnePieceGuess(commands.Cog):
         # Correct!
         await self.engine.set_expired(ctx.guild, True)
 
-        # Stats & optional local reward
+        # Stats & Beri reward
         u = self.engine.config.user(ctx.author)
         wins = await u.wins() or 0
         await u.wins.set(wins + 1)
+        
+        # Get configured reward (0 = random)
         reward = await self.engine.config.guild(ctx.guild).reward()
-        await self.engine.reward(ctx.author, reward)
+        
+        # Award Beri and get actual amount awarded
+        beri_awarded = await self.engine.reward(ctx.author, reward)
 
         # --- Teams integration (+ visible note) ---
         award_note = ""
@@ -776,9 +780,15 @@ class OnePieceGuess(commands.Cog):
         except Exception:
             file = None
 
+        # Build description with Beri reward
+        description = f"{ctx.author.mention} got it — **{title}**.{award_note}"
+        if beri_awarded > 0:
+            from redbot.core.utils.chat_formatting import humanize_number
+            description += f"\n**+{humanize_number(beri_awarded)} Beri** 💰"
+        
         emb = discord.Embed(
             title="✅ Correct!",
-            description=f"{ctx.author.mention} got it — **{title}**.{award_note}",
+            description=description,
             color=COLOR_OK,
         )
         if file:
