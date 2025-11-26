@@ -762,7 +762,7 @@ class OnePieceGuess(commands.Cog):
                                         )
                                         bonus = total_points - win_pts
                                         if bonus > 0:
-                                            f" (**+{total_points}** to **{team.display_name}** — base **+{win_pts}**, amp **+{bonus}**)"
+                                           award_note = f" (**+{total_points}** to **{team.display_name}**: **+{win_pts}** base + **+{bonus}** amplifier)"
                                         else:
                                             award_note = f" (**+{total_points}** to **{team.display_name}**)"
                                     except Exception as e:
