@@ -370,8 +370,39 @@ class GuessEngine:
         buf.seek(0)
         return buf
 
-    # ---------------- local reward hook ----------------
+    # ---------------- BERI REWARD INTEGRATION ----------------
 
-    async def reward(self, member: discord.Member, amount: int) -> None:
-        # placeholder for coins/other reward systems; no-op if amount == 0
-        return
+    async def reward(self, member: discord.Member, amount: int) -> int:
+        """
+        Award Beri to the member. Returns the actual amount awarded.
+        If amount is 0, generates a random reward between min and max from config.
+        """
+        if amount == 0:
+            # Generate random Beri reward based on guild config
+            guild = member.guild
+            gconf = await self.config.guild(guild).all()
+            min_beri = int(gconf.get("beri_min") or 100)
+            max_beri = int(gconf.get("beri_max") or 1000)
+            amount = random.randint(min_beri, max_beri)
+        
+        # Try to get BeriCore cog
+        beri_core = self.bot.get_cog("BeriCore")
+        if not beri_core:
+            return 0
+        
+        try:
+            # Get the current mode for the reason string
+            mode = await self.get_mode(member.guild)
+            active = await self.get_active(member.guild)
+            title = active.get("title", "unknown")
+            
+            # Award the Beri
+            await beri_core.add_beri(
+                member,
+                amount,
+                reason=f"opguess:{mode}:{title}",
+                actor=member
+            )
+            return amount
+        except Exception:
+            return 0
