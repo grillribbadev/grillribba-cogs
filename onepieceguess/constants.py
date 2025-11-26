@@ -8,8 +8,12 @@ COLOR_ERR   = 0xCC3333
 
 # Timing defaults
 INTERVAL_DEFAULT = 1800   # seconds between posts (cadence)
-REWARD_DEFAULT   = 0      # local reward disabled by default
+REWARD_DEFAULT   = 0      # local reward disabled by default (0 = random Beri)
 ROUND_DEFAULT    = 120    # seconds a round stays open before timing out
+
+# Beri reward defaults
+BERI_MIN_DEFAULT = 100    # minimum random Beri reward
+BERI_MAX_DEFAULT = 1000   # maximum random Beri reward
 
 # ---- Teams integration (AAA3A Teams cog, or HTTP if you keep it) ----
 TEAMAPI_DEFAULT = {
@@ -34,8 +38,12 @@ DEFAULT_GUILD = {
     "interval": INTERVAL_DEFAULT,
     "roundtime": ROUND_DEFAULT,
 
-    # local reward
+    # local reward (0 = random Beri amount between beri_min and beri_max)
     "reward": REWARD_DEFAULT,
+    
+    # Beri reward range (used when reward is 0)
+    "beri_min": BERI_MIN_DEFAULT,
+    "beri_max": BERI_MAX_DEFAULT,
 
     # POOLS (per-mode)
     "characters": [],
