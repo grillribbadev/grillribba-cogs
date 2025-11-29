@@ -12,7 +12,8 @@ class ReactRoles(commands.Cog):
     def __init__(self, bot: Red):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=956321478, force_registration=True)
-        self.config.register_guild(posts={})  # message_id -> {emoji: {"role_id": ..., "booster_only": bool}}
+        # message_id -> {emoji: {role_id, booster_only}, _meta: {"channel_id": int}}
+        self.config.register_guild(posts={})
         self._booster_cleanup.start()
 
     def cog_unload(self):
@@ -27,8 +28,8 @@ class ReactRoles(commands.Cog):
             booster_roles = {
                 int(v["role_id"])
                 for msg in posts.values()
-                for v in msg.values()
-                if v.get("booster_only")
+                for k, v in msg.items()
+                if k != "_meta" and v.get("booster_only")
             }
             for role_id in booster_roles:
                 role = guild.get_role(role_id)
@@ -65,7 +66,7 @@ class ReactRoles(commands.Cog):
         """Create a reaction role embed in a target channel."""
         emb = discord.Embed(title=title[:256], description=description[:2000], color=EMBED_OK)
         msg = await channel.send(embed=emb)
-        await self.config.guild(ctx.guild).posts.set_raw(str(msg.id), value={})
+        await self.config.guild(ctx.guild).posts.set_raw(str(msg.id), value={"_meta": {"channel_id": channel.id}})
         await ctx.send(f"Reaction role embed created in {channel.mention} with ID `{msg.id}`.")
 
     @rr.command(name="add")
@@ -78,16 +79,21 @@ class ReactRoles(commands.Cog):
         booster_only: Optional[bool] = False,
     ):
         """Bind an emoji to a role (booster_only = True/False)."""
+        posts = await self.config.guild(ctx.guild).posts()
+        data = posts.get(str(message_id))
+        if not data:
+            return await ctx.send("Message ID not found in config.")
+        channel_id = data.get("_meta", {}).get("channel_id")
+        channel = ctx.guild.get_channel(channel_id or ctx.channel.id)
+
         try:
-            msg = await ctx.channel.fetch_message(message_id)
+            msg = await channel.fetch_message(message_id)
             await msg.add_reaction(emoji)
         except Exception:
-            return await ctx.send("Could not add that emoji to the message (wrong channel or emoji invalid).")
+            return await ctx.send("Could not add that emoji to the message (check emoji or permissions).")
 
-        posts = await self.config.guild(ctx.guild).posts()
-        entry = posts.get(str(message_id), {})
-        entry[str(emoji)] = {"role_id": role.id, "booster_only": booster_only}
-        await self.config.guild(ctx.guild).posts.set_raw(str(message_id), value=entry)
+        data[str(emoji)] = {"role_id": role.id, "booster_only": booster_only}
+        await self.config.guild(ctx.guild).posts.set_raw(str(message_id), value=data)
         await ctx.send(f"Added: {emoji} → {role.mention} (booster only: {booster_only})")
 
     @rr.command(name="remove")
@@ -103,16 +109,37 @@ class ReactRoles(commands.Cog):
 
     @rr.command(name="list")
     async def rr_list(self, ctx: commands.Context):
-        """List all configured reaction role messages."""
+        """List all reaction role messages with their embed titles."""
         posts = await self.config.guild(ctx.guild).posts()
         if not posts:
             return await ctx.send("No reaction role posts set up.")
 
         lines = []
         for msg_id, binds in posts.items():
-            lines.append(f"`{msg_id}` • {len(binds)} emoji(s)")
+            if not isinstance(binds, dict):
+                continue
 
-        await ctx.send("\n".join(lines))
+            channel_id = binds.get("_meta", {}).get("channel_id")
+            if not channel_id:
+                continue
+
+            channel = ctx.guild.get_channel(channel_id)
+            if not channel:
+                lines.append(f"`{msg_id}` • *channel missing*")
+                continue
+
+            try:
+                msg = await channel.fetch_message(int(msg_id))
+                title = msg.embeds[0].title if msg.embeds else "(no title)"
+            except discord.NotFound:
+                title = "*Message not found*"
+            except discord.HTTPException:
+                title = "*Fetch failed*"
+
+            emoji_count = sum(1 for k in binds if k != "_meta")
+            lines.append(f"🆔 `{msg_id}` • {emoji_count} emoji(s) • **{title}**")
+
+        await ctx.send("\n".join(lines[:10]) or "No active reaction roles found.")
 
     @rr.command(name="post")
     async def rr_post(
@@ -131,10 +158,15 @@ class ReactRoles(commands.Cog):
 
         emb = discord.Embed(title=title[:256], description=description[:2000], color=EMBED_OK)
         new_msg = await channel.send(embed=emb)
-        await self.config.guild(ctx.guild).posts.set_raw(str(new_msg.id), value=binds)
+
+        new_binds = {k: v for k, v in binds.items() if k != "_meta"}
+        new_binds["_meta"] = {"channel_id": channel.id}
+        await self.config.guild(ctx.guild).posts.set_raw(str(new_msg.id), value=new_binds)
         await ctx.send(f"Embed posted to {channel.mention} with ID `{new_msg.id}`.")
 
-        for emoji in binds:
+        for emoji in new_binds:
+            if emoji == "_meta":
+                continue
             try:
                 await new_msg.add_reaction(emoji)
             except Exception:
@@ -150,14 +182,19 @@ class ReactRoles(commands.Cog):
         *,
         include_roles: Optional[bool] = True,
     ):
-        """
-        Update a reaction role embed's title and/or description.
-        Automatically lists bound roles unless include_roles is False.
-        """
+        """Update embed title/description and optionally append role list."""
+        posts = await self.config.guild(ctx.guild).posts()
+        post_data = posts.get(str(message_id))
+        if not post_data:
+            return await ctx.send("No such reaction role message.")
+
+        channel_id = post_data.get("_meta", {}).get("channel_id")
+        channel = ctx.guild.get_channel(channel_id or ctx.channel.id)
+
         try:
-            msg = await ctx.channel.fetch_message(message_id)
+            msg = await channel.fetch_message(message_id)
         except discord.NotFound:
-            return await ctx.send("Message not found in this channel.")
+            return await ctx.send("Message not found.")
         if not msg.embeds:
             return await ctx.send("That message has no embed.")
 
@@ -165,11 +202,11 @@ class ReactRoles(commands.Cog):
         title = title or old.title or "React for Roles"
         desc = description or old.description or ""
 
-        posts = await self.config.guild(ctx.guild).posts()
-        post_data = posts.get(str(message_id))
-        if include_roles and post_data:
+        if include_roles:
             desc = desc.strip() + "\n\n"
             for emoji, info in post_data.items():
+                if emoji == "_meta":
+                    continue
                 role = ctx.guild.get_role(info["role_id"])
                 if role:
                     line = f"{emoji} → {role.name}"
@@ -179,9 +216,9 @@ class ReactRoles(commands.Cog):
 
         emb = discord.Embed(title=title[:256], description=desc[:4000], color=EMBED_OK)
         await msg.edit(embed=emb)
-        await ctx.send("Embed updated with current role bindings.")
+        await ctx.send("Embed updated.")
 
-    # ---------------- Reaction Events ----------------
+    # ---------------- Reaction Listeners ----------------
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
