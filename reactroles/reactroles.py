@@ -29,7 +29,6 @@ class ReactRoles(commands.Cog):
                 for k, v in binds.items()
                 if k != "_meta" and v.get("booster_only")
             }
-
             for role_id in booster_roles:
                 role = guild.get_role(role_id)
                 if not role:
@@ -69,7 +68,6 @@ class ReactRoles(commands.Cog):
 
         channel_id = data.get("_meta", {}).get("channel_id")
         channel = ctx.guild.get_channel(channel_id)
-
         try:
             msg = await channel.fetch_message(message_id)
             await msg.add_reaction(emoji)
@@ -82,41 +80,59 @@ class ReactRoles(commands.Cog):
 
     @rr.command(name="remove")
     async def rr_remove(self, ctx, message_id: int, emoji: str):
-        """Remove a single emoji→role mapping."""
+        """
+        Remove a single emoji→role mapping from a tracked message,
+        and remove the emoji from the message's reactions.
+        """
         posts = await self.config.guild(ctx.guild).posts()
         data = posts.get(str(message_id))
         if not data or emoji not in data:
             return await ctx.send("That emoji is not mapped.")
+
+        # Remove from config
         del data[emoji]
         await self.config.guild(ctx.guild).posts.set_raw(str(message_id), value=data)
-        await ctx.send("Emoji-role mapping removed.")
+
+        # Remove emoji from message
+        channel_id = data.get("_meta", {}).get("channel_id")
+        channel = ctx.guild.get_channel(channel_id) if channel_id else None
+        if channel:
+            try:
+                msg = await channel.fetch_message(message_id)
+                await msg.clear_reaction(emoji)
+                await ctx.send("Mapping removed and emoji removed from message.")
+            except discord.Forbidden:
+                await ctx.send("Mapping removed. I can't remove the emoji (missing permission).")
+            except discord.HTTPException:
+                await ctx.send("Mapping removed. Failed to remove emoji from message.")
+            except discord.NotFound:
+                await ctx.send("Mapping removed. Message not found.")
+        else:
+            await ctx.send("Mapping removed. Channel not found.")
 
     @rr.command(name="delete")
-    async def rr_delete(self, ctx, message_id: int, delete_message: Optional[bool] = False):
-        """
-        Delete a reaction-role message from config.
-        Optionally delete the actual embed message (if available).
-        """
+    async def rr_delete(self, ctx, message_id: int):
+        """Delete a reaction-role message from config and the actual message if possible."""
         posts = await self.config.guild(ctx.guild).posts()
         data = posts.get(str(message_id))
-
         if not data:
             return await ctx.send("That message ID isn't being tracked.")
 
         channel_id = data.get("_meta", {}).get("channel_id")
         channel = ctx.guild.get_channel(channel_id) if channel_id else None
-
-        if delete_message and channel:
+        if channel:
             try:
                 msg = await channel.fetch_message(message_id)
                 await msg.delete()
-                await ctx.send("Message deleted.")
+                await ctx.send("Embed message deleted.")
             except discord.NotFound:
-                await ctx.send("Message was already deleted.")
+                await ctx.send("Message already deleted.")
             except discord.Forbidden:
-                await ctx.send("I don't have permission to delete that message.")
+                await ctx.send("I don't have permission to delete the message.")
             except discord.HTTPException:
-                await ctx.send("Failed to delete message due to API error.")
+                await ctx.send("Discord API error while deleting the message.")
+        else:
+            await ctx.send("Channel not found—only removing config entry.")
 
         await self.config.guild(ctx.guild).posts.clear_raw(str(message_id))
         await ctx.send(f"Removed message `{message_id}` from reaction-role config.")
