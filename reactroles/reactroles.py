@@ -67,7 +67,7 @@ class ReactRoles(commands.Cog):
         if not data:
             return await ctx.send("Message ID not found in this server's config.")
 
-        channel_id = data["_meta"]["channel_id"]
+        channel_id = data.get("_meta", {}).get("channel_id")
         channel = ctx.guild.get_channel(channel_id)
 
         try:
@@ -93,23 +93,33 @@ class ReactRoles(commands.Cog):
 
     @rr.command(name="delete")
     async def rr_delete(self, ctx, message_id: int, delete_message: Optional[bool] = False):
-        """Delete a reaction-role message from config (optionally delete the actual message)."""
+        """
+        Delete a reaction-role message from config.
+        Optionally delete the actual embed message (if available).
+        """
         posts = await self.config.guild(ctx.guild).posts()
         data = posts.get(str(message_id))
-        if not data:
-            return await ctx.send("That message ID isn't tracked.")
-        channel_id = data["_meta"]["channel_id"]
-        channel = ctx.guild.get_channel(channel_id)
 
-        if delete_message:
+        if not data:
+            return await ctx.send("That message ID isn't being tracked.")
+
+        channel_id = data.get("_meta", {}).get("channel_id")
+        channel = ctx.guild.get_channel(channel_id) if channel_id else None
+
+        if delete_message and channel:
             try:
                 msg = await channel.fetch_message(message_id)
                 await msg.delete()
-            except:
-                await ctx.send("Couldn't delete message (missing permissions or already deleted).")
+                await ctx.send("Message deleted.")
+            except discord.NotFound:
+                await ctx.send("Message was already deleted.")
+            except discord.Forbidden:
+                await ctx.send("I don't have permission to delete that message.")
+            except discord.HTTPException:
+                await ctx.send("Failed to delete message due to API error.")
 
         await self.config.guild(ctx.guild).posts.clear_raw(str(message_id))
-        await ctx.send(f"Removed reaction-role ID `{message_id}` from tracking.")
+        await ctx.send(f"Removed message `{message_id}` from reaction-role config.")
 
     @rr.command(name="list")
     async def rr_list(self, ctx):
@@ -153,8 +163,7 @@ class ReactRoles(commands.Cog):
         binds = posts.get(str(message_id))
         if not binds:
             return await ctx.send("Message ID not found.")
-        channel = ctx.guild.get_channel(binds["_meta"]["channel_id"])
-
+        channel = ctx.guild.get_channel(binds.get("_meta", {}).get("channel_id"))
         try:
             msg = await channel.fetch_message(message_id)
         except:
