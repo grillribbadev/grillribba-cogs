@@ -1,14 +1,21 @@
 import asyncio
 import random
+import time
 import discord
+import copy
 from redbot.core import commands, Config
 
-from .constants import DEFAULT_GUILD
+from .constants import DEFAULT_GUILD, DEFAULT_USER
 from .player_manager import PlayerManager
 from .fruits import FruitManager
 from .battle_engine import simulate
 from .teams_bridge import TeamsBridge
 from .embeds import battle_embed
+
+
+# Haki training configuration (cost in Beri per point, cooldown seconds)
+HAKI_TRAIN_COST = 500
+HAKI_TRAIN_COOLDOWN = 60 * 60  # 1 hour
 
 
 class CrewBattles(commands.Cog):
@@ -197,6 +204,146 @@ class CrewBattles(commands.Cog):
         self.fruits.update(fruit)
         await ctx.reply(f"📦 Stock for **{name}** set to **{stock}**")
 
+    @cbadmin.command()
+    async def resetuser(self, ctx, member: discord.Member):
+        """Reset a user's Crew Battles data to defaults."""
+        await self.players.save(member, copy.deepcopy(DEFAULT_USER))
+        await ctx.reply(f"✅ Reset Crew Battles data for {member.display_name}")
+
+    @cbadmin.command()
+    async def viewuser(self, ctx, member: discord.Member):
+        """View a user's raw Crew Battles data."""
+        p = await self.players.get(member)
+        await ctx.reply(f"Data for {member.display_name}: ```py\n{p}\n```")
+
+    @cbadmin.command()
+    async def setlevel(self, ctx, member: discord.Member, level: int):
+        """Set a user's level."""
+        p = await self.players.get(member)
+        p["level"] = max(1, int(level))
+        await self.players.save(member, p)
+        await ctx.reply(f"✅ Set {member.display_name}'s level to {p['level']}")
+
+    @cbadmin.command()
+    async def setexp(self, ctx, member: discord.Member, exp: int):
+        """Set a user's EXP."""
+        p = await self.players.get(member)
+        p["exp"] = max(0, int(exp))
+        await self.players.save(member, p)
+        await ctx.reply(f"✅ Set {member.display_name}'s EXP to {p['exp']}")
+
+    @cbadmin.command()
+    async def setwins(self, ctx, member: discord.Member, wins: int):
+        """Set a user's wins."""
+        p = await self.players.get(member)
+        p["wins"] = max(0, int(wins))
+        await self.players.save(member, p)
+        await ctx.reply(f"✅ Set {member.display_name}'s wins to {p['wins']}")
+
+    @cbadmin.command()
+    async def setlosses(self, ctx, member: discord.Member, losses: int):
+        """Set a user's losses."""
+        p = await self.players.get(member)
+        p["losses"] = max(0, int(losses))
+        await self.players.save(member, p)
+        await ctx.reply(f"✅ Set {member.display_name}'s losses to {p['losses']}")
+
+    @cbadmin.command()
+    async def setstarted(self, ctx, member: discord.Member, started: bool):
+        """Set whether a user has started Crew Battles."""
+        p = await self.players.get(member)
+        p["started"] = bool(started)
+        await self.players.save(member, p)
+        await ctx.reply(f"✅ Set {member.display_name} started={p['started']}")
+
+    @cbadmin.command()
+    async def givefruit(self, ctx, member: discord.Member, *, fruit_name: str):
+        """Give a user a devil fruit (must exist in fruits)."""
+        fruit = self.fruits.get(fruit_name)
+        if not fruit:
+            return await ctx.reply("❌ Fruit not found.")
+        p = await self.players.get(member)
+        p["fruit"] = fruit["name"]
+        await self.players.save(member, p)
+        await ctx.reply(f"✅ Gave **{fruit['name']}** to {member.display_name}")
+
+    @cbadmin.command()
+    async def removefruituser(self, ctx, member: discord.Member):
+        """Remove a user's devil fruit."""
+        p = await self.players.get(member)
+        old = p.get("fruit")
+        p["fruit"] = None
+        await self.players.save(member, p)
+        await ctx.reply(f"✅ Removed fruit ({old}) from {member.display_name}")
+
+    @cbadmin.command()
+    async def addberi(self, ctx, member: discord.Member, amount: int):
+        """Give or remove Beri from a user (requires BeriCore)."""
+        core = self._beri()
+        if not core:
+            return await ctx.reply("❌ Economy system unavailable.")
+        try:
+            await core.add_beri(member, int(amount), reason="admin:beri_adjust", bypass_cap=True)
+        except Exception as e:
+            return await ctx.reply(f"❌ Error adjusting Beri: {e}")
+        await ctx.reply(f"✅ Adjusted Beri for {member.display_name} by {amount:,}")
+
+    @cbadmin.command()
+    async def sethaki(self, ctx, member: discord.Member, haki_type: str, value: str):
+        """
+        Set a user's haki.
+        haki_type: armament | observation | conquerors
+        value: number for armament/observation (0-100), true/false for conquerors
+        """
+        p = await self.players.get(member)
+        haki = p.get("haki", {}) or {}
+        haki_type = haki_type.lower()
+        if haki_type in ("armament", "observation"):
+            try:
+                v = max(0, min(100, int(value)))
+            except Exception:
+                return await ctx.reply("❌ Value must be an integer 0-100.")
+            haki[haki_type] = v
+        elif haki_type in ("conquerors", "conqueror", "conqueror's"):
+            haki["conquerors"] = str(value).lower() in ("1", "true", "yes", "on")
+        else:
+            return await ctx.reply("❌ Unknown haki type.")
+        p["haki"] = haki
+        await self.players.save(member, p)
+        await ctx.reply(f"✅ Set {member.display_name}'s {haki_type} to {value}")
+
+    @cbadmin.command()
+    async def resethaki(self, ctx, member: discord.Member):
+        """Reset a user's haki to defaults."""
+        p = await self.players.get(member)
+        p["haki"] = copy.deepcopy(DEFAULT_USER["haki"])
+        await self.players.save(member, p)
+        await ctx.reply(f"✅ Reset Haki for {member.display_name}")
+
+    @cbadmin.command()
+    async def unlockconqueror(self, ctx, member: discord.Member):
+        """Force-unlock Conqueror's Haki for a user."""
+        p = await self.players.get(member)
+        haki = p.get("haki", {}) or {}
+        haki["conquerors"] = True
+        p["haki"] = haki
+        await self.players.save(member, p)
+        await ctx.reply(f"✅ Unlocked Conqueror's Haki for {member.display_name}")
+
+    @cbadmin.command()
+    async def setlast_haki_train(self, ctx, member: discord.Member, ts: int = 0):
+        """Set a user's last_haki_train timestamp (0 to clear)."""
+        p = await self.players.get(member)
+        p["last_haki_train"] = int(ts)
+        await self.players.save(member, p)
+        await ctx.reply(f"✅ Set last_haki_train for {member.display_name} to {p['last_haki_train']}")
+
+    @cbadmin.command()
+    async def setturn_delay(self, ctx, delay: float):
+        """Set guild turn delay (seconds)."""
+        await self.config.guild(ctx.guild).turn_delay.set(float(delay))
+        await ctx.reply(f"✅ Set turn delay to {delay}s")
+
     # =========================================================
     # PLAYER COMMANDS
     # =========================================================
@@ -308,6 +455,108 @@ class CrewBattles(commands.Cog):
 
         embed.set_footer(text="Crew Battles • Progress is saved")
         await ctx.reply(embed=embed)
+
+    @commands.command()
+    async def cbhaki(self, ctx, member: discord.Member = None):
+        """View a member's Haki stats"""
+        member = member or ctx.author
+        p = await self.players.get(member)
+        if not p.get("started"):
+            return await ctx.reply("❌ This player has not started Crew Battles yet.")
+        haki = p.get("haki", {}) or {}
+        arm = haki.get("armament", 0)
+        obs = haki.get("observation", 0)
+        conquer = "Unlocked ✅" if haki.get("conquerors") else "Locked ❌"
+        await ctx.reply(
+            f"✨ Haki for {member.display_name}\n"
+            f"🛡 Armament: {arm}\n"
+            f"👁 Observation: {obs}\n"
+            f"👑 Conqueror’s: {conquer}"
+        )
+
+    @commands.command()
+    async def cbtrainhaki(self, ctx, haki_type: str, points: int = 1):
+        """
+        Train Haki: cbtrainhaki <armament|observation> [points]
+        Costs Beri (HAKI_TRAIN_COST per point). Rate-limited (HAKI_TRAIN_COOLDOWN).
+        """
+        haki_type = (haki_type or "").lower()
+        if haki_type not in ("armament", "observation"):
+            return await ctx.reply("❌ Haki type must be 'armament' or 'observation'.")
+
+        try:
+            points = max(1, int(points))
+        except Exception:
+            return await ctx.reply("❌ Invalid points value.")
+
+        p = await self.players.get(ctx.author)
+        if not p.get("started"):
+            return await ctx.reply("❌ You must start Crew Battles first.")
+
+        # cooldown check
+        last = p.get("last_haki_train", 0) or 0
+        now = int(time.time())
+        elapsed = now - int(last)
+        if elapsed < HAKI_TRAIN_COOLDOWN:
+            remaining = HAKI_TRAIN_COOLDOWN - elapsed
+            minutes = remaining // 60
+            seconds = remaining % 60
+            return await ctx.reply(f"⏳ You must wait {minutes}m {seconds}s before training Haki again.")
+
+        core = self._beri()
+        if not core:
+            return await ctx.reply("❌ Economy system unavailable.")
+
+        # calculate actual trainable points (cap at 100)
+        haki = p.get("haki", {}) or {}
+        cur = int(haki.get(haki_type, 0))
+        new = min(100, cur + points)
+        actual = new - cur
+        if actual <= 0:
+            return await ctx.reply(f"⚠️ Your {haki_type} Haki is already at the maximum (100).")
+
+        total_cost = HAKI_TRAIN_COST * actual
+        balance = await core.get_beri(ctx.author)
+        if balance < total_cost:
+            return await ctx.reply(f"❌ You need **{total_cost:,} Beri** to train {actual} point(s) of {haki_type} Haki.")
+
+        # charge user and apply
+        await core.add_beri(ctx.author, -total_cost, reason="haki:train", bypass_cap=True)
+        haki[haki_type] = new
+        p["haki"] = haki
+        p["last_haki_train"] = now
+        await self.players.save(ctx.author, p)
+
+        await ctx.reply(
+            f"✅ Trained **{actual}** point(s) of **{haki_type}** Haki.\n"
+            f"• New {haki_type.capitalize()}: **{new}**\n"
+            f"• Spent: **{total_cost:,} Beri**\n"
+            f"• Next training available in: {HAKI_TRAIN_COOLDOWN // 60} minutes"
+        )
+
+    @commands.command()
+    async def cbunlockconqueror(self, ctx):
+        """
+        Unlock Conqueror's Haki.
+        Requires level >= 10 to unlock.
+        """
+        p = await self.players.get(ctx.author)
+        if not p.get("started"):
+            return await ctx.reply("❌ You must start Crew Battles first.")
+
+        haki = p.get("haki", {}) or {}
+        if haki.get("conquerors"):
+            return await ctx.reply("✅ You already unlocked Conqueror's Haki.")
+
+        level = p.get("level", 1)
+        if level < 10:
+            return await ctx.reply("❌ You must be at least level 10 to unlock Conqueror's Haki.")
+
+        haki["conquerors"] = True
+        p["haki"] = haki
+        await self.players.save(ctx.author, p)
+
+        await ctx.reply("👑 Conqueror's Haki unlocked! Congratulations.")
 
     # =========================================================
     # BATTLE SYSTEM

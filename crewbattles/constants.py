@@ -22,5 +22,7 @@ DEFAULT_USER = {
         "armament": 0,
         "observation": 0,
         "conquerors": False
-    }
+    },
+    # timestamp (unix) of last haki training action for rate-limiting
+    "last_haki_train": 0
 }
