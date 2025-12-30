@@ -60,7 +60,7 @@ class CrewBattles(commands.Cog):
         )
 
     @commands.command()
-    async def profile(self, ctx, member: commands.MemberConverter = None):
+    async def cbprofile(self, ctx, member: commands.MemberConverter = None):
         member = member or ctx.author
         p = await self.players.get(member)
         if not p["started"]:
