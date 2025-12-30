@@ -1,5 +1,4 @@
 import asyncio
-from asyncio import log
 import random
 import discord
 from redbot.core import commands, Config
@@ -9,7 +8,6 @@ from .player_manager import PlayerManager
 from .fruits import FruitManager
 from .battle_engine import simulate
 from .teams_bridge import TeamsBridge
-from .bericore_bridge import BeriBridge
 from .embeds import battle_embed
 
 
@@ -21,7 +19,6 @@ class CrewBattles(commands.Cog):
         self.players = PlayerManager(self)
         self.fruits = FruitManager()
         self.teams = TeamsBridge(bot)
-        self.beri_bridge = BeriBridge(bot)
 
         self.config = Config.get_conf(self, identifier=444888221, force_registration=True)
         self.config.register_guild(**DEFAULT_GUILD)
@@ -101,7 +98,7 @@ class CrewBattles(commands.Cog):
         wins = p.get("wins", 0)
         losses = p.get("losses", 0)
         total = wins + losses
-        winrate = (wins / total * 100) if total else 0
+        winrate = (wins / total * 100) if total else 0.0
 
         haki = p.get("haki", {})
 
@@ -167,11 +164,9 @@ class CrewBattles(commands.Cog):
         )
 
         delay = await self.config.guild(ctx.guild).turn_delay()
-
-        log = []
+        log_lines = []
 
         for turn in turns:
-            # unpack safely (future-proof)
             side = turn[0]
             dmg = turn[1]
             hp = turn[2]
@@ -188,19 +183,20 @@ class CrewBattles(commands.Cog):
                 actor = opponent.display_name
 
             crit_txt = " 💥 **CRITICAL HIT!**" if crit else ""
-            log.append(
+            log_lines.append(
                 f"⚔️ **{actor}** used **{attack}** and dealt **{dmg}** damage!{crit_txt}"
             )
 
-            embed = battle_embed(
-                ctx.author,
-                opponent,
-                hp1,
-                hp2,
-                max_hp,
-                "\n".join(log[-5:])  # scrolling log
+            await msg.edit(
+                embed=battle_embed(
+                    ctx.author,
+                    opponent,
+                    hp1,
+                    hp2,
+                    max_hp,
+                    "\n".join(log_lines[-5:])  # rolling log
+                )
             )
-            await msg.edit(embed=embed)
 
         # =====================================================
         # RESULTS
@@ -236,10 +232,12 @@ class CrewBattles(commands.Cog):
         beri = self.bot.get_cog("BeriCore")
         if beri:
             try:
-                await beri.add(
-                    member=winner_user,
+                economy = beri.economy
+                await economy.add_balance(
+                    guild=ctx.guild,
+                    user=winner_user,
                     amount=g["beri_win"],
-                    reason="crew_battle_win",
+                    reason="Crew Battle Win",
                     source="CrewBattles",
                     notify=True,
                     channel=ctx.channel,
@@ -247,12 +245,13 @@ class CrewBattles(commands.Cog):
             except Exception as e:
                 print(f"[CrewBattles] BeriCore win error: {e}")
 
-            if g.get("beri_loss", 0) != 0:
+            if g.get("beri_loss", 0):
                 try:
-                    await beri.add(
-                        member=loser_user,
+                    await economy.add_balance(
+                        guild=ctx.guild,
+                        user=loser_user,
                         amount=g["beri_loss"],
-                        reason="crew_battle_loss",
+                        reason="Crew Battle Loss",
                         source="CrewBattles",
                         notify=False,
                         channel=None,
@@ -261,8 +260,9 @@ class CrewBattles(commands.Cog):
                     print(f"[CrewBattles] BeriCore loss error: {e}")
 
         await ctx.reply(
-            f"🏆 **{winner_user.display_name}** won the Crew Battle against **{loser_user.display_name}**!\n"
-            f"• +{g['exp_win']} EXP (winner)\n"
+            f"🏆 **{winner_user.display_name}** won the Crew Battle against "
+            f"**{loser_user.display_name}**!\n"
+            f"• +{g['exp_win']} EXP\n"
             f"• +{g['beri_win']} Beri"
         )
 
