@@ -489,12 +489,12 @@ class CrewBattles(commands.Cog):
     @commands.command()
     async def cbtrainhaki(self, ctx, haki_type: str, points: int = 1):
         """
-        Train Haki: cbtrainhaki <armament|observation> [points]
+        Train Haki: cbtrainhaki <armament|observation|conqueror> [points]
         Costs Beri per-point and cooldown are guild-configurable.
         """
         haki_type = (haki_type or "").lower()
-        if haki_type not in ("armament", "observation"):
-            return await ctx.reply("❌ Haki type must be 'armament' or 'observation'.")
+        if haki_type not in ("armament", "observation", "conqueror", "conquerors"):
+            return await ctx.reply("❌ Haki type must be 'armament', 'observation' or 'conqueror'.")
 
         try:
             points = max(1, int(points))
@@ -526,11 +526,22 @@ class CrewBattles(commands.Cog):
 
         # calculate actual trainable points (cap at 100)
         haki = p.get("haki", {}) or {}
-        cur = int(haki.get(haki_type, 0))
+
+        # Support numerical 'conqueror' stat while 'conquerors' is the unlock flag.
+        if haki_type in ("conqueror", "conquerors"):
+            # must have unlocked boolean first
+            if not haki.get("conquerors"):
+                return await ctx.reply("❌ You must unlock Conqueror's Haki first (.cbunlockconqueror).")
+            cur = int(haki.get("conqueror", 0))
+            name = "conqueror"
+        else:
+            cur = int(haki.get(haki_type, 0))
+            name = haki_type
+
         new = min(100, cur + points)
         actual = new - cur
         if actual <= 0:
-            return await ctx.reply(f"⚠️ Your {haki_type} Haki is already at the maximum (100).")
+            return await ctx.reply(f"⚠️ Your {name} Haki is already at the maximum (100).")
 
         total_cost = cost_per_point * actual
         balance = await core.get_beri(ctx.author)
@@ -539,7 +550,10 @@ class CrewBattles(commands.Cog):
 
         # charge user and apply
         await core.add_beri(ctx.author, -total_cost, reason="haki:train", bypass_cap=True)
-        haki[haki_type] = new
+        if name == "conqueror":
+            haki["conqueror"] = new
+        else:
+            haki[name] = new
         p["haki"] = haki
         p["last_haki_train"] = now
         await self.players.save(ctx.author, p)

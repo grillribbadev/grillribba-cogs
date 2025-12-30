@@ -61,11 +61,13 @@ def simulate(p1, p2):
 
         a_arm = max(0, int(a_haki.get("armament", 0)))
         a_obs = max(0, int(a_haki.get("observation", 0)))
-        a_conq = bool(a_haki.get("conquerors"))
+        a_conq_unlocked = bool(a_haki.get("conquerors"))
+        a_conq_lvl = max(0, int(a_haki.get("conqueror", 0)))
 
         d_arm = max(0, int(d_haki.get("armament", 0)))
         d_obs = max(0, int(d_haki.get("observation", 0)))
-        d_conq = bool(d_haki.get("conquerors"))
+        d_conq_unlocked = bool(d_haki.get("conquerors"))
+        d_conq_lvl = max(0, int(d_haki.get("conqueror", 0)))
 
         # Attack scaling: each armament point = +1% damage (only if attacker has armament > 0)
         a_atk_mult = 1.0 + (a_arm * 0.01) if a_arm > 0 else 1.0
@@ -73,9 +75,15 @@ def simulate(p1, p2):
         d_def_factor = 1.0 - min(0.50, d_arm * 0.005) if d_arm > 0 else 1.0
         # Dodge chance from observation: each obs point = +1% dodge, capped at 65% (more frequent)
         d_dodge = min(0.65, d_obs * 0.01) if d_obs > 0 else 0.0
-        # Conqueror base chance, but limited to once per player per battle
-        a_conq_chance = 0.06 if a_conq and not conq_used[current] else 0.0
-        a_conq_mult = 1.75 if a_conq else 1.0
+        # Conqueror effects: only if unlocked; scale with trained level (conqueror stat)
+        if a_conq_unlocked and not conq_used[current]:
+            # base chance 6% + small scaling per conqueror point, capped at 50%
+            a_conq_chance = min(0.50, 0.06 + a_conq_lvl * 0.0009)
+            # base multiplier 1.5 + small scaling per point, capped at 3.0
+            a_conq_mult = min(3.0, 1.5 + a_conq_lvl * 0.0025)
+        else:
+            a_conq_chance = 0.0
+            a_conq_mult = 1.0
 
         # decide whether this attack is named (haki flavored) or generic
         base_named_prob = 0.20 + (a_arm * 0.01)      # scales with armament

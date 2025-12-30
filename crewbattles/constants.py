@@ -24,7 +24,9 @@ DEFAULT_USER = {
     "haki": {
         "armament": 0,
         "observation": 0,
-        "conquerors": False
+        "conquerors": False,
+        # numeric conqueror proficiency (0-100). Requires "conquerors" unlocked to take effect.
+        "conqueror": 0,
     },
     # timestamp (unix) of last haki training action for rate-limiting
     "last_haki_train": 0
