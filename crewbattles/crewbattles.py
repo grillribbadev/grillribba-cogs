@@ -761,7 +761,13 @@ class CrewBattles(commands.Cog):
 
         # Start the battle loop
         await ctx.reply(f"⚔️ **{ctx.author.display_name}** has challenged **{opponent.display_name}**!")
-        await ctx.reply(embed=battle_embed(battle_data))
+        # build a proper initial embed (battle_embed expects p1, p2, hp1, hp2, max_hp1, max_hp2, log)
+        max_hp1 = BASE_HP + int(p1.get("level", 1)) * 6
+        max_hp2 = BASE_HP + int(p2.get("level", 1)) * 6
+        hp1 = int(max_hp1)
+        hp2 = int(max_hp2)
+        initial_log = "⚔️ Battle started!"
+        await ctx.reply(embed=battle_embed(ctx.author, opponent, hp1, hp2, max_hp1, max_hp2, initial_log))
 
         try:
             while True:
