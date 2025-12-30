@@ -787,7 +787,6 @@ class CrewBattles(commands.Cog):
                     found_emojis = []
 
                     # detect and remove known emoji markers from the attack name
-                    cleaned = attack_str
                     for em, (prefix, emo) in markers_map.items():
                         if em in cleaned:
                             found_emojis.append(emo)
@@ -797,12 +796,21 @@ class CrewBattles(commands.Cog):
                             elif em == "⚔️" and not found_prefix:
                                 found_prefix = prefix
                             cleaned = cleaned.replace(em, "")
-                    # also remove common textual markers added earlier like "Armament" or "Conqueror"
-                    cleaned = cleaned.replace("Armament", "").replace("Conqueror", "").replace("Conqueror's", "")
-                    cleaned = cleaned.replace("Defend", "").replace("(Def)", "").strip()
-                    # remove extra parentheses around tiny ability snippets that were appended
-                    cleaned = cleaned.strip()
-                    # if cleaned contains trailing parenthetical ability (e.g. "(Stretch)"), keep it as-is
+
+                    # Defensive: only claim a haki prefix if the attacker actually has that haki unlocked
+                    actor_haki = (actor_p.get("haki") or {}) if 'actor_p' in locals() else {}
+                    has_armament = int(actor_haki.get("armament", 0)) > 0
+                    has_conq = str(actor_haki.get("conquerors", False)).lower() in ("1", "true", "yes", "on")
+                    if found_prefix == "Conqueror's" and not has_conq:
+                        # remove prefix if attacker doesn't have conqueror unlocked
+                        found_prefix = None
+                        # remove the conqueror emoji if present
+                        if "⚡️" in found_emojis:
+                            found_emojis = [e for e in found_emojis if e != "⚡️"]
+                    if found_prefix == "Armament" and not has_armament:
+                        found_prefix = None
+                        if "⚔️" in found_emojis:
+                            found_emojis = [e for e in found_emojis if e != "⚔️"]
 
                     # build display attack name
                     if found_prefix:

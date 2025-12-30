@@ -32,6 +32,21 @@ def _flair_named_attack(name: str) -> str:
         suffix = random.choice(FLARE_SUFFIX)
     return f"{prefix} {name} {suffix}"
 
+def _truthy_flag(v):
+    """Normalize a stored flag value to a boolean unlock flag."""
+    if isinstance(v, bool):
+        return v
+    if v is None:
+        return False
+    try:
+        # numeric-like values: 1 => True
+        if isinstance(v, (int, float)):
+            return bool(v)
+        s = str(v).strip().lower()
+        return s in ("1", "true", "yes", "on")
+    except Exception:
+        return False
+
 def simulate(p1, p2, fruit_manager=None):
     """
     Simulate a battle between p1 and p2.
@@ -80,12 +95,13 @@ def simulate(p1, p2, fruit_manager=None):
 
         a_arm = max(0, int(a_haki.get("armament", 0)))
         a_obs = max(0, int(a_haki.get("observation", 0)))
-        a_conq_unlocked = bool(a_haki.get("conquerors"))
+        # robust unlock check (accepts bool/int/str)
+        a_conq_unlocked = _truthy_flag(a_haki.get("conquerors"))
         a_conq_lvl = max(0, int(a_haki.get("conqueror", 0)))
 
         d_arm = max(0, int(d_haki.get("armament", 0)))
         d_obs = max(0, int(d_haki.get("observation", 0)))
-        d_conq_unlocked = bool(d_haki.get("conquerors"))
+        d_conq_unlocked = _truthy_flag(d_haki.get("conquerors"))
         d_conq_lvl = max(0, int(d_haki.get("conqueror", 0)))
 
         # Attack/defense/dodge calculations
