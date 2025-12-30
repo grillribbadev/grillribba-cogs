@@ -23,14 +23,10 @@ def simulate(p1, p2, fruit_manager=None):
     """
     Simulate a battle between p1 and p2.
 
-    New: optional fruit_manager (FruitManager) can be passed so abilities on fruits
-    may trigger during a fight. Each fruit object should include 'name', 'bonus',
-    and 'ability' fields (ability is a free-text description).
-
-    Returns:
-      winner: "p1" or "p2"
-      turns: list of tuples (side, dmg, hp_after, attack_name, crit:bool)
-      hp1, hp2: final HP (ints, floored at 0)
+    - Named attacks are more frequent for everyone (not only haki users).
+    - Haki markers (Armament/Conqueror/Defend) only appear when the user has the haki.
+    - Fruit abilities are their own attacks (replace the normal attack) and trigger more frequently,
+      throttled per-battle by a short cooldown.
     """
     hp1 = BASE_HP + int(p1.get("level", 1)) * 6
     hp2 = BASE_HP + int(p2.get("level", 1)) * 6
@@ -39,10 +35,11 @@ def simulate(p1, p2, fruit_manager=None):
 
     # per-battle state to prevent spamming
     skip = {"p1": False, "p2": False}
-    consec_named = {"p1": 0, "p2": 0}
-    consec_def_mark = {"p1": 0, "p2": 0}
-    conq_used = {"p1": False, "p2": False}
-    # fruit ability cooldown (turns until ability can trigger again for that player)
+    consec_named = {"p1": 0, "p2": 0}      # consecutive named/haki attacks by attacker
+    consec_def_mark = {"p1": 0, "p2": 0}   # consecutive times defender showed a defense marker
+    conq_used = {"p1": False, "p2": False} # whether conqueror triggered already for that player
+
+    # fruit ability cooldown in turns (prevents ability every turn)
     fruit_cd = {"p1": 0, "p2": 0}
 
     current = "p1"
@@ -78,10 +75,11 @@ def simulate(p1, p2, fruit_manager=None):
         d_conq_unlocked = bool(d_haki.get("conquerors"))
         d_conq_lvl = max(0, int(d_haki.get("conqueror", 0)))
 
-        # Attack/defense/dodge calculations (same as before)
+        # Attack/defense/dodge calculations
         a_atk_mult = 1.0 + (a_arm * 0.01) if a_arm > 0 else 1.0
         d_def_factor = 1.0 - min(0.50, d_arm * 0.005) if d_arm > 0 else 1.0
         d_dodge = min(0.65, d_obs * 0.01) if d_obs > 0 else 0.0
+
         if a_conq_unlocked and not conq_used[current]:
             a_conq_chance = min(0.50, 0.06 + a_conq_lvl * 0.0009)
             a_conq_mult = min(3.0, 1.5 + a_conq_lvl * 0.0025)
@@ -93,20 +91,19 @@ def simulate(p1, p2, fruit_manager=None):
         fruit_obj = None
         fruit_name = (attacker.get("fruit") or "")
         if fruit_manager and fruit_name:
-            # FruitManager.get is case-insensitive; use it to find the canonical fruit record
             try:
                 fruit_obj = fruit_manager.get(fruit_name)
             except Exception:
                 fruit_obj = None
-            # only use ability when the fruit exists and names match (safety)
             if fruit_obj and fruit_obj.get("name", "").strip().lower() != fruit_name.strip().lower():
                 fruit_obj = None
 
-        # decide named attack
-        base_named_prob = 0.20 + (a_arm * 0.01)
-        base_named_prob = min(0.75, base_named_prob)
-        named_prob = base_named_prob * (1.0 / (1.0 + consec_named[current] * 0.6))
-        use_named = (random.random() < named_prob) and (a_arm > 0 or a_conq_unlocked)
+        # decide whether to use a named attack (more frequent for everyone now)
+        base_named_prob = 0.35 + (a_arm * 0.015)      # higher baseline, scales with armament
+        base_named_prob = min(0.90, base_named_prob)
+        # milder throttle so named attacks are common but not spammy
+        named_prob = base_named_prob * (1.0 / (1.0 + consec_named[current] * 0.4))
+        use_named = (random.random() < named_prob)
 
         if use_named:
             attack_name = random.choice(ATTACKS)
@@ -116,21 +113,57 @@ def simulate(p1, p2, fruit_manager=None):
             consec_named[current] = 0
 
         markers = []
+        # only show offensive armament marker when attacker actually has armament and it's a named attack
         if a_arm > 0 and use_named:
             markers.append("⚔️")
 
         base = random.randint(10, 20)
         dmg = int(base * a_atk_mult)
 
-        # dodge check
+        # Dodge check (no named attack shown on dodge)
         if d_obs > 0 and random.random() < d_dodge:
             consec_named[current] = 0
             consec_def_mark["p1" if current == "p2" else "p2"] = max(0, consec_def_mark["p1" if current == "p2" else "p2"] - 1)
-            turns.append((current, 0, hp2 if current == "p1" else hp1, "🛡️ Dodged the attack!", False))
+            turns.append((current, 0, hp2 if current == "p1" else hp1, "Dodged", False))
             current = "p2" if current == "p1" else "p1"
             continue
 
-        # Conqueror
+        # Fruit ability trigger (it is its own attack and replaces the normal attack when it happens)
+        ability_triggered = False
+        if fruit_obj and fruit_obj.get("ability") and fruit_cd[current] == 0:
+            bonus = int(fruit_obj.get("bonus", 0))
+            # ability chance: higher baseline + scales with fruit bonus, capped reasonably
+            ability_chance = min(0.45, 0.12 + bonus * 0.02)
+            if random.random() < ability_chance:
+                # ability becomes the attack (not an add-on)
+                ability_name = str(fruit_obj.get("ability") or "").strip()
+                fruit_canonical = str(fruit_obj.get("name") or "").strip()
+                attack_name = f"{ability_name} — {fruit_canonical}"
+                # ability damage formula: slightly higher base and scales with bonus
+                dmg = int(random.randint(12, 24) * (1.0 + (bonus * 0.01)))
+                markers = ["✨"]  # mark as fruit ability
+                ability_triggered = True
+                # throttle further ability triggers for this player
+                fruit_cd[current] = 3
+
+                # When ability triggers, do NOT also apply Conqueror or Armament special triggers this turn.
+                crit = False
+                # apply defender's defense factor and continue to apply it numerically
+                dmg = max(0, int(dmg * d_def_factor))
+
+                if current == "p1":
+                    hp2 -= dmg
+                    hp_after = max(0, hp2)
+                else:
+                    hp1 -= dmg
+                    hp_after = max(0, hp1)
+
+                turns.append((current, int(dmg), int(hp_after), f"{attack_name} {' '.join(markers)}", False))
+                # switch turn and continue main loop
+                current = "p2" if current == "p1" else "p1"
+                continue
+
+        # Conqueror's Haki: limited to once per player per battle (only if unlocked)
         crit = False
         if a_conq_unlocked and (not conq_used[current]) and random.random() < a_conq_chance:
             crit = True
@@ -141,27 +174,7 @@ def simulate(p1, p2, fruit_manager=None):
             conq_used[current] = True
             consec_named[current] += 1
 
-        # Fruit ability trigger (occasional, throttled)
-        ability_triggered = False
-        if fruit_obj and fruit_obj.get("ability"):
-            # base chance scales with fruit bonus and is throttled by fruit_cd
-            bonus = int(fruit_obj.get("bonus", 0))
-            chance = min(0.30, 0.08 + (bonus * 0.01))  # e.g. 8% + 1% per bonus point capped at 30%
-            if fruit_cd[current] == 0 and random.random() < chance:
-                # default ability effect: extra damage scaling with bonus
-                extra_mult = 1.0 + min(1.0, 0.10 + bonus * 0.01)  # modest extra multiplier
-                extra = int(dmg * (extra_mult - 1.0))
-                dmg += extra
-                # mark and throttle future triggers for this player for a few turns
-                markers.append("✨")
-                ability_triggered = True
-                fruit_cd[current] = 3  # cooldown in turns
-                # include ability text in attack name if short
-                ability_text = (fruit_obj.get("ability") or "").split("\n")[0][:32]
-                if ability_text:
-                    markers.append(f"({ability_text})")
-
-        # defender defend marker
+        # defender's armament-as-defense marker: show occasionally to avoid constant "Defend"
         if d_arm > 0:
             def_display_prob = 0.25 + (d_arm * 0.005)
             def_display_prob = min(0.65, def_display_prob)
@@ -172,8 +185,10 @@ def simulate(p1, p2, fruit_manager=None):
             else:
                 consec_def_mark["p1" if current == "p2" else "p1"] = max(0, consec_def_mark["p1" if current == "p2" else "p1"] - 1)
 
+        # apply defender's defense factor (scales with defender armament) — numeric always applies
         dmg = max(0, int(dmg * d_def_factor))
 
+        # append markers only when relevant
         if markers:
             attack_name = f"{attack_name} {' '.join(markers)}"
 
@@ -186,6 +201,7 @@ def simulate(p1, p2, fruit_manager=None):
 
         turns.append((current, int(dmg), int(hp_after), attack_name, bool(crit)))
 
+        # switch turn
         current = "p2" if current == "p1" else "p1"
 
     winner = "p1" if hp2 <= 0 and hp1 > 0 else ("p2" if hp1 <= 0 and hp2 > 0 else ("p1" if hp2 <= 0 else "p2"))

@@ -883,6 +883,83 @@ class CrewBattles(commands.Cog):
             f"• +{g.get('beri_win', 0)} Beri"
         )
 
+    @commands.command()
+    async def cbleaderboard(self, ctx, metric: str = "wins", limit: int = 10):
+        """
+        Show a simple leaderboard.
+        metric: wins | winrate | level | exp
+        limit: number of entries (max 25)
+        """
+        metric = (metric or "wins").lower()
+        if metric not in ("wins", "winrate", "level", "exp"):
+            return await ctx.reply("❌ Metric must be one of: wins, winrate, level, exp")
+
+        try:
+            limit = max(1, min(25, int(limit)))
+        except Exception:
+            limit = 10
+
+        # fetch all players from PlayerManager (support dict or list return shapes)
+        raw = await self.players.all() if hasattr(self.players, "all") else None
+        entries = []
+        if isinstance(raw, dict):
+            for uid, pdata in raw.items():
+                entries.append((int(uid), pdata))
+        elif isinstance(raw, list):
+            for item in raw:
+                if isinstance(item, dict) and item.get("id"):
+                    entries.append((int(item["id"]), item))
+                elif isinstance(item, (list, tuple)) and len(item) == 2:
+                    try:
+                        entries.append((int(item[0]), item[1]))
+                    except Exception:
+                        continue
+        else:
+            return await ctx.reply("❌ Could not read player data for leaderboard.")
+
+        # compute score per player
+        rows = []
+        for uid, pdata in entries:
+            wins = int(pdata.get("wins", 0))
+            losses = int(pdata.get("losses", 0))
+            total = wins + losses
+            winrate = (wins / total * 100) if total else 0.0
+            level = int(pdata.get("level", 1))
+            exp = int(pdata.get("exp", 0))
+
+            if metric == "wins":
+                score = wins
+                score_txt = f"{wins} wins"
+            elif metric == "winrate":
+                score = winrate
+                score_txt = f"{winrate:.1f}% winrate ({wins}/{total})"
+            elif metric == "level":
+                score = level
+                score_txt = f"Level {level} • {exp} EXP"
+            else:  # exp
+                score = exp
+                score_txt = f"{exp} EXP • Level {level}"
+
+            rows.append((score, uid, score_txt))
+
+        if not rows:
+            return await ctx.reply("❌ No players found for leaderboard.")
+
+        rows.sort(key=lambda r: r[0], reverse=True)
+        top = rows[:limit]
+
+        embed = discord.Embed(title=f"🏆 Crew Battles Leaderboard — {metric.title()}", color=discord.Color.gold())
+        desc_lines = []
+        for idx, (score, uid, score_txt) in enumerate(top, start=1):
+            member = self.bot.get_user(uid)
+            name = member.display_name if member else f"<@{uid}>"
+            desc_lines.append(f"**{idx}. {name}** — {score_txt}")
+
+        embed.description = "\n".join(desc_lines)
+        embed.set_footer(text=f"Showing top {len(top)} — use .cbleaderboard <metric> <limit>")
+
+        await ctx.reply(embed=embed)
+
 
 async def setup(bot):
     await bot.add_cog(CrewBattles(bot))
