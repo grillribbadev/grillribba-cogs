@@ -4,7 +4,7 @@ from .utils import exp_to_next
 
 class PlayerManager:
     def __init__(self, cog):
-        self.config = Config.get_conf(cog, identifier=882233441)
+        self.config = Config.get_conf(cog, identifier=992211445)
         self.config.register_user(**DEFAULT_USER)
 
     async def get(self, user):

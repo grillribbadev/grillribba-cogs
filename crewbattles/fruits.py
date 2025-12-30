@@ -1,4 +1,5 @@
 import json
+import random
 from pathlib import Path
 
 DATA = Path(__file__).parent / "data" / "fruits.json"
@@ -13,15 +14,10 @@ class FruitManager:
 
     def add(self, name, ftype, bonus):
         fruits = self.all()
-        fruits.append({
-            "name": name,
-            "type": ftype,
-            "bonus": bonus
-        })
+        fruits.append({"name": name, "type": ftype, "bonus": bonus})
         DATA.write_text(json.dumps(fruits, indent=2))
 
     def random(self):
-        import random
         fruits = self.all()
         if not fruits or random.random() < 0.35:
             return None

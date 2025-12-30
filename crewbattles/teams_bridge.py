@@ -2,7 +2,7 @@ class TeamsBridge:
     def __init__(self, bot):
         self.bot = bot
 
-    async def award(self, guild, member, points):
+    async def award_win(self, guild, member, points):
         teams = self.bot.get_cog("Teams")
         if not teams:
             return None

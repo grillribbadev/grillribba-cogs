@@ -3,14 +3,16 @@ BASE_HP = 100
 
 DEFAULT_GUILD = {
     "enabled": True,
-    "battle_channel": None,
+    "beri_win": 500,
+    "beri_loss": 150,
     "exp_win": 60,
     "exp_loss": 25,
-    "crew_points": 1,
-    "daily_battles": 25,
+    "crew_points_win": 1,
+    "turn_delay": 1.5
 }
 
 DEFAULT_USER = {
+    "started": False,
     "level": 1,
     "exp": 0,
     "wins": 0,
@@ -20,6 +22,5 @@ DEFAULT_USER = {
         "armament": 0,
         "observation": 0,
         "conquerors": False
-    },
-    "battles_today": 0,
+    }
 }
