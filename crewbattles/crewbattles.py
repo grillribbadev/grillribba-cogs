@@ -47,6 +47,33 @@ class CrewBattles(commands.Cog):
         """Safely fetch BeriCore."""
         return self.bot.get_cog("BeriCore")
 
+    async def _team_of(self, guild, member):
+        """
+        Try several TeamsBridge method signatures to obtain a member's team id/name.
+        Returns None when no team info is available.
+        """
+        # candidate method names on your TeamsBridge
+        candidates = ("get_team", "get_member_team", "get_team_of", "member_team", "team_of", "get_team_for")
+        for name in candidates:
+            fn = getattr(self.teams, name, None)
+            if not fn:
+                continue
+            try:
+                # try guild, member then member-only
+                try:
+                    res = fn(guild, member)
+                except TypeError:
+                    res = fn(member)
+            except Exception:
+                continue
+            if asyncio.iscoroutine(res):
+                try:
+                    res = await res
+                except Exception:
+                    continue
+            return res
+        return None
+
     @commands.command()
     async def cbshop(self, ctx, page: int = 1):
         """Show the devil fruit shop (paginated). Use .cbshop <page> to navigate."""
@@ -684,3 +711,65 @@ class CrewBattles(commands.Cog):
 
         embed.set_footer(text="Tip: use .cbprofile and .cbshop to inspect fruits and plan builds")
         await ctx.reply(embed=embed)
+
+    @commands.command()
+    async def battle(self, ctx, opponent: discord.Member):
+        """Challenge another player to a battle"""
+        if ctx.author == opponent:
+            return await ctx.reply("❌ You cannot battle yourself.")
+
+        if opponent.bot:
+            return await ctx.reply("❌ You cannot battle bots.")
+
+        # Check if already in a battle
+        if ctx.channel.id in self._active_battles:
+            return await ctx.reply("❌ A battle is already in progress in this channel.")
+
+        # Fetch players
+        p1 = await self.players.get(ctx.author)
+        p2 = await self.players.get(opponent)
+
+        if not p1.get("started") or not p2.get("started"):
+            return await ctx.reply("❌ Both players must `.startcb` first.")
+
+        # Enforce cross-team-only duels when team info is available
+        try:
+            t1 = await self._team_of(ctx.guild, ctx.author)
+            t2 = await self._team_of(ctx.guild, opponent)
+        except Exception:
+            t1 = t2 = None
+        # only block if both players have a team and it's the same
+        if t1 is not None and t2 is not None and t1 == t2:
+            return await ctx.reply("❌ You can only challenge players from other teams.")
+
+        # Mark channel as busy
+        self._active_battles.add(ctx.channel.id)
+
+        # Prepare battle data
+        battle_data = {
+            "channel": ctx.channel,
+            "player1": ctx.author,
+            "player2": opponent,
+            "fruits": [p1.get("fruit"), p2.get("fruit")],
+            "teams": [p1.get("team"), p2.get("team")],
+            "haki": [p1.get("haki"), p2.get("haki")],
+            "players": [p1, p2],
+            "turn_delay": 5,  # seconds
+            "last_action": [0, 0],  # timestamps
+            "log": [],  # battle log
+        }
+
+        # Start the battle loop
+        await ctx.reply(f"⚔️ **{ctx.author.display_name}** has challenged **{opponent.display_name}**!")
+        await ctx.reply(embed=battle_embed(battle_data))
+
+        try:
+            while True:
+                # Battle logic here
+                await asyncio.sleep(1)  # prevent blocking
+        except Exception as e:
+            await ctx.reply(f"❌ Battle error: {e}")
+        finally:
+            # Clean up
+            self._active_battles.remove(ctx.channel.id)
+            await ctx.reply("✅ Battle ended.")
