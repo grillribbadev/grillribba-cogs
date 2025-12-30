@@ -35,6 +35,104 @@ class CrewBattles(commands.Cog):
         """Safely fetch BeriCore."""
         return self.bot.get_cog("BeriCore")
 
+    @commands.command()
+    async def cbshop(self, ctx):
+        """View Devil Fruit Shop"""
+        fruits = self.fruits.all()
+        if not fruits:
+            return await ctx.reply("❌ No Devil Fruits available right now.")
+
+        embed = discord.Embed(
+            title="🍈 Devil Fruit Shop",
+            description="Buy **one** Devil Fruit. You can only own **one at a time**.",
+            color=discord.Color.purple(),
+        )
+
+        for f in fruits:
+            price = f.get("price", 25000)
+            embed.add_field(
+                name=f["name"],
+                value=(
+                    f"**Type:** {f['type'].title()}\n"
+                    f"**Bonus:** +{f['bonus']}\n"
+                    f"💰 **Price:** {price:,} Beri"
+                ),
+                inline=False,
+            )
+
+        embed.set_footer(text="Use .cbbuy <fruit name> to purchase")
+        await ctx.reply(embed=embed)
+
+    @commands.command()
+    async def cbbuy(self, ctx, *, fruit_name: str):
+        """Buy a Devil Fruit"""
+        p = await self.players.get(ctx.author)
+
+        if p.get("fruit"):
+            return await ctx.reply("❌ You already have a Devil Fruit. Remove it first.")
+
+        fruit = self.fruits.get(fruit_name)
+        if not fruit:
+            return await ctx.reply("❌ That Devil Fruit does not exist.")
+
+        price = fruit.get("price", 25000)
+        core = self._beri()
+        if not core:
+            return await ctx.reply("❌ Economy system unavailable.")
+
+        balance = await core.get_beri(ctx.author)
+        if balance < price:
+            return await ctx.reply(f"❌ You need **{price:,} Beri** to buy this fruit.")
+
+        # Charge user
+        await core.add_beri(
+            ctx.author,
+            -price,
+            reason="shop:devil_fruit:purchase",
+            bypass_cap=True,
+        )
+
+        p["fruit"] = fruit["name"]
+        await self.players.save(ctx.author, p)
+
+        await ctx.reply(
+            f"🍈 **{fruit['name']}** purchased successfully!\n"
+            f"💰 Spent **{price:,} Beri**"
+        )
+
+    @commands.command()
+    async def cbremovefruit(self, ctx):
+        """Remove your Devil Fruit (costs 5,000 Beri)"""
+        p = await self.players.get(ctx.author)
+
+        if not p.get("fruit"):
+            return await ctx.reply("❌ You do not have a Devil Fruit.")
+
+        cost = 5000
+        core = self._beri()
+        if not core:
+            return await ctx.reply("❌ Economy system unavailable.")
+
+        balance = await core.get_beri(ctx.author)
+        if balance < cost:
+            return await ctx.reply(f"❌ You need **{cost:,} Beri** to remove your fruit.")
+
+        await core.add_beri(
+            ctx.author,
+            -cost,
+            reason="shop:devil_fruit:remove",
+            bypass_cap=True,
+        )
+
+        old = p["fruit"]
+        p["fruit"] = None
+        await self.players.save(ctx.author, p)
+
+        await ctx.reply(
+            f"🗑️ Removed **{old}**\n"
+            f"💰 Cost: **{cost:,} Beri**"
+        )
+
     # =========================================================
     # ADMIN COMMANDS
     # =========================================================
