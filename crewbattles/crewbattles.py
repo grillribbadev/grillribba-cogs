@@ -2,6 +2,7 @@ import asyncio
 import random
 import time
 import discord
+import math
 import copy
 import json
 from redbot.core import commands, Config
@@ -44,33 +45,45 @@ class CrewBattles(commands.Cog):
         return self.bot.get_cog("BeriCore")
 
     @commands.command()
-    async def cbshop(self, ctx):
-        """View Devil Fruit Shop"""
+    async def cbshop(self, ctx, page: int = 1):
+        """Show the devil fruit shop (paginated). Use .cbshop <page> to navigate."""
         fruits = self.fruits.all()
         if not fruits:
-            return await ctx.reply("❌ No Devil Fruits available right now.")
+            return await ctx.reply("🛒 The shop is currently empty.")
+
+        per_page = 10  # number of fruits per embed page (keeps fields well under 25)
+        total = len(fruits)
+        total_pages = max(1, math.ceil(total / per_page))
+        page = max(1, min(total_pages, int(page or 1)))
+
+        start = (page - 1) * per_page
+        end = start + per_page
+        slice_ = fruits[start:end]
 
         embed = discord.Embed(
-            title="🍈 Devil Fruit Shop",
-            description="Buy **one** Devil Fruit. You can only own **one at a time**.",
-            color=discord.Color.purple(),
+            title=f"🍎 Devil Fruit Shop — Page {page}/{total_pages}",
+            color=discord.Color.gold(),
+            description=f"Showing {start + 1}-{min(end, total)} of {total} fruits. Use `.cbshop <page>` to view other pages."
         )
 
-        for f in fruits:
-            stock = f.get("stock")
-            stock_txt = "∞ Unlimited" if stock is None else f"{stock} left"
+        for f in slice_:
+            name = f.get("name", "Unknown Fruit")
+            ftype = f.get("type", "Unknown")
+            bonus = f.get("bonus", 0)
+            price = f.get("price", 0)
+            stock = f.get("stock", None)
+            ability = f.get("ability", "") or "—"
 
-            embed.add_field(
-                name=f["name"],
-                value=(
-                    f"**Type:** {f['type'].title()}\n"
-                    f"💰 **Price:** {f.get('price', 25000):,} Beri\n"
-                    f"📦 **Stock:** {stock_txt}"
-                ),
-                inline=False,
+            stock_text = "Unlimited" if stock is None else str(stock)
+            value = (
+                f"Type: {ftype}\n"
+                f"Ability: {ability}\n"
+                f"Bonus: {bonus}\n"
+                f"Price: {price:,} Beri\n"
+                f"Stock: {stock_text}"
             )
+            embed.add_field(name=name, value=value, inline=False)
 
-        embed.set_footer(text="Use .cbbuy <fruit name> to purchase")
         await ctx.reply(embed=embed)
 
     @commands.command()
