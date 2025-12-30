@@ -618,6 +618,10 @@ class CrewBattles(commands.Cog):
 
         delay = await self.config.guild(ctx.guild).turn_delay()
 
+        # initialize current HP trackers used by the per-turn loop
+        hp1 = int(hp1_start)
+        hp2 = int(hp2_start)
+
         # Named attacks to use when the battle engine doesn't provide one
         ATTACKS = [
             "Gomu Gomu no Pistol",
