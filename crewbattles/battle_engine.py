@@ -91,7 +91,8 @@ def simulate(p1, p2):
         base_named_prob = min(0.75, base_named_prob)
         # reduce probability if attacker has used named attacks consecutively
         named_prob = base_named_prob * (1.0 / (1.0 + consec_named[current] * 0.6))
-        use_named = (random.random() < named_prob) and (a_arm > 0 or a_conq)
+        # use unlocked conqueror flag here (not a_conq)
+        use_named = (random.random() < named_prob) and (a_arm > 0 or a_conq_unlocked)
 
         if use_named:
             attack_name = random.choice(ATTACKS)
