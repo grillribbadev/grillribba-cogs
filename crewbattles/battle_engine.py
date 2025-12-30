@@ -44,10 +44,8 @@ def simulate(p1, p2):
 
         # handle skip (frightened) status
         if skip[current]:
-            # attacker is frightened/skipping their action
             turns.append((current, 0, hp2 if current == "p1" else hp1, "Frightened - Skipped", False))
             skip[current] = False
-            # switch turn
             current = "p2" if current == "p1" else "p1"
             continue
 
@@ -55,31 +53,41 @@ def simulate(p1, p2):
         d_eff = get_haki_effects(defender)
 
         attack_name = random.choice(ATTACKS)
+        markers = []
+
+        # note armament presence for display (even if small)
+        if int(a_eff.get("atk_bonus", 0)) > 0:
+            markers.append("Armament")
+
         base = random.randint(10, 20)
-        dmg = base + int(a_eff["atk_bonus"])
+        dmg = base + int(a_eff.get("atk_bonus", 0))
 
         # defender dodge check (observation)
-        if random.random() < d_eff["dodge"]:
-            # defender dodged
-            crit = False
-            # HP does not change
-            hp_after = hp2 if current == "p1" else hp1
-            turns.append((current, 0, hp_after, attack_name + " (Dodged)", False))
-            # switch turn
+        if random.random() < d_eff.get("dodge", 0):
+            # defender dodged — indicate Observation in the display
+            attack_display = f"{attack_name} (Dodged — Observation)"
+            turns.append((current, 0, hp2 if current == "p1" else hp1, attack_display, False))
             current = "p2" if current == "p1" else "p1"
             continue
 
         # Conqueror's Haki: small chance to frighten and deal critical damage
         crit = False
-        if random.random() < a_eff["conqueror_chance"]:
+        if random.random() < a_eff.get("conqueror_chance", 0):
             crit = True
-            dmg = int(dmg * a_eff["conqueror_mult"])
-            # frighten defender: they will skip their next turn
+            dmg = int(dmg * a_eff.get("conqueror_mult", 1.0))
             other = "p2" if current == "p1" else "p1"
             skip[other] = True
+            markers.append("Conqueror")
 
         # apply defender's defense bonus (reduce incoming damage)
-        dmg = max(0, dmg - int(d_eff["def_bonus"]))
+        if int(d_eff.get("def_bonus", 0)) > 0:
+            markers.append("Armament(Def)")
+
+        dmg = max(0, dmg - int(d_eff.get("def_bonus", 0)))
+
+        # build final attack name with markers so the UI can show haki activity
+        if markers:
+            attack_name = f"{attack_name} ({', '.join(markers)})"
 
         # apply damage
         if current == "p1":
