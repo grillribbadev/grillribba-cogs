@@ -3,6 +3,7 @@ import random
 import time
 import discord
 import copy
+import json
 from redbot.core import commands, Config
 
 from .constants import DEFAULT_GUILD, DEFAULT_USER, BASE_HP
@@ -355,6 +356,40 @@ class CrewBattles(commands.Cog):
         """Set Haki training cooldown (seconds) for this guild."""
         await self.config.guild(ctx.guild).haki_cooldown.set(int(seconds))
         await ctx.reply(f"✅ Set Haki training cooldown to {seconds} seconds")
+
+    @cbadmin.command()
+    async def importfruits(self, ctx, *, json_text: str = None):
+        """
+        Import shop stock from a JSON file or raw JSON text.
+        Usage: attach a .json file to the command message, or pass raw JSON as an argument.
+        The imported JSON must be a list of fruit objects with keys:
+          name, type, bonus, price, ability, stock (optional)
+        Import replaces the current shop entirely.
+        """
+        # prefer attachment if provided
+        text = None
+        if ctx.message.attachments:
+            try:
+                data = await ctx.message.attachments[0].read()
+                text = data.decode("utf-8")
+            except Exception as e:
+                return await ctx.reply(f"❌ Failed to read attachment: {e}")
+        elif json_text:
+            text = json_text
+        else:
+            return await ctx.reply("❌ Provide a JSON attachment or raw JSON text.")
+
+        try:
+            parsed = json.loads(text)
+        except Exception as e:
+            return await ctx.reply(f"❌ Invalid JSON: {e}")
+
+        try:
+            count = self.fruits.import_json(parsed)
+        except Exception as e:
+            return await ctx.reply(f"❌ Import failed: {e}")
+
+        await ctx.reply(f"✅ Imported {count} devil fruits; shop replaced.")
 
     # =========================================================
     # PLAYER COMMANDS

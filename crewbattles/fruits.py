@@ -21,6 +21,7 @@ class FruitManager:
 
     def _save(self):
         try:
+            DATA.parent.mkdir(parents=True, exist_ok=True)
             with DATA.open("w", encoding="utf-8") as fh:
                 json.dump(self._data, fh, indent=2, ensure_ascii=False)
         except Exception:
@@ -46,19 +47,18 @@ class FruitManager:
             return None
         return random.choice(self._data)
 
-    def add(self, name: str, ftype: str, bonus: int, price: int, stock=None):
+    def add(self, name: str, ftype: str, bonus: int, price: int, stock=None, ability: str = ""):
         """Add a new fruit (overwrites if same name exists)."""
         fruit = {
             "name": str(name),
-            "type": str(ftype).lower(),
+            "type": str(ftype),
             "bonus": int(bonus),
             "price": int(price),
             "stock": None if stock is None else int(stock),
+            "ability": str(ability or "")
         }
-        # replace existing
         existing = self.get(name)
         if existing:
-            # update existing in-place
             existing.update(fruit)
         else:
             self._data.append(fruit)
@@ -75,7 +75,56 @@ class FruitManager:
                 self._data[idx] = fruit
                 self._save()
                 return
-        # not found -> append
         self._data.append(fruit)
         self._save()
         return
+
+    def import_json(self, json_obj):
+        """
+        Replace current shop with provided JSON data.
+        json_obj can be a list of fruit objects or a JSON string.
+        Each fruit must include: name, type, bonus, price, ability.
+        stock is optional (use null for unlimited).
+        """
+        # accept raw string
+        if isinstance(json_obj, str):
+            try:
+                parsed = json.loads(json_obj)
+            except Exception as e:
+                raise ValueError(f"Invalid JSON: {e}")
+        else:
+            parsed = json_obj
+
+        if not isinstance(parsed, list):
+            raise ValueError("Imported JSON must be a list of fruit objects.")
+
+        new_list = []
+        for item in parsed:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name")
+            ftype = item.get("type") or item.get("ftype")
+            if not name or not ftype:
+                raise ValueError(f"Each fruit must include 'name' and 'type'. Problem: {item}")
+            bonus = int(item.get("bonus", 0))
+            price = int(item.get("price", 0))
+            stock = item.get("stock", None)
+            if stock is not None:
+                try:
+                    stock = int(stock)
+                except Exception:
+                    stock = None
+            ability = str(item.get("ability", ""))  # special ability text
+            new_list.append({
+                "name": str(name),
+                "type": str(ftype),
+                "bonus": bonus,
+                "price": price,
+                "stock": stock,
+                "ability": ability,
+            })
+
+        # override current shop
+        self._data = new_list
+        self._save()
+        return len(new_list)
