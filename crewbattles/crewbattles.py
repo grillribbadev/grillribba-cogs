@@ -785,7 +785,9 @@ class CrewBattles(commands.Cog):
                     }
                     found_prefix = None
                     found_emojis = []
-
+                    # working copy of the attack string for stripping markers
+                    cleaned = attack_str
+     
                     # detect and remove known emoji markers from the attack name
                     for em, (prefix, emo) in markers_map.items():
                         if em in cleaned:
