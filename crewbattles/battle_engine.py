@@ -19,6 +19,19 @@ ATTACKS = [
     "Elephant Gun",
 ]
 
+# small emoji pools to add flair to named attacks
+FLARE_EMOJIS = ["🔥", "💥", "⚔️", "🌪️", "🌊", "⚡️", "🌀", "✨", "🔪", "🥊"]
+FLARE_SUFFIX = ["!", "!!", "〜", "☆", "✦", "✴️"]
+
+def _flair_named_attack(name: str) -> str:
+    """Return attack name decorated with random flair emojis/suffixes."""
+    prefix = random.choice(FLARE_EMOJIS)
+    suffix = random.choice(FLARE_EMOJIS + FLARE_SUFFIX)
+    # avoid duplicate emoji when suffix equals prefix
+    if suffix == prefix:
+        suffix = random.choice(FLARE_SUFFIX)
+    return f"{prefix} {name} {suffix}"
+
 def simulate(p1, p2, fruit_manager=None):
     """
     Simulate a battle between p1 and p2.
@@ -106,7 +119,9 @@ def simulate(p1, p2, fruit_manager=None):
         use_named = (random.random() < named_prob)
 
         if use_named:
-            attack_name = random.choice(ATTACKS)
+            raw_attack = random.choice(ATTACKS)
+            # add flair emojis to the named attack
+            attack_name = _flair_named_attack(raw_attack)
             consec_named[current] += 1
         else:
             attack_name = random.choice(GENERIC_ATTACKS)
@@ -138,7 +153,8 @@ def simulate(p1, p2, fruit_manager=None):
                 # ability becomes the attack (not an add-on)
                 ability_name = str(fruit_obj.get("ability") or "").strip()
                 fruit_canonical = str(fruit_obj.get("name") or "").strip()
-                attack_name = f"{ability_name} — {fruit_canonical}"
+                # add flair to ability name as well
+                attack_name = _flair_named_attack(f"{ability_name} — {fruit_canonical}")
                 # ability damage formula: slightly higher base and scales with bonus
                 dmg = int(random.randint(12, 24) * (1.0 + (bonus * 0.01)))
                 markers = ["✨"]  # mark as fruit ability

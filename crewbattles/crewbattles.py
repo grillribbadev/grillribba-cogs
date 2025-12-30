@@ -36,6 +36,9 @@ class CrewBattles(commands.Cog):
         )
         self.config.register_guild(**DEFAULT_GUILD)
 
+        # track active battles by channel id to prevent more than one per channel
+        self._active_battles = set()
+
     # =========================================================
     # INTERNAL HELPERS
     # =========================================================
@@ -642,246 +645,257 @@ class CrewBattles(commands.Cog):
     # =========================================================
 
     @commands.command()
-    async def battle(self, ctx, opponent: discord.Member):
-        if opponent == ctx.author:
-            return await ctx.reply("❌ You can't battle yourself.")
+    async def battle(self, ctx, *args, **kwargs):
+        """
+        Existing battle command entrypoint.
+        Wrap start of the command so only one battle can run per channel.
+        """
+        chan_id = ctx.channel.id
+        if chan_id in self._active_battles:
+            return await ctx.reply("⚠️ A battle is already in progress in this channel. Please wait for it to finish.")
 
-        p1 = await self.players.get(ctx.author)
-        p2 = await self.players.get(opponent)
+        # reserve the channel
+        self._active_battles.add(chan_id)
+        try:
+            p1 = await self.players.get(ctx.author)
+            p2 = await self.players.get(opponent)
 
-        if not p1["started"] or not p2["started"]:
-            return await ctx.reply("❌ Both players must `.startcb` first.")
+            if not p1["started"] or not p2["started"]:
+                return await ctx.reply("❌ Both players must `.startcb` first.")
 
-        # before calling simulate or before rendering the per-turn embed, compute both maxima:
-        # assuming p1_data and p2_data are the player dicts used by simulate
-        max_hp1 = BASE_HP + int(p1.get("level", 1)) * 6
-        max_hp2 = BASE_HP + int(p2.get("level", 1)) * 6
+            # before calling simulate or before rendering the per-turn embed, compute both maxima:
+            # assuming p1_data and p2_data are the player dicts used by simulate
+            max_hp1 = BASE_HP + int(p1.get("level", 1)) * 6
+            max_hp2 = BASE_HP + int(p2.get("level", 1)) * 6
 
-        # simulate stays the same (returns hp1/hp2 current values in your turns list)
-        # pass the FruitManager so simulate can trigger fruit abilities
-        winner, turns, final_hp1, final_hp2 = simulate(p1, p2, self.fruits)
+            # simulate stays the same (returns hp1/hp2 current values in your turns list)
+            # pass the FruitManager so simulate can trigger fruit abilities
+            winner, turns, final_hp1, final_hp2 = simulate(p1, p2, self.fruits)
 
-        # use the computed max_hp values for each player
-        hp1_start = max_hp1
-        hp2_start = max_hp2
+            # use the computed max_hp values for each player
+            hp1_start = max_hp1
+            hp2_start = max_hp2
 
-        battle_log: list[str] = []
+            battle_log: list[str] = []
 
-        msg = await ctx.send(
-            embed=battle_embed(
-                ctx.author,
-                opponent,
-                hp1_start,
-                hp2_start,
-                max_hp1,
-                max_hp2,
-                "⚔️ Battle started!"
-            )
-        )
-
-        delay = await self.config.guild(ctx.guild).turn_delay()
-
-        # initialize current HP trackers used by the per-turn loop
-        hp1 = int(hp1_start)
-        hp2 = int(hp2_start)
-
-        # Named attacks to use when the battle engine doesn't provide one
-        ATTACKS = [
-            "Gomu Gomu no Pistol",
-            "Gomu Gomu no Gatling",
-            "Gomu Gomu no Bazooka",
-            "Red Hawk",
-            "Diable Jambe",
-            "Oni Giri",
-            "King Cobra",
-            "Hiken",
-            "Shishi Sonson",
-            "Rengoku",
-            "Conqueror's Crush",
-            "Armament Strike",
-            "Observation Stab",
-            "Sky Walk Kick",
-            "Elephant Gun",
-        ]
-
-        for turn in turns:
-            # Defensive unpacking: support both legacy (side,dmg,hp) and newer (side,dmg,hp,attack,crit)
-            if isinstance(turn, (list, tuple)):
-                if len(turn) >= 5:
-                    side, dmg, hp, attack, crit = turn[:5]
-                elif len(turn) == 3:
-                    side, dmg, hp = turn
-                    attack = random.choice(ATTACKS)
-                    crit = False
-                else:
-                    # Best-effort fallback
-                    side = turn[0] if len(turn) > 0 else "p1"
-                    dmg = turn[1] if len(turn) > 1 else 0
-                    hp = turn[2] if len(turn) > 2 else 0
-                    attack = turn[3] if len(turn) > 3 else random.choice(ATTACKS)
-                    crit = bool(turn[4]) if len(turn) > 4 else False
-            else:
-                # Unexpected shape: coerce to defaults
-                side, dmg, hp = "p1", 0, 0
-                attack, crit = random.choice(ATTACKS), False
-
-            # Ensure we don't display a bland default
-            if not attack:
-                attack = random.choice(ATTACKS)
-
-            await asyncio.sleep(delay)
-
-            if side == "p1":
-                hp2 = hp
-                actor_name = ctx.author.display_name
-                defender_name = opponent.display_name
-                actor_p = p1
-                defender_p = p2
-            else:
-                hp1 = hp
-                actor_name = opponent.display_name
-                defender_name = ctx.author.display_name
-                actor_p = p2
-                defender_p = p1
-
-            # Normalize attack string for parsing
-            attack_str = str(attack)
-
-            # Special-case messages for non-attack events
-            msg_text = None
-            # Frightened / skipped turn (simulate uses a specific attack string)
-            if "Frightened" in attack_str:
-                msg_text = f"😨 **{actor_name}** was frightened and skipped their turn!"
-            # Dodged (simulate used a dodge sentinel; prefer explicit observation message)
-            elif "Dodged" in attack_str:
-                obs_val = int((defender_p.get("haki") or {}).get("observation", 0))
-                if obs_val > 0:
-                    msg_text = f"👁️ **{defender_name}** used Observation Haki and dodged!"
-                else:
-                    msg_text = f"🛡️ **{defender_name}** dodged the attack!"
-            else:
-                # Parse haki/ability markers from attack string and build a friendly attack label
-                # Known markers => mapping to prefix/emoji
-                markers_map = {
-                    "⚔️": ("Armament", "⚔️"),
-                    "⚡️": ("Conqueror's", "⚡️"),
-                    "🛡️": ("Defend", "🛡️"),
-                    "✨": ("Ability", "✨"),
-                }
-                found_prefix = None
-                found_emojis = []
-
-                # detect and remove known emoji markers from the attack name
-                cleaned = attack_str
-                for em, (prefix, emo) in markers_map.items():
-                    if em in cleaned:
-                        found_emojis.append(emo)
-                        # prefer Conqueror over Armament if both present
-                        if em == "⚡️":
-                            found_prefix = prefix
-                        elif em == "⚔️" and not found_prefix:
-                            found_prefix = prefix
-                        cleaned = cleaned.replace(em, "")
-                # also remove common textual markers added earlier like "Armament" or "Conqueror"
-                cleaned = cleaned.replace("Armament", "").replace("Conqueror", "").replace("Conqueror's", "")
-                cleaned = cleaned.replace("Defend", "").replace("(Def)", "").strip()
-                # remove extra parentheses around tiny ability snippets that were appended
-                cleaned = cleaned.strip()
-                # if cleaned contains trailing parenthetical ability (e.g. "(Stretch)"), keep it as-is
-
-                # build display attack name
-                if found_prefix:
-                    attack_label = f"{found_prefix} {cleaned}".strip()
-                else:
-                    attack_label = cleaned
-
-                # append emojis at end for clarity
-                if found_emojis:
-                    attack_label = f"{attack_label} {' '.join(found_emojis)}"
-
-                crit_txt = " 💥 **CRITICAL HIT!**" if crit else ""
-                # handle the case where damage is 0 after defenses
-                if dmg <= 0:
-                    msg_text = f"⚔️ **{actor_name}** attacked with **{attack_label}** but it dealt no damage.{crit_txt}"
-                else:
-                    msg_text = f"⚔️ **{actor_name}** used **{attack_label}** and dealt **{dmg}** damage!{crit_txt}"
-
-            battle_log.append(msg_text)
-
-            log_text = "\n".join(battle_log[-6:])  # KEEP AS STRING
-
-            await msg.edit(
+            msg = await ctx.send(
                 embed=battle_embed(
                     ctx.author,
                     opponent,
-                    hp1,
-                    hp2,
-                    max_hp1,    # p1 max HP
-                    max_hp2,    # p2 max HP
-                    log_text
+                    hp1_start,
+                    hp2_start,
+                    max_hp1,
+                    max_hp2,
+                    "⚔️ Battle started!"
                 )
             )
 
-        # =====================================================
-        # RESULTS
-        # =====================================================
+            delay = await self.config.guild(ctx.guild).turn_delay()
 
-        g = await self.config.guild(ctx.guild).all()
+            # initialize current HP trackers used by the per-turn loop
+            hp1 = int(hp1_start)
+            hp2 = int(hp2_start)
 
-        winner_user = ctx.author if winner == "p1" else opponent
-        loser_user = opponent if winner == "p1" else ctx.author
+            # Named attacks to use when the battle engine doesn't provide one
+            ATTACKS = [
+                "Gomu Gomu no Pistol",
+                "Gomu Gomu no Gatling",
+                "Gomu Gomu no Bazooka",
+                "Red Hawk",
+                "Diable Jambe",
+                "Oni Giri",
+                "King Cobra",
+                "Hiken",
+                "Shishi Sonson",
+                "Rengoku",
+                "Conqueror's Crush",
+                "Armament Strike",
+                "Observation Stab",
+                "Sky Walk Kick",
+                "Elephant Gun",
+            ]
 
-        winner_p = p1 if winner == "p1" else p2
-        loser_p = p2 if winner == "p1" else p1
+            for turn in turns:
+                # Defensive unpacking: support both legacy (side,dmg,hp) and newer (side,dmg,hp,attack,crit)
+                if isinstance(turn, (list, tuple)):
+                    if len(turn) >= 5:
+                        side, dmg, hp, attack, crit = turn[:5]
+                    elif len(turn) == 3:
+                        side, dmg, hp = turn
+                        attack = random.choice(ATTACKS)
+                        crit = False
+                    else:
+                        # Best-effort fallback
+                        side = turn[0] if len(turn) > 0 else "p1"
+                        dmg = turn[1] if len(turn) > 1 else 0
+                        hp = turn[2] if len(turn) > 2 else 0
+                        attack = turn[3] if len(turn) > 3 else random.choice(ATTACKS)
+                        crit = bool(turn[4]) if len(turn) > 4 else False
+                else:
+                    # Unexpected shape: coerce to defaults
+                    side, dmg, hp = "p1", 0, 0
+                    attack, crit = random.choice(ATTACKS), False
 
-        winner_p["wins"] = winner_p.get("wins", 0) + 1
-        loser_p["losses"] = loser_p.get("losses", 0) + 1
+                # Ensure we don't display a bland default
+                if not attack:
+                    attack = random.choice(ATTACKS)
 
-        winner_p["exp"] = winner_p.get("exp", 0) + g.get("exp_win", 0)
-        loser_p["exp"] = loser_p.get("exp", 0) + g.get("exp_loss", 0)
+                await asyncio.sleep(delay)
 
-        await self.players.save(ctx.author, p1)
-        await self.players.save(opponent, p2)
+                if side == "p1":
+                    hp2 = hp
+                    actor_name = ctx.author.display_name
+                    defender_name = opponent.display_name
+                    actor_p = p1
+                    defender_p = p2
+                else:
+                    hp1 = hp
+                    actor_name = opponent.display_name
+                    defender_name = ctx.author.display_name
+                    actor_p = p2
+                    defender_p = p1
 
-        # -------------------------------
-        # TEAM POINTS
-        # -------------------------------
-        await self.teams.award_win(
-            ctx.guild,
-            winner_user,
-            g.get("crew_points_win", 0)
-        )
+                # Normalize attack string for parsing
+                attack_str = str(attack)
 
-        # -------------------------------
-        # BERI CORE (CORRECT API)
-        # -------------------------------
-        core = self._beri()
-        if core:
-            try:
-                await core.add_beri(
-                    winner_user,
-                    g.get("beri_win", 0),
-                    reason="pvp:crew_battle:win"
+                # Special-case messages for non-attack events
+                msg_text = None
+                # Frightened / skipped turn (simulate uses a specific attack string)
+                if "Frightened" in attack_str:
+                    msg_text = f"😨 **{actor_name}** was frightened and skipped their turn!"
+                # Dodged (simulate used a dodge sentinel; prefer explicit observation message)
+                elif "Dodged" in attack_str:
+                    obs_val = int((defender_p.get("haki") or {}).get("observation", 0))
+                    if obs_val > 0:
+                        msg_text = f"👁️ **{defender_name}** used Observation Haki and dodged!"
+                    else:
+                        msg_text = f"🛡️ **{defender_name}** dodged the attack!"
+                else:
+                    # Parse haki/ability markers from attack string and build a friendly attack label
+                    # Known markers => mapping to prefix/emoji
+                    markers_map = {
+                        "⚔️": ("Armament", "⚔️"),
+                        "⚡️": ("Conqueror's", "⚡️"),
+                        "🛡️": ("Defend", "🛡️"),
+                        "✨": ("Ability", "✨"),
+                    }
+                    found_prefix = None
+                    found_emojis = []
+
+                    # detect and remove known emoji markers from the attack name
+                    cleaned = attack_str
+                    for em, (prefix, emo) in markers_map.items():
+                        if em in cleaned:
+                            found_emojis.append(emo)
+                            # prefer Conqueror over Armament if both present
+                            if em == "⚡️":
+                                found_prefix = prefix
+                            elif em == "⚔️" and not found_prefix:
+                                found_prefix = prefix
+                            cleaned = cleaned.replace(em, "")
+                    # also remove common textual markers added earlier like "Armament" or "Conqueror"
+                    cleaned = cleaned.replace("Armament", "").replace("Conqueror", "").replace("Conqueror's", "")
+                    cleaned = cleaned.replace("Defend", "").replace("(Def)", "").strip()
+                    # remove extra parentheses around tiny ability snippets that were appended
+                    cleaned = cleaned.strip()
+                    # if cleaned contains trailing parenthetical ability (e.g. "(Stretch)"), keep it as-is
+
+                    # build display attack name
+                    if found_prefix:
+                        attack_label = f"{found_prefix} {cleaned}".strip()
+                    else:
+                        attack_label = cleaned
+
+                    # append emojis at end for clarity
+                    if found_emojis:
+                        attack_label = f"{attack_label} {' '.join(found_emojis)}"
+
+                    crit_txt = " 💥 **CRITICAL HIT!**" if crit else ""
+                    # handle the case where damage is 0 after defenses
+                    if dmg <= 0:
+                        msg_text = f"⚔️ **{actor_name}** attacked with **{attack_label}** but it dealt no damage.{crit_txt}"
+                    else:
+                        msg_text = f"⚔️ **{actor_name}** used **{attack_label}** and dealt **{dmg}** damage!{crit_txt}"
+
+                battle_log.append(msg_text)
+
+                log_text = "\n".join(battle_log[-6:])  # KEEP AS STRING
+
+                await msg.edit(
+                    embed=battle_embed(
+                        ctx.author,
+                        opponent,
+                        hp1,
+                        hp2,
+                        max_hp1,    # p1 max HP
+                        max_hp2,    # p2 max HP
+                        log_text
+                    )
                 )
-            except Exception as e:
-                print(f"[CrewBattles] Beri win error: {e}")
 
-            if g.get("beri_loss", 0) != 0:
+            # =====================================================
+            # RESULTS
+            # =====================================================
+
+            g = await self.config.guild(ctx.guild).all()
+
+            winner_user = ctx.author if winner == "p1" else opponent
+            loser_user = opponent if winner == "p1" else ctx.author
+
+            winner_p = p1 if winner == "p1" else p2
+            loser_p = p2 if winner == "p1" else p1
+
+            winner_p["wins"] = winner_p.get("wins", 0) + 1
+            loser_p["losses"] = loser_p.get("losses", 0) + 1
+
+            winner_p["exp"] = winner_p.get("exp", 0) + g.get("exp_win", 0)
+            loser_p["exp"] = loser_p.get("exp", 0) + g.get("exp_loss", 0)
+
+            await self.players.save(ctx.author, p1)
+            await self.players.save(opponent, p2)
+
+            # -------------------------------
+            # TEAM POINTS
+            # -------------------------------
+            await self.teams.award_win(
+                ctx.guild,
+                winner_user,
+                g.get("crew_points_win", 0)
+            )
+
+            # -------------------------------
+            # BERI CORE (CORRECT API)
+            # -------------------------------
+            core = self._beri()
+            if core:
                 try:
                     await core.add_beri(
-                        loser_user,
-                        g.get("beri_loss", 0),
-                        reason="pvp:crew_battle:loss"
+                        winner_user,
+                        g.get("beri_win", 0),
+                        reason="pvp:crew_battle:win"
                     )
                 except Exception as e:
-                    print(f"[CrewBattles] Beri loss error: {e}")
+                    print(f"[CrewBattles] Beri win error: {e}")
 
-        await ctx.reply(
-            f"🏆 **{winner_user.display_name}** won the Crew Battle against "
-            f"**{loser_user.display_name}**!\n"
-            f"• +{g.get('exp_win', 0)} EXP\n"
-            f"• +{g.get('beri_win', 0)} Beri"
-        )
+                if g.get("beri_loss", 0) != 0:
+                    try:
+                        await core.add_beri(
+                            loser_user,
+                            g.get("beri_loss", 0),
+                            reason="pvp:crew_battle:loss"
+                        )
+                    except Exception as e:
+                        print(f"[CrewBattles] Beri loss error: {e}")
+
+            await ctx.reply(
+                f"🏆 **{winner_user.display_name}** won the Crew Battle against "
+                f"**{loser_user.display_name}**!\n"
+                f"• +{g.get('exp_win', 0)} EXP\n"
+                f"• +{g.get('beri_win', 0)} Beri"
+            )
+        finally:
+            # always free the channel lock so errors or early returns don't leave it locked
+            self._active_battles.discard(chan_id)
 
     @commands.command()
     async def cbleaderboard(self, ctx, metric: str = "wins", limit: int = 10):
