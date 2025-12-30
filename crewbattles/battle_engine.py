@@ -89,13 +89,17 @@ def simulate(p1, p2, fruit_manager=None):
             a_conq_chance = 0.0
             a_conq_mult = 1.0
 
-        # fruit data lookup (if provided)
+        # fruit data lookup (if provided) — only allow ability if player's fruit matches an entry
         fruit_obj = None
-        fruit_name = attacker.get("fruit")
+        fruit_name = (attacker.get("fruit") or "")
         if fruit_manager and fruit_name:
+            # FruitManager.get is case-insensitive; use it to find the canonical fruit record
             try:
                 fruit_obj = fruit_manager.get(fruit_name)
             except Exception:
+                fruit_obj = None
+            # only use ability when the fruit exists and names match (safety)
+            if fruit_obj and fruit_obj.get("name", "").strip().lower() != fruit_name.strip().lower():
                 fruit_obj = None
 
         # decide named attack

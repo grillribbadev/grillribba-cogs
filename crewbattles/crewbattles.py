@@ -124,7 +124,7 @@ class CrewBattles(commands.Cog):
             bypass_cap=True,
         )
 
-        p["fruit"] = fruit["name"]
+        p["fruit"] = fruit.get("name")
         await self.players.save(ctx.author, p)
 
         await ctx.reply(
