@@ -1,6 +1,6 @@
 import asyncio
-import discord
 import random
+import discord
 from redbot.core import commands, Config
 from .constants import DEFAULT_GUILD
 from .player_manager import PlayerManager
@@ -38,7 +38,7 @@ class CrewBattles(commands.Cog):
         await ctx.reply(f"Fruit **{name}** added.")
 
     @cbadmin.command()
-    async def givefruit(self, ctx, member: commands.MemberConverter, *, name: str):
+    async def givefruit(self, ctx, member: discord.Member, *, name: str):
         p = await self.players.get(member)
         p["fruit"] = name
         await self.players.save(member, p)
@@ -54,6 +54,8 @@ class CrewBattles(commands.Cog):
         p["started"] = True
         p["fruit"] = fruit["name"] if fruit else None
         await self.players.save(ctx.author, p)
+        if not fruit:
+            await ctx.reply("No fruit was assigned to you. You can still play, but try again later for a fruit!")
         await ctx.reply(
             embed=discord.Embed(
                 title="🏴‍☠️ Journey Started",
@@ -61,21 +63,57 @@ class CrewBattles(commands.Cog):
             )
         )
 
-    @commands.command()
-    async def cbprofile(self, ctx, member: commands.MemberConverter = None):
+    @commands.command(name="cbprofile")
+    async def cbprofile(self, ctx, member: discord.Member = None):
         member = member or ctx.author
         p = await self.players.get(member)
+
         if not p["started"]:
-            return await ctx.reply("Player has not started.")
-        e = discord.Embed(title=f"{member.display_name}'s Profile")
-        e.add_field(name="Level", value=p["level"])
-        e.add_field(name="Wins / Losses", value=f"{p['wins']} / {p['losses']}")
-        e.add_field(name="Fruit", value=p["fruit"] or "None")
-        e.add_field(name="Haki", value=str(p["haki"]))
-        await ctx.reply(embed=e)
+            return await ctx.reply("❌ This player has not started Crew Battles yet.")
+        haki = p.get("haki", {})
+        embed = discord.Embed(
+            title=f"🏴‍☠️ {member.display_name}'s Crew Battle Profile",
+            color=discord.Color.gold(),
+        )
+
+        wins = p.get("wins", 0)
+        losses = p.get("losses", 0)
+        total = wins + losses
+        winrate = (wins / total * 100) if total > 0 else 0.0
+
+        embed.add_field(
+            name="📊 Stats",
+            value=(
+                f"**Level:** {p.get('level', 1)}\n"
+                f"**Wins:** {wins} • **Losses:** {losses}\n"
+                f"**Win Rate:** {winrate:.1f}%"
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="🍈 Devil Fruit",
+            value=p.get("fruit") or "None",
+            inline=False,
+        )
+
+        embed.add_field(
+            name="✨ Haki",
+            value=(
+                f"🛡️ **Armament:** {haki.get('armament', 0)}\n"
+                f"👁️ **Observation:** {haki.get('observation', 0)}\n"
+                f"👑 **Conqueror’s:** {'Unlocked' if haki.get('conquerors') else 'Locked'}"
+            ),
+            inline=False,
+        )
+
+        embed.set_footer(text="Crew Battles • Progress is saved")
+
+        await ctx.reply(embed=embed)
+
 
     @commands.command()
-    async def battle(self, ctx, opponent: commands.MemberConverter):
+    async def battle(self, ctx, opponent: discord.Member):
         if opponent == ctx.author:
             return await ctx.reply("No self battles.")
         p1 = await self.players.get(ctx.author)
@@ -84,10 +122,12 @@ class CrewBattles(commands.Cog):
             return await ctx.reply("Both players must `.startcb` first.")
 
         winner, turns, hp1, hp2 = simulate(p1, p2)
-        max_hp = 100 + max(p1["level"], p2["level"]) * 6
+        hp1_start = 100 + p1["level"] * 6
+        hp2_start = 100 + p2["level"] * 6
+        max_hp = max(hp1_start, hp2_start)
 
-        msg = await ctx.send(embed=battle_embed(ctx.author, opponent, max_hp, max_hp, max_hp))
-        delay = (await self.config.guild(ctx.guild).turn_delay())
+        msg = await ctx.send(embed=battle_embed(ctx.author, opponent, hp1_start, hp2_start, max_hp))
+        delay = await self.config.guild(ctx.guild).turn_delay()
 
         for side, dmg, hp in turns:
             if side == "p1":
@@ -115,6 +155,15 @@ class CrewBattles(commands.Cog):
             await self.teams.award_win(ctx.guild, opponent, g["crew_points_win"])
             await self.beri.reward(opponent, g["beri_win"])
 
+        # Announce the result
+        winner_user = ctx.author if winner == "p1" else opponent
+        loser_user = opponent if winner == "p1" else ctx.author
+
+        # save updated player data
         await self.players.save(ctx.author, p1)
         await self.players.save(opponent, p2)
 
+        await ctx.reply(
+            f"🏆 {winner_user.mention} won the Crew Battle against {loser_user.mention}!\n"
+            f"Rewards: +{g['exp_win']} exp to the winner, +{g['exp_loss']} exp to the loser."
+        )
