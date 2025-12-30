@@ -345,6 +345,25 @@ class CrewBattles(commands.Cog):
 
         delay = await self.config.guild(ctx.guild).turn_delay()
 
+        # Named attacks to use when the battle engine doesn't provide one
+        ATTACKS = [
+            "Gomu Gomu no Pistol",
+            "Gomu Gomu no Gatling",
+            "Gomu Gomu no Bazooka",
+            "Red Hawk",
+            "Diable Jambe",
+            "Oni Giri",
+            "King Cobra",
+            "Hiken",
+            "Shishi Sonson",
+            "Rengoku",
+            "Conqueror's Crush",
+            "Armament Strike",
+            "Observation Stab",
+            "Sky Walk Kick",
+            "Elephant Gun",
+        ]
+
         for turn in turns:
             # Defensive unpacking: support both legacy (side,dmg,hp) and newer (side,dmg,hp,attack,crit)
             if isinstance(turn, (list, tuple)):
@@ -352,18 +371,23 @@ class CrewBattles(commands.Cog):
                     side, dmg, hp, attack, crit = turn[:5]
                 elif len(turn) == 3:
                     side, dmg, hp = turn
-                    attack = "Attack"
+                    attack = random.choice(ATTACKS)
                     crit = False
                 else:
                     # Best-effort fallback
                     side = turn[0] if len(turn) > 0 else "p1"
                     dmg = turn[1] if len(turn) > 1 else 0
                     hp = turn[2] if len(turn) > 2 else 0
-                    attack = turn[3] if len(turn) > 3 else "Attack"
+                    attack = turn[3] if len(turn) > 3 else random.choice(ATTACKS)
                     crit = bool(turn[4]) if len(turn) > 4 else False
             else:
                 # Unexpected shape: coerce to defaults
-                side, dmg, hp, attack, crit = "p1", 0, 0, "Attack", False
+                side, dmg, hp = "p1", 0, 0
+                attack, crit = random.choice(ATTACKS), False
+
+            # Ensure we don't display a bland default
+            if not attack:
+                attack = random.choice(ATTACKS)
 
             await asyncio.sleep(delay)
 
