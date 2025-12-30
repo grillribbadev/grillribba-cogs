@@ -598,9 +598,9 @@ class CrewBattles(commands.Cog):
         # simulate stays the same (returns hp1/hp2 current values in your turns list)
         winner, turns, final_hp1, final_hp2 = simulate(p1, p2)
 
-        hp1_start = 100 + p1["level"] * 6
-        hp2_start = 100 + p2["level"] * 6
-        max_hp = max(hp1_start, hp2_start)
+        # use the computed max_hp values for each player
+        hp1_start = max_hp1
+        hp2_start = max_hp2
 
         battle_log: list[str] = []
 
@@ -610,7 +610,8 @@ class CrewBattles(commands.Cog):
                 opponent,
                 hp1_start,
                 hp2_start,
-                max_hp,
+                max_hp1,
+                max_hp2,
                 "⚔️ Battle started!"
             )
         )
