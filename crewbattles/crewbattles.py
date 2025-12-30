@@ -527,464 +527,160 @@ class CrewBattles(commands.Cog):
         if not p.get("started"):
             return await ctx.reply("❌ This player has not started Crew Battles yet.")
         haki = p.get("haki", {}) or {}
-        arm = haki.get("armament", 0)
-        obs = haki.get("observation", 0)
-        conquer = "Unlocked ✅" if haki.get("conquerors") else "Locked ❌"
-        await ctx.reply(
-            f"✨ Haki for {member.display_name}\n"
-            f"🛡 Armament: {arm}\n"
-            f"👁 Observation: {obs}\n"
-            f"👑 Conqueror’s: {conquer}"
+        arm = int(haki.get("armament", 0))
+        obs = int(haki.get("observation", 0))
+        conq_unlocked = bool(haki.get("conquerors"))
+        conq_lvl = int(haki.get("conqueror", 0)) if haki.get("conqueror") is not None else None
+
+        def _bar(value, max_value=100, length=12):
+            v = max(0, min(int(value or 0), max_value))
+            filled = int(v / max_value * length) if max_value else 0
+            return "█" * filled + "░" * (length - filled)
+
+        embed = discord.Embed(
+            title=f"✨ {member.display_name}'s Haki",
+            color=discord.Color.purple()
         )
+
+        embed.add_field(
+            name="🛡 Armament",
+            value=f"{arm} / 100  { _bar(arm) }",
+            inline=False
+        )
+        embed.add_field(
+            name="👁 Observation",
+            value=f"{obs} / 100  { _bar(obs) }",
+            inline=False
+        )
+
+        conq_text = "Unlocked ✅" if conq_unlocked else "Locked ❌"
+        if conq_lvl is not None and conq_unlocked:
+            conq_text += f"  •  Level: {conq_lvl}/100"
+        embed.add_field(
+            name="👑 Conqueror",
+            value=conq_text,
+            inline=False
+        )
+
+        embed.set_footer(text="Train Haki with .cbtrainhaki — unlock Conqueror at level 10 (.cbunlockconqueror)")
+        await ctx.reply(embed=embed)
+
 
     @commands.command()
     async def cbtrainhaki(self, ctx, haki_type: str, points: int = 1):
         """
-        Train Haki: cbtrainhaki <armament|observation|conqueror> [points]
-        Costs Beri per-point and cooldown are guild-configurable.
+        Train Haki:
+        Usage: .cbtrainhaki <armament|observation|conqueror> [points]
         """
-        haki_type = (haki_type or "").lower()
-        if haki_type not in ("armament", "observation", "conqueror", "conquerors"):
-            return await ctx.reply("❌ Haki type must be 'armament', 'observation' or 'conqueror'.")
+        haki_type = (haki_type or "").lower().strip()
+        if haki_type in ("conquerors", "conqueror's"):
+            haki_type = "conqueror"
+
+        if haki_type not in ("armament", "observation", "conqueror"):
+            return await ctx.reply("❌ Haki type must be one of: armament, observation, conqueror")
 
         try:
             points = max(1, int(points))
         except Exception:
-            return await ctx.reply("❌ Invalid points value.")
+            return await ctx.reply("❌ Points must be a positive integer.")
 
         p = await self.players.get(ctx.author)
         if not p.get("started"):
-            return await ctx.reply("❌ You must start Crew Battles first.")
+            return await ctx.reply("❌ You must start Crew Battles first (.startcb).")
 
-        # fetch guild-configured cost & cooldown (fallback to module defaults)
         g = await self.config.guild(ctx.guild).all()
         cost_per_point = int(g.get("haki_cost", HAKI_TRAIN_COST))
         cooldown = int(g.get("haki_cooldown", HAKI_TRAIN_COOLDOWN))
 
-        # cooldown check (per-user timestamp)
-        last = p.get("last_haki_train", 0) or 0
+        last = int(p.get("last_haki_train", 0) or 0)
         now = int(time.time())
-        elapsed = now - int(last)
-        if elapsed < cooldown:
-            remaining = cooldown - elapsed
-            minutes = remaining // 60
-            seconds = remaining % 60
-            return await ctx.reply(f"⏳ You must wait {minutes}m {seconds}s before training Haki again.")
+        if now - last < cooldown:
+            remaining = cooldown - (now - last)
+            return await ctx.reply(f"⏳ You must wait {remaining//60}m {remaining%60}s before training again.")
 
         core = self._beri()
         if not core:
             return await ctx.reply("❌ Economy system unavailable.")
 
-        # calculate actual trainable points (cap at 100)
         haki = p.get("haki", {}) or {}
 
-        # Support numerical 'conqueror' stat while 'conquerors' is the unlock flag.
-        if haki_type in ("conqueror", "conquerors"):
-            # must have unlocked boolean first
-            if not haki.get("conquerors"):
+        if haki_type == "conqueror":
+            if not bool(haki.get("conquerors")):
                 return await ctx.reply("❌ You must unlock Conqueror's Haki first (.cbunlockconqueror).")
             cur = int(haki.get("conqueror", 0))
-            name = "conqueror"
         else:
             cur = int(haki.get(haki_type, 0))
-            name = haki_type
 
         new = min(100, cur + points)
         actual = new - cur
         if actual <= 0:
-            return await ctx.reply(f"⚠️ Your {name} Haki is already at the maximum (100).")
+            return await ctx.reply(f"⚠️ {haki_type.capitalize()} Haki is already at max (100).")
 
         total_cost = cost_per_point * actual
         balance = await core.get_beri(ctx.author)
         if balance < total_cost:
-            return await ctx.reply(f"❌ You need **{total_cost:,} Beri** to train {actual} point(s) of {haki_type} Haki.")
+            return await ctx.reply(f"❌ You need **{total_cost:,} Beri** to train {actual} point(s).")
 
-        # charge user and apply
         await core.add_beri(ctx.author, -total_cost, reason="haki:train", bypass_cap=True)
-        if name == "conqueror":
+        if haki_type == "conqueror":
             haki["conqueror"] = new
         else:
-            haki[name] = new
+            haki[haki_type] = new
         p["haki"] = haki
         p["last_haki_train"] = now
         await self.players.save(ctx.author, p)
 
-        await ctx.reply(
-            f"✅ Trained **{actual}** point(s) of **{haki_type}** Haki.\n"
-            f"• New {haki_type.capitalize()}: **{new}**\n"
-            f"• Spent: **{total_cost:,} Beri**\n"
-            f"• Next training available in: {cooldown // 60} minutes"
+        # nice embed reply
+        embed = discord.Embed(
+            title="✅ Haki Trained",
+            color=discord.Color.blue(),
+            description=f"Trained **{actual}** point(s) into **{haki_type.capitalize()}** Haki."
         )
-
-    @commands.command()
-    async def cbunlockconqueror(self, ctx):
-        """
-        Unlock Conqueror's Haki.
-        Requires level >= 10 to unlock.
-        """
-        p = await self.players.get(ctx.author)
-        if not p.get("started"):
-            return await ctx.reply("❌ You must start Crew Battles first.")
-
-        haki = p.get("haki", {}) or {}
-        if haki.get("conquerors"):
-            return await ctx.reply("✅ You already unlocked Conqueror's Haki.")
-
-        level = p.get("level", 1)
-        if level < 10:
-            return await ctx.reply("❌ You must be at least level 10 to unlock Conqueror's Haki.")
-
-        haki["conquerors"] = True
-        p["haki"] = haki
-        await self.players.save(ctx.author, p)
-
-        await ctx.reply("👑 Conqueror's Haki unlocked! Congratulations.")
-
-    # =========================================================
-    # BATTLE SYSTEM
-    # =========================================================
-
-    @commands.command()
-    async def battle(self, ctx, opponent: discord.Member = None, *args, **kwargs):
-        """
-        Start a PvP battle vs an opponent. One battle per channel is enforced.
-        """
-        chan_id = ctx.channel.id
-        if chan_id in self._active_battles:
-            return await ctx.reply("⚠️ A battle is already in progress in this channel. Please wait for it to finish.")
-
-        # reserve the channel
-        self._active_battles.add(chan_id)
-        try:
-            # validate opponent
-            if opponent is None:
-                return await ctx.reply("❌ You must mention an opponent: `.battle @user`")
-
-            p1 = await self.players.get(ctx.author)
-            p2 = await self.players.get(opponent)
-
-            if not p1.get("started") or not p2.get("started"):
-                return await ctx.reply("❌ Both players must `.startcb` first.")
-
-            # compute per-player max HP
-            max_hp1 = BASE_HP + int(p1.get("level", 1)) * 6
-            max_hp2 = BASE_HP + int(p2.get("level", 1)) * 6
-
-            # simulate the battle (pass FruitManager so abilities can trigger)
-            winner, turns, final_hp1, final_hp2 = simulate(p1, p2, self.fruits)
-
-            # prepare initial embed/message
-            hp1 = int(max_hp1)
-            hp2 = int(max_hp2)
-            battle_log: list[str] = []
-            msg = await ctx.send(
-                embed=battle_embed(
-                    ctx.author,
-                    opponent,
-                    hp1,
-                    hp2,
-                    max_hp1,
-                    max_hp2,
-                    "⚔️ Battle started!"
-                )
-            )
-
-            delay = await self.config.guild(ctx.guild).turn_delay()
-
-            # Named attacks fallback (used only if a turn lacks an attack name)
-            ATTACKS = [
-                "Gomu Gomu no Pistol",
-                "Gomu Gomu no Gatling",
-                "Gomu Gomu no Bazooka",
-                "Red Hawk",
-                "Diable Jambe",
-                "Oni Giri",
-                "King Cobra",
-                "Hiken",
-                "Shishi Sonson",
-                "Rengoku",
-                "Conqueror's Crush",
-                "Armament Strike",
-                "Observation Stab",
-                "Sky Walk Kick",
-                "Elephant Gun",
-            ]
-
-            for turn in turns:
-                # unpack with backward compatibility
-                if isinstance(turn, (list, tuple)):
-                    if len(turn) >= 5:
-                        side, dmg, hp, attack, crit = turn[:5]
-                    elif len(turn) == 3:
-                        side, dmg, hp = turn
-                        attack = random.choice(ATTACKS)
-                        crit = False
-                    else:
-                        side = turn[0] if len(turn) > 0 else "p1"
-                        dmg = turn[1] if len(turn) > 1 else 0
-                        hp = turn[2] if len(turn) > 2 else 0
-                        attack = turn[3] if len(turn) > 3 else random.choice(ATTACKS)
-                        crit = bool(turn[4]) if len(turn) > 4 else False
-                else:
-                    side, dmg, hp = "p1", 0, 0
-                    attack, crit = random.choice(ATTACKS), False
-
-                if not attack:
-                    attack = random.choice(ATTACKS)
-
-                # apply hp update from engine's hp value
-                await asyncio.sleep(delay)
-                if side == "p1":
-                    hp2 = int(hp)
-                    actor_name = ctx.author.display_name
-                    defender_name = opponent.display_name
-                    actor_p = p1
-                    defender_p = p2
-                else:
-                    hp1 = int(hp)
-                    actor_name = opponent.display_name
-                    defender_name = ctx.author.display_name
-                    actor_p = p2
-                    defender_p = p1
-
-                attack_str = str(attack)
-
-                # special cases
-                msg_text = None
-                if "Frightened" in attack_str:
-                    msg_text = f"😨 **{actor_name}** was frightened and skipped their turn!"
-                elif "Dodged" in attack_str or "Dodged the attack" in attack_str:
-                    obs_val = int((defender_p.get("haki") or {}).get("observation", 0))
-                    if obs_val > 0:
-                        msg_text = f"👁️ **{defender_name}** used Observation Haki and dodged!"
-                    else:
-                        msg_text = f"🛡️ **{defender_name}** dodged the attack!"
-                else:
-                    # strip known markers then present a friendly label (defensive)
-                    markers_map = {
-                        "⚔️": ("Armament", "⚔️"),
-                        "⚡️": ("Conqueror's", "⚡️"),
-                        "🛡️": ("Defend", "🛡️"),
-                        "✨": ("Ability", "✨"),
-                    }
-                    found_prefix = None
-                    found_emojis = []
-                    cleaned = attack_str
-                    for em, (prefix, emo) in markers_map.items():
-                        if em in cleaned:
-                            found_emojis.append(emo)
-                            if em == "⚡️":
-                                found_prefix = prefix
-                            elif em == "⚔️" and not found_prefix:
-                                found_prefix = prefix
-                            cleaned = cleaned.replace(em, "")
-
-                    # defensive: only show haki prefixes if actor actually has them
-                    actor_haki = (actor_p.get("haki") or {})
-                    has_armament = int(actor_haki.get("armament", 0)) > 0
-                    has_conq = str(actor_haki.get("conquerors", False)).lower() in ("1", "true", "yes", "on")
-                    if found_prefix == "Conqueror's" and not has_conq:
-                        found_prefix = None
-                        found_emojis = [e for e in found_emojis if e != "⚡️"]
-                    if found_prefix == "Armament" and not has_armament:
-                        found_prefix = None
-                        found_emojis = [e for e in found_emojis if e != "⚔️"]
-
-                    attack_label = f"{found_prefix + ' ' if found_prefix else ''}{cleaned}".strip()
-                    if found_emojis:
-                        attack_label = f"{attack_label} {' '.join(found_emojis)}"
-
-                    crit_txt = " 💥 **CRITICAL HIT!**" if crit else ""
-                    if dmg <= 0:
-                        msg_text = f"⚔️ **{actor_name}** attacked with **{attack_label}** but it dealt no damage.{crit_txt}"
-                    else:
-                        msg_text = f"⚔️ **{actor_name}** used **{attack_label}** and dealt **{dmg}** damage!{crit_txt}"
-
-                battle_log.append(msg_text)
-                log_text = "\n".join(battle_log[-6:])
-                await msg.edit(
-                    embed=battle_embed(
-                        ctx.author,
-                        opponent,
-                        hp1,
-                        hp2,
-                        max_hp1,
-                        max_hp2,
-                        log_text
-                    )
-                )
-
-            # ======================
-            # RESULTS (still inside try)
-            # ======================
-            g = await self.config.guild(ctx.guild).all()
-
-            winner_user = ctx.author if winner == "p1" else opponent
-            loser_user = opponent if winner == "p1" else ctx.author
-
-            winner_p = p1 if winner == "p1" else p2
-            loser_p = p2 if winner == "p1" else p1
-
-            winner_p["wins"] = winner_p.get("wins", 0) + 1
-            loser_p["losses"] = loser_p.get("losses", 0) + 1
-
-            winner_p["exp"] = winner_p.get("exp", 0) + int(g.get("exp_win", 0))
-            loser_p["exp"] = loser_p.get("exp", 0) + int(g.get("exp_loss", 0))
-
-            await self.players.save(ctx.author, p1)
-            await self.players.save(opponent, p2)
-
-            # team points
-            await self.teams.award_win(ctx.guild, winner_user, int(g.get("crew_points_win", 0)))
-
-            # beri rewards
-            core = self._beri()
-            if core:
-                try:
-                    await core.add_beri(winner_user, int(g.get("beri_win", 0)), reason="pvp:crew_battle:win")
-                except Exception:
-                    pass
-                try:
-                    loss_amt = int(g.get("beri_loss", 0) or 0)
-                    if loss_amt != 0:
-                        await core.add_beri(loser_user, loss_amt, reason="pvp:crew_battle:loss")
-                except Exception:
-                    pass
-
-            # send result embed (still inside try so finally always runs)
-            try:
-                winner_avatar = getattr(winner_user.display_avatar, "url", None) if hasattr(winner_user, "display_avatar") else getattr(winner_user, "avatar_url", None)
-            except Exception:
-                winner_avatar = None
-
-            embed = discord.Embed(
-                title="🏆 Crew Battle Result",
-                color=discord.Color.green(),
-                description=f"**{winner_user.display_name}** defeated **{loser_user.display_name}**"
-            )
-            if winner_avatar:
-                embed.set_thumbnail(url=winner_avatar)
-
-            beri_win = int(g.get("beri_win", 0) or 0)
-            beri_loss = int(g.get("beri_loss", 0) or 0)
-            exp_win = int(g.get("exp_win", 0) or 0)
-            exp_loss = int(g.get("exp_loss", 0) or 0)
-
-            embed.add_field(
-                name="🎁 Rewards",
-                value=(
-                    f"• EXP: **+{exp_win}** (loser: +{exp_loss})\n"
-                    f"• Beri: **+{beri_win:,}** (loser: {beri_loss:+,})"
-                ),
-                inline=False
-            )
-
-            embed.add_field(
-                name=f"🏅 {winner_user.display_name}'s Stats",
-                value=(
-                    f"• Wins: **{winner_p.get('wins', 0)}**\n"
-                    f"• Losses: **{winner_p.get('losses', 0)}**\n"
-                    f"• Level: **{winner_p.get('level', 1)}**\n"
-                    f"• Fruit: **{winner_p.get('fruit') or 'None'}**"
-                ),
-                inline=True
-            )
-
-            embed.add_field(
-                name=f"⚔️ {loser_user.display_name}'s Stats",
-                value=(
-                    f"• Wins: **{loser_p.get('wins', 0)}**\n"
-                    f"• Losses: **{loser_p.get('losses', 0)}**\n"
-                    f"• Level: **{loser_p.get('level', 1)}**\n"
-                    f"• Fruit: **{loser_p.get('fruit') or 'None'}**"
-                ),
-                inline=True
-            )
-
-            embed.set_footer(text="Crew Battles • Results")
-            await ctx.reply(embed=embed)
-
-        finally:
-            # always free the channel lock so errors or early returns don't leave it locked
-            self._active_battles.discard(chan_id)
-
-    @commands.command()
-    async def cbleaderboard(self, ctx, metric: str = "wins", limit: int = 10):
-        """
-        Show a simple leaderboard.
-        metric: wins | winrate | level | exp
-        limit: number of entries (max 25)
-        """
-        metric = (metric or "wins").lower()
-        if metric not in ("wins", "winrate", "level", "exp"):
-            return await ctx.reply("❌ Metric must be one of: wins, winrate, level, exp")
-
-        try:
-            limit = max(1, min(25, int(limit)))
-        except Exception:
-            limit = 10
-
-        # fetch all players from PlayerManager (support dict or list return shapes)
-        raw = await self.players.all() if hasattr(self.players, "all") else None
-        entries = []
-        if isinstance(raw, dict):
-            for uid, pdata in raw.items():
-                entries.append((int(uid), pdata))
-        elif isinstance(raw, list):
-            for item in raw:
-                if isinstance(item, dict) and item.get("id"):
-                    entries.append((int(item["id"]), item))
-                elif isinstance(item, (list, tuple)) and len(item) == 2:
-                    try:
-                        entries.append((int(item[0]), item[1]))
-                    except Exception:
-                        continue
-        else:
-            return await ctx.reply("❌ Could not read player data for leaderboard.")
-
-        # compute score per player
-        rows = []
-        for uid, pdata in entries:
-            wins = int(pdata.get("wins", 0))
-            losses = int(pdata.get("losses", 0))
-            total = wins + losses
-            winrate = (wins / total * 100) if total else 0.0
-            level = int(pdata.get("level", 1))
-            exp = int(pdata.get("exp", 0))
-
-            if metric == "wins":
-                score = wins
-                score_txt = f"{wins} wins"
-            elif metric == "winrate":
-                score = winrate
-                score_txt = f"{winrate:.1f}% winrate ({wins}/{total})"
-            elif metric == "level":
-                score = level
-                score_txt = f"Level {level} • {exp} EXP"
-            else:  # exp
-                score = exp
-                score_txt = f"{exp} EXP • Level {level}"
-
-            rows.append((score, uid, score_txt))
-
-        if not rows:
-            return await ctx.reply("❌ No players found for leaderboard.")
-
-        rows.sort(key=lambda r: r[0], reverse=True)
-        top = rows[:limit]
-
-        embed = discord.Embed(title=f"🏆 Crew Battles Leaderboard — {metric.title()}", color=discord.Color.gold())
-        desc_lines = []
-        for idx, (score, uid, score_txt) in enumerate(top, start=1):
-            member = self.bot.get_user(uid)
-            name = member.display_name if member else f"<@{uid}>"
-            desc_lines.append(f"**{idx}. {name}** — {score_txt}")
-
-        embed.description = "\n".join(desc_lines)
-        embed.set_footer(text=f"Showing top {len(top)} — use .cbleaderboard <metric> <limit>")
-
+        embed.add_field(name="New Value", value=f"**{new}** / 100", inline=True)
+        embed.add_field(name="Cost", value=f"**{total_cost:,} Beri**", inline=True)
+        embed.set_footer(text=f"Next training available in {cooldown//60} minutes")
         await ctx.reply(embed=embed)
 
 
-async def setup(bot):
-    await bot.add_cog(CrewBattles(bot))
+    @commands.command()
+    async def cbtutorial(self, ctx):
+        """Show basic commands and how to play (non-staff)"""
+        embed = discord.Embed(
+            title="📘 Crew Battles — Quick Tutorial",
+            color=discord.Color.teal(),
+            description="Commands listed are available to non-staff players."
+        )
+
+        embed.add_field(
+            name="Getting started",
+            value="• `.startcb` — begin your journey and receive a random fruit\n"
+                  "• `.cbprofile` — view your crew profile and fruit",
+            inline=False
+        )
+
+        embed.add_field(
+            name="Battling",
+            value="• `.battle @user` — challenge another player to a duel\n"
+                  "• `.cbleaderboard` — view top players\n"
+                  "• During battles: Haki and Devil Fruit abilities may trigger for extra effects",
+            inline=False
+        )
+
+        embed.add_field(
+            name="Devil Fruit Shop",
+            value="• `.cbshop [page]` — view shop\n"
+                  "• `.cbbuy <fruit name>` — buy a fruit from the shop\n"
+                  "• `.cbremovefruit` — remove your fruit (costs Beri)",
+            inline=False
+        )
+
+        embed.add_field(
+            name="Haki & Training",
+            value="• `.cbhaki [member]` — view Haki stats\n"
+                  "• `.cbtrainhaki <armament|observation|conqueror> [points]` — train Haki (cost & cooldown apply)\n"
+                  "• `.cbunlockconqueror` — unlock Conqueror's Haki at level 10",
+            inline=False
+        )
+
+        embed.set_footer(text="Tip: use .cbprofile and .cbshop to inspect fruits and plan builds")
+        await ctx.reply(embed=embed)
