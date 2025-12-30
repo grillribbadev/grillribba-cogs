@@ -1,5 +1,8 @@
+from redbot.core import bank
+
+
 class BeriBridge:
-    """Bridge between CrewBattles and BeriCore."""
+    """BeriCore bridge using Red's bank (BeriCore-compatible)."""
 
     def __init__(self, bot):
         self.bot = bot
@@ -8,18 +11,7 @@ class BeriBridge:
         if amount <= 0:
             return
 
-        bericore = self.bot.get_cog("BeriCore")
-        if not bericore:
-            return  # BeriCore not loaded
-
         try:
-            # Standard BeriCore API
-            await bericore.add_beri(
-                member,
-                amount,
-                reason="crew_battle",
-                silent=False,
-            )
+            await bank.deposit_credits(member, amount)
         except Exception as e:
-            # Fail silently but safely
-            print(f"[CrewBattles] BeriCore reward failed: {e}")
+            print(f"[CrewBattles] Failed to deposit Beri: {e}")
