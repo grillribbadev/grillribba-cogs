@@ -1,4 +1,5 @@
 import asyncio
+from asyncio import log
 import random
 import discord
 from redbot.core import commands, Config
@@ -168,15 +169,28 @@ class CrewBattles(commands.Cog):
         delay = await self.config.guild(ctx.guild).turn_delay()
 
         log = []
-        for side, dmg, hp in turns:
+
+        for turn in turns:
+            # unpack safely (future-proof)
+            side = turn[0]
+            dmg = turn[1]
+            hp = turn[2]
+            attack = turn[3] if len(turn) > 3 else "Attack"
+            crit = turn[4] if len(turn) > 4 else False
+
             await asyncio.sleep(delay)
 
             if side == "p1":
                 hp2 = hp
-                log.append(f"⚔️ **{ctx.author.display_name}** dealt **{dmg}** damage!")
+                actor = ctx.author.display_name
             else:
                 hp1 = hp
-                log.append(f"⚔️ **{opponent.display_name}** dealt **{dmg}** damage!")
+                actor = opponent.display_name
+
+            crit_txt = " 💥 **CRITICAL HIT!**" if crit else ""
+            log.append(
+                f"⚔️ **{actor}** used **{attack}** and dealt **{dmg}** damage!{crit_txt}"
+            )
 
             embed = battle_embed(
                 ctx.author,
@@ -184,7 +198,7 @@ class CrewBattles(commands.Cog):
                 hp1,
                 hp2,
                 max_hp,
-                "\n".join(log[-5:])  # keep last 5 actions
+                "\n".join(log[-5:])  # scrolling log
             )
             await msg.edit(embed=embed)
 
