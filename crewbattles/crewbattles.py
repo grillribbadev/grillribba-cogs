@@ -1,7 +1,6 @@
 import asyncio
 import random
 import discord
-
 from redbot.core import commands, Config
 
 from .constants import DEFAULT_GUILD
@@ -14,51 +13,63 @@ from .embeds import battle_embed
 
 
 class CrewBattles(commands.Cog):
-    """Crew Battles — One Piece themed PvP battles with Teams & BeriCore integration."""
+    """Crew Battles – PvP battles with Devil Fruits, Teams & BeriCore integration"""
 
     def __init__(self, bot):
         self.bot = bot
         self.players = PlayerManager(self)
         self.fruits = FruitManager()
         self.teams = TeamsBridge(bot)
-        self.beri = BeriBridge(bot)
+        self.beri_bridge = BeriBridge(bot)
 
         self.config = Config.get_conf(self, identifier=444888221, force_registration=True)
         self.config.register_guild(**DEFAULT_GUILD)
 
-    # ---------- ADMIN ----------
+    # =========================================================
+    # ADMIN COMMANDS
+    # =========================================================
+
     @commands.group()
     @commands.admin()
     async def cbadmin(self, ctx):
-        """Crew Battles admin commands."""
-        if ctx.invoked_subcommand is None:
-            await ctx.reply("Available subcommands: setberi, addfruit, givefruit")
+        """Crew Battles admin commands"""
+        pass
 
     @cbadmin.command()
-    async def setberi(self, ctx, win: int, loss: int):
-        await self.config.guild(ctx.guild).beri_win.set(win)
-        await self.config.guild(ctx.guild).beri_loss.set(loss)
-        await ctx.reply("✅ Beri rewards updated.")
+    async def setberi(self, ctx, win: int, loss: int = 0):
+        """Set Beri rewards for wins & losses"""
+        await self.config.guild(ctx.guild).beri_win.set(int(win))
+        await self.config.guild(ctx.guild).beri_loss.set(int(loss))
+        await ctx.reply(
+            f"💰 Beri rewards updated\n"
+            f"• Win: **{win}**\n"
+            f"• Loss: **{loss}**"
+        )
 
     @cbadmin.command()
     async def addfruit(self, ctx, name: str, ftype: str, bonus: int):
+        """Add a Devil Fruit manually"""
         self.fruits.add(name, ftype, bonus)
-        await ctx.reply(f"🍈 Fruit **{name}** added.")
+        await ctx.reply(f"🍈 Devil Fruit **{name}** added.")
 
     @cbadmin.command()
     async def givefruit(self, ctx, member: discord.Member, *, name: str):
+        """Assign a Devil Fruit to a player (admin/testing)"""
         p = await self.players.get(member)
         p["fruit"] = name
         await self.players.save(member, p)
         await ctx.reply(f"🍈 {member.mention} assigned **{name}**")
 
-    # ---------- PLAYER ----------
+    # =========================================================
+    # PLAYER COMMANDS
+    # =========================================================
+
     @commands.command()
     async def startcb(self, ctx):
+        """Start your Crew Battles journey"""
         p = await self.players.get(ctx.author)
-
         if p["started"]:
-            return await ctx.reply("❌ You already started your Crew Battle journey.")
+            return await ctx.reply("❌ You already started Crew Battles.")
 
         fruit = self.fruits.random()
         p["started"] = True
@@ -67,33 +78,34 @@ class CrewBattles(commands.Cog):
         await self.players.save(ctx.author, p)
 
         embed = discord.Embed(
-            title="🏴‍☠️ Journey Started",
-            description=(
-                f"**Devil Fruit:** {p['fruit'] or 'None'}\n"
-                f"**Level:** 1\n\n"
-                "You are now ready to battle other crews!"
-            ),
+            title="🏴‍☠️ Journey Begun!",
             color=discord.Color.gold(),
+            description=(
+                f"**Level:** 1\n"
+                f"**Devil Fruit:** {p['fruit'] or 'None'}\n\n"
+                "You can now battle other crews using `.battle @user`"
+            ),
         )
-
         await ctx.reply(embed=embed)
 
     @commands.command(name="cbprofile")
     async def cbprofile(self, ctx, member: discord.Member = None):
+        """View a Crew Battles profile"""
         member = member or ctx.author
         p = await self.players.get(member)
 
         if not p["started"]:
             return await ctx.reply("❌ This player has not started Crew Battles yet.")
 
-        haki = p.get("haki", {})
         wins = p.get("wins", 0)
         losses = p.get("losses", 0)
         total = wins + losses
-        winrate = (wins / total * 100) if total > 0 else 0.0
+        winrate = (wins / total * 100) if total else 0
+
+        haki = p.get("haki", {})
 
         embed = discord.Embed(
-            title=f"🏴‍☠️ {member.display_name}'s Crew Battle Profile",
+            title=f"🏴‍☠️ {member.display_name}'s Crew Profile",
             color=discord.Color.gold(),
         )
 
@@ -101,7 +113,8 @@ class CrewBattles(commands.Cog):
             name="📊 Stats",
             value=(
                 f"**Level:** {p.get('level', 1)}\n"
-                f"**Wins:** {wins} • **Losses:** {losses}\n"
+                f"**Wins:** {wins}\n"
+                f"**Losses:** {losses}\n"
                 f"**Win Rate:** {winrate:.1f}%"
             ),
             inline=False,
@@ -116,22 +129,25 @@ class CrewBattles(commands.Cog):
         embed.add_field(
             name="✨ Haki",
             value=(
-                f"🛡️ **Armament:** {haki.get('armament', 0)}\n"
-                f"👁️ **Observation:** {haki.get('observation', 0)}\n"
-                f"👑 **Conqueror’s:** {'Unlocked' if haki.get('conquerors') else 'Locked'}"
+                f"🛡 Armament: {haki.get('armament', 0)}\n"
+                f"👁 Observation: {haki.get('observation', 0)}\n"
+                f"👑 Conqueror’s: {'Unlocked' if haki.get('conquerors') else 'Locked'}"
             ),
             inline=False,
         )
 
         embed.set_footer(text="Crew Battles • Progress is saved")
-
         await ctx.reply(embed=embed)
 
-    # ---------- BATTLE ----------
+    # =========================================================
+    # BATTLE SYSTEM
+    # =========================================================
+
     @commands.command()
     async def battle(self, ctx, opponent: discord.Member):
+        """Battle another crew member"""
         if opponent == ctx.author:
-            return await ctx.reply("❌ You cannot battle yourself.")
+            return await ctx.reply("❌ You can't battle yourself.")
 
         p1 = await self.players.get(ctx.author)
         p2 = await self.players.get(opponent)
@@ -150,62 +166,90 @@ class CrewBattles(commands.Cog):
         )
 
         delay = await self.config.guild(ctx.guild).turn_delay()
-        battle_log = []
 
-        for side, dmg, hp, attack, crit in turns:
+        log = []
+        for side, dmg, hp in turns:
+            await asyncio.sleep(delay)
+
             if side == "p1":
                 hp2 = hp
-                actor = ctx.author.display_name
+                log.append(f"⚔️ **{ctx.author.display_name}** dealt **{dmg}** damage!")
             else:
                 hp1 = hp
-                actor = opponent.display_name
+                log.append(f"⚔️ **{opponent.display_name}** dealt **{dmg}** damage!")
 
-            line = f"• **{actor}** used **{attack}** dealing **{dmg}** damage!"
-            battle_log.append(line)
-
-            await asyncio.sleep(delay)
-            await msg.edit(
-                embed=battle_embed(
-                    ctx.author,
-                    opponent,
-                    hp1,
-                    hp2,
-                    max_hp,
-                    log_lines=battle_log,
-                )
+            embed = battle_embed(
+                ctx.author,
+                opponent,
+                hp1,
+                hp2,
+                max_hp,
+                "\n".join(log[-5:])  # keep last 5 actions
             )
+            await msg.edit(embed=embed)
+
+        # =====================================================
+        # RESULTS
+        # =====================================================
 
         g = await self.config.guild(ctx.guild).all()
 
-        if winner == "p1":
-            p1["wins"] += 1
-            p1["exp"] += g["exp_win"]
-            p2["losses"] += 1
-            p2["exp"] += g["exp_loss"]
+        winner_user = ctx.author if winner == "p1" else opponent
+        loser_user = opponent if winner == "p1" else ctx.author
 
-            await self.teams.award_win(ctx.guild, ctx.author, g["crew_points_win"])
-            await self.beri.reward(ctx.author, g["beri_win"])
+        winner_p = p1 if winner == "p1" else p2
+        loser_p = p2 if winner == "p1" else p1
 
-            winner_user = ctx.author
-            loser_user = opponent
-        else:
-            p2["wins"] += 1
-            p2["exp"] += g["exp_win"]
-            p1["losses"] += 1
-            p1["exp"] += g["exp_loss"]
+        winner_p["wins"] += 1
+        loser_p["losses"] += 1
 
-            await self.teams.award_win(ctx.guild, opponent, g["crew_points_win"])
-            await self.beri.reward(opponent, g["beri_win"])
-
-            winner_user = opponent
-            loser_user = ctx.author
+        winner_p["exp"] += g["exp_win"]
+        loser_p["exp"] += g["exp_loss"]
 
         await self.players.save(ctx.author, p1)
         await self.players.save(opponent, p2)
 
+        # -------------------------------
+        # TEAM POINTS
+        # -------------------------------
+        await self.teams.award_win(
+            ctx.guild, winner_user, g["crew_points_win"]
+        )
+
+        # -------------------------------
+        # BERI CORE (CORRECT API)
+        # -------------------------------
+        beri = self.bot.get_cog("BeriCore")
+        if beri:
+            try:
+                await beri.add(
+                    member=winner_user,
+                    amount=g["beri_win"],
+                    reason="crew_battle_win",
+                    source="CrewBattles",
+                    notify=True,
+                    channel=ctx.channel,
+                )
+            except Exception as e:
+                print(f"[CrewBattles] BeriCore win error: {e}")
+
+            if g.get("beri_loss", 0) != 0:
+                try:
+                    await beri.add(
+                        member=loser_user,
+                        amount=g["beri_loss"],
+                        reason="crew_battle_loss",
+                        source="CrewBattles",
+                        notify=False,
+                        channel=None,
+                    )
+                except Exception as e:
+                    print(f"[CrewBattles] BeriCore loss error: {e}")
+
         await ctx.reply(
-            f"🏆 {winner_user.mention} won the Crew Battle against {loser_user.mention}!\n"
-            f"Rewards: +{g['exp_win']} EXP (win), +{g['exp_loss']} EXP (loss)."
+            f"🏆 **{winner_user.display_name}** won the Crew Battle against **{loser_user.display_name}**!\n"
+            f"• +{g['exp_win']} EXP (winner)\n"
+            f"• +{g['beri_win']} Beri"
         )
 
 
