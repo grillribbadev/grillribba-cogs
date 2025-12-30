@@ -1,38 +1,58 @@
 import discord
 
-
-def _hp_bar(hp: int, max_hp: int) -> str:
-    filled = int((hp / max_hp) * 10)
-    return "█" * filled + "░" * (10 - filled)
+HP_BAR_LEN = 20
 
 
-def battle_embed(p1, p2, hp1, hp2, max_hp, log_lines=None):
-    log_lines = log_lines or []
+def _hp_bar(current: int, maximum: int) -> str:
+    if maximum <= 0:
+        return "░" * HP_BAR_LEN
+    ratio = max(0, min(1, current / maximum))
+    filled = int(ratio * HP_BAR_LEN)
+    return "█" * filled + "░" * (HP_BAR_LEN - filled)
 
-    embed = discord.Embed(
+
+def battle_embed(
+    member1: discord.Member,
+    member2: discord.Member,
+    hp1: int,
+    hp2: int,
+    max_hp: int,
+    log_text: str | None = None,
+):
+    """
+    Main battle embed renderer.
+    IMPORTANT:
+    - Battle log MUST be a string, never a list
+    - Log is rendered in description to avoid per-character wrapping bugs
+    """
+
+    emb = discord.Embed(
         title="⚔️ Crew Battle",
         color=discord.Color.red(),
     )
 
-    embed.add_field(
-        name=p1.display_name,
+    # --- HP DISPLAY ---
+    emb.add_field(
+        name=member1.display_name,
         value=f"❤️ {hp1}/{max_hp}\n{_hp_bar(hp1, max_hp)}",
         inline=True,
     )
 
-    embed.add_field(
-        name=p2.display_name,
+    emb.add_field(
+        name=member2.display_name,
         value=f"❤️ {hp2}/{max_hp}\n{_hp_bar(hp2, max_hp)}",
         inline=True,
     )
 
-    if log_lines:
-        embed.add_field(
-            name="📜 Battle Log",
-            value="\n".join(log_lines[-8:]),  # keep last 8 lines
-            inline=False,
+    # --- BATTLE LOG ---
+    if log_text:
+        emb.description = (
+            "📜 **Battle Log**\n"
+            f"{log_text}"
         )
+    else:
+        emb.description = "📜 **Battle Log**\nThe battle begins!"
 
-    embed.set_footer(text="Crew Battles • Live Combat")
+    emb.set_footer(text="Crew Battles • Live Combat")
 
-    return embed
+    return emb
