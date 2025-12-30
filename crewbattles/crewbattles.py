@@ -658,7 +658,8 @@ class CrewBattles(commands.Cog):
         max_hp2 = BASE_HP + int(p2.get("level", 1)) * 6
 
         # simulate stays the same (returns hp1/hp2 current values in your turns list)
-        winner, turns, final_hp1, final_hp2 = simulate(p1, p2)
+        # pass the FruitManager so simulate can trigger fruit abilities
+        winner, turns, final_hp1, final_hp2 = simulate(p1, p2, self.fruits)
 
         # use the computed max_hp values for each player
         hp1_start = max_hp1
