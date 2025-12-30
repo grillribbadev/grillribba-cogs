@@ -78,15 +78,16 @@ def simulate(p1, p2):
 
         markers = []
 
+        # offensive armament marker when attacker has armament
         if a_arm > 0:
-            markers.append("🛡 Armament")
+            markers.append("⚔️ Armament")
 
         base = random.randint(10, 20)
         dmg = int(base * a_atk_mult)
 
-        # Dodge check
+        # Dodge check — use shield emoji and a simple dodge message (no attack name)
         if d_obs > 0 and random.random() < d_dodge:
-            turns.append((current, 0, hp2 if current == "p1" else hp1, "Dodged the attack!", False))
+            turns.append((current, 0, hp2 if current == "p1" else hp1, "🛡️ Dodged the attack!", False))
             current = "p2" if current == "p1" else "p1"
             continue
 
@@ -97,14 +98,16 @@ def simulate(p1, p2):
             dmg = int(dmg * a_conq_mult)
             other = "p2" if current == "p1" else "p1"
             skip[other] = True
-            markers.append("👑 Conqueror")
+            markers.append("⚡️ Conqueror")
 
+        # defender's armament-as-defense marker (shield)
         if d_arm > 0:
-            markers.append("🛡(Def)")
+            markers.append("🛡️ Defend")
 
+        # apply defender's defense factor (scales with defender armament)
         dmg = max(0, int(dmg * d_def_factor))
 
-        # Only show markers for haki attacks
+        # Only show markers for haki-related activity
         if (a_arm > 0 or a_conq or d_arm > 0) and markers:
             attack_name = f"{attack_name} {' '.join(markers)}"
 
