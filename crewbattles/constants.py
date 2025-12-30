@@ -8,7 +8,10 @@ DEFAULT_GUILD = {
     "exp_win": 60,
     "exp_loss": 25,
     "crew_points_win": 1,
-    "turn_delay": 1.5
+    "turn_delay": 1.5,
+    # Haki settings (default)
+    "haki_cost": 500,           # Beri per Haki point
+    "haki_cooldown": 3600,      # seconds
 }
 
 DEFAULT_USER = {

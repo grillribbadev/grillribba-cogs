@@ -344,6 +344,18 @@ class CrewBattles(commands.Cog):
         await self.config.guild(ctx.guild).turn_delay.set(float(delay))
         await ctx.reply(f"✅ Set turn delay to {delay}s")
 
+    @cbadmin.command()
+    async def sethakicost(self, ctx, cost: int):
+        """Set Beri cost per Haki point for this guild."""
+        await self.config.guild(ctx.guild).haki_cost.set(int(cost))
+        await ctx.reply(f"✅ Set Haki training cost to {cost:,} Beri per point")
+
+    @cbadmin.command()
+    async def sethakicooldown(self, ctx, seconds: int):
+        """Set Haki training cooldown (seconds) for this guild."""
+        await self.config.guild(ctx.guild).haki_cooldown.set(int(seconds))
+        await ctx.reply(f"✅ Set Haki training cooldown to {seconds} seconds")
+
     # =========================================================
     # PLAYER COMMANDS
     # =========================================================
@@ -478,7 +490,7 @@ class CrewBattles(commands.Cog):
     async def cbtrainhaki(self, ctx, haki_type: str, points: int = 1):
         """
         Train Haki: cbtrainhaki <armament|observation> [points]
-        Costs Beri (HAKI_TRAIN_COST per point). Rate-limited (HAKI_TRAIN_COOLDOWN).
+        Costs Beri per-point and cooldown are guild-configurable.
         """
         haki_type = (haki_type or "").lower()
         if haki_type not in ("armament", "observation"):
@@ -493,12 +505,17 @@ class CrewBattles(commands.Cog):
         if not p.get("started"):
             return await ctx.reply("❌ You must start Crew Battles first.")
 
-        # cooldown check
+        # fetch guild-configured cost & cooldown (fallback to module defaults)
+        g = await self.config.guild(ctx.guild).all()
+        cost_per_point = int(g.get("haki_cost", HAKI_TRAIN_COST))
+        cooldown = int(g.get("haki_cooldown", HAKI_TRAIN_COOLDOWN))
+
+        # cooldown check (per-user timestamp)
         last = p.get("last_haki_train", 0) or 0
         now = int(time.time())
         elapsed = now - int(last)
-        if elapsed < HAKI_TRAIN_COOLDOWN:
-            remaining = HAKI_TRAIN_COOLDOWN - elapsed
+        if elapsed < cooldown:
+            remaining = cooldown - elapsed
             minutes = remaining // 60
             seconds = remaining % 60
             return await ctx.reply(f"⏳ You must wait {minutes}m {seconds}s before training Haki again.")
@@ -515,7 +532,7 @@ class CrewBattles(commands.Cog):
         if actual <= 0:
             return await ctx.reply(f"⚠️ Your {haki_type} Haki is already at the maximum (100).")
 
-        total_cost = HAKI_TRAIN_COST * actual
+        total_cost = cost_per_point * actual
         balance = await core.get_beri(ctx.author)
         if balance < total_cost:
             return await ctx.reply(f"❌ You need **{total_cost:,} Beri** to train {actual} point(s) of {haki_type} Haki.")
@@ -531,7 +548,7 @@ class CrewBattles(commands.Cog):
             f"✅ Trained **{actual}** point(s) of **{haki_type}** Haki.\n"
             f"• New {haki_type.capitalize()}: **{new}**\n"
             f"• Spent: **{total_cost:,} Beri**\n"
-            f"• Next training available in: {HAKI_TRAIN_COOLDOWN // 60} minutes"
+            f"• Next training available in: {cooldown // 60} minutes"
         )
 
     @commands.command()
