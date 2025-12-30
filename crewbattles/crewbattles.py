@@ -1,4 +1,6 @@
 import asyncio
+import discord
+import random
 from redbot.core import commands, Config
 from .constants import DEFAULT_GUILD
 from .player_manager import PlayerManager
@@ -115,3 +117,4 @@ class CrewBattles(commands.Cog):
 
         await self.players.save(ctx.author, p1)
         await self.players.save(opponent, p2)
+
