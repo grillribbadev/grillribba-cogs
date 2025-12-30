@@ -61,6 +61,7 @@ def simulate(p1, p2):
 
         a_arm = max(0, int(a_haki.get("armament", 0)))
         a_obs = max(0, int(a_haki.get("observation", 0)))
+        # unlock flag and numeric conqueror proficiency
         a_conq_unlocked = bool(a_haki.get("conquerors"))
         a_conq_lvl = max(0, int(a_haki.get("conqueror", 0)))
 
@@ -120,7 +121,8 @@ def simulate(p1, p2):
 
         # Conqueror's Haki: limited to once per player per battle
         crit = False
-        if a_conq and (not conq_used[current]) and random.random() < a_conq_chance:
+        # only trigger conqueror if unlocked and not already used this battle
+        if a_conq_unlocked and (not conq_used[current]) and random.random() < a_conq_chance:
             crit = True
             dmg = int(dmg * a_conq_mult)
             other = "p2" if current == "p1" else "p1"
