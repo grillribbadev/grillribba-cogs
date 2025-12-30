@@ -733,15 +733,80 @@ class CrewBattles(commands.Cog):
 
             if side == "p1":
                 hp2 = hp
-                actor = ctx.author.display_name
+                actor_name = ctx.author.display_name
+                defender_name = opponent.display_name
+                actor_p = p1
+                defender_p = p2
             else:
                 hp1 = hp
-                actor = opponent.display_name
+                actor_name = opponent.display_name
+                defender_name = ctx.author.display_name
+                actor_p = p2
+                defender_p = p1
 
-            crit_txt = " 💥 **CRITICAL HIT!**" if crit else ""
-            battle_log.append(
-                f"⚔️ **{actor}** used **{attack}** and dealt **{dmg}** damage!{crit_txt}"
-            )
+            # Normalize attack string for parsing
+            attack_str = str(attack)
+
+            # Special-case messages for non-attack events
+            msg_text = None
+            # Frightened / skipped turn (simulate uses a specific attack string)
+            if "Frightened" in attack_str:
+                msg_text = f"😨 **{actor_name}** was frightened and skipped their turn!"
+            # Dodged (simulate used a dodge sentinel; prefer explicit observation message)
+            elif "Dodged" in attack_str:
+                obs_val = int((defender_p.get("haki") or {}).get("observation", 0))
+                if obs_val > 0:
+                    msg_text = f"👁️ **{defender_name}** used Observation Haki and dodged!"
+                else:
+                    msg_text = f"🛡️ **{defender_name}** dodged the attack!"
+            else:
+                # Parse haki/ability markers from attack string and build a friendly attack label
+                # Known markers => mapping to prefix/emoji
+                markers_map = {
+                    "⚔️": ("Armament", "⚔️"),
+                    "⚡️": ("Conqueror's", "⚡️"),
+                    "🛡️": ("Defend", "🛡️"),
+                    "✨": ("Ability", "✨"),
+                }
+                found_prefix = None
+                found_emojis = []
+
+                # detect and remove known emoji markers from the attack name
+                cleaned = attack_str
+                for em, (prefix, emo) in markers_map.items():
+                    if em in cleaned:
+                        found_emojis.append(emo)
+                        # prefer Conqueror over Armament if both present
+                        if em == "⚡️":
+                            found_prefix = prefix
+                        elif em == "⚔️" and not found_prefix:
+                            found_prefix = prefix
+                        cleaned = cleaned.replace(em, "")
+                # also remove common textual markers added earlier like "Armament" or "Conqueror"
+                cleaned = cleaned.replace("Armament", "").replace("Conqueror", "").replace("Conqueror's", "")
+                cleaned = cleaned.replace("Defend", "").replace("(Def)", "").strip()
+                # remove extra parentheses around tiny ability snippets that were appended
+                cleaned = cleaned.strip()
+                # if cleaned contains trailing parenthetical ability (e.g. "(Stretch)"), keep it as-is
+
+                # build display attack name
+                if found_prefix:
+                    attack_label = f"{found_prefix} {cleaned}".strip()
+                else:
+                    attack_label = cleaned
+
+                # append emojis at end for clarity
+                if found_emojis:
+                    attack_label = f"{attack_label} {' '.join(found_emojis)}"
+
+                crit_txt = " 💥 **CRITICAL HIT!**" if crit else ""
+                # handle the case where damage is 0 after defenses
+                if dmg <= 0:
+                    msg_text = f"⚔️ **{actor_name}** attacked with **{attack_label}** but it dealt no damage.{crit_txt}"
+                else:
+                    msg_text = f"⚔️ **{actor_name}** used **{attack_label}** and dealt **{dmg}** damage!{crit_txt}"
+
+            battle_log.append(msg_text)
 
             log_text = "\n".join(battle_log[-6:])  # KEEP AS STRING
 
