@@ -20,8 +20,20 @@ class CrewBattles(commands.Cog):
         self.fruits = FruitManager()
         self.teams = TeamsBridge(bot)
 
-        self.config = Config.get_conf(self, identifier=444888221, force_registration=True)
+        self.config = Config.get_conf(
+            self,
+            identifier=444888221,
+            force_registration=True
+        )
         self.config.register_guild(**DEFAULT_GUILD)
+
+    # =========================================================
+    # INTERNAL HELPERS
+    # =========================================================
+
+    def _beri(self):
+        """Safely fetch BeriCore."""
+        return self.bot.get_cog("BeriCore")
 
     # =========================================================
     # ADMIN COMMANDS
@@ -39,20 +51,18 @@ class CrewBattles(commands.Cog):
         await self.config.guild(ctx.guild).beri_win.set(int(win))
         await self.config.guild(ctx.guild).beri_loss.set(int(loss))
         await ctx.reply(
-            f"💰 Beri rewards updated\n"
+            f"💰 **Beri rewards updated**\n"
             f"• Win: **{win}**\n"
             f"• Loss: **{loss}**"
         )
 
     @cbadmin.command()
     async def addfruit(self, ctx, name: str, ftype: str, bonus: int):
-        """Add a Devil Fruit manually"""
         self.fruits.add(name, ftype, bonus)
         await ctx.reply(f"🍈 Devil Fruit **{name}** added.")
 
     @cbadmin.command()
     async def givefruit(self, ctx, member: discord.Member, *, name: str):
-        """Assign a Devil Fruit to a player (admin/testing)"""
         p = await self.players.get(member)
         p["fruit"] = name
         await self.players.save(member, p)
@@ -64,7 +74,6 @@ class CrewBattles(commands.Cog):
 
     @commands.command()
     async def startcb(self, ctx):
-        """Start your Crew Battles journey"""
         p = await self.players.get(ctx.author)
         if p["started"]:
             return await ctx.reply("❌ You already started Crew Battles.")
@@ -81,14 +90,13 @@ class CrewBattles(commands.Cog):
             description=(
                 f"**Level:** 1\n"
                 f"**Devil Fruit:** {p['fruit'] or 'None'}\n\n"
-                "You can now battle other crews using `.battle @user`"
+                "You can now battle using `.battle @user`"
             ),
         )
         await ctx.reply(embed=embed)
 
     @commands.command(name="cbprofile")
     async def cbprofile(self, ctx, member: discord.Member = None):
-        """View a Crew Battles profile"""
         member = member or ctx.author
         p = await self.players.get(member)
 
@@ -99,7 +107,6 @@ class CrewBattles(commands.Cog):
         losses = p.get("losses", 0)
         total = wins + losses
         winrate = (wins / total * 100) if total else 0.0
-
         haki = p.get("haki", {})
 
         embed = discord.Embed(
@@ -143,7 +150,6 @@ class CrewBattles(commands.Cog):
 
     @commands.command()
     async def battle(self, ctx, opponent: discord.Member):
-        """Battle another crew member"""
         if opponent == ctx.author:
             return await ctx.reply("❌ You can't battle yourself.")
 
@@ -151,7 +157,7 @@ class CrewBattles(commands.Cog):
         p2 = await self.players.get(opponent)
 
         if not p1["started"] or not p2["started"]:
-            return await ctx.reply("❌ Both players must use `.startcb` first.")
+            return await ctx.reply("❌ Both players must `.startcb` first.")
 
         winner, turns, hp1, hp2 = simulate(p1, p2)
 
@@ -159,19 +165,23 @@ class CrewBattles(commands.Cog):
         hp2_start = 100 + p2["level"] * 6
         max_hp = max(hp1_start, hp2_start)
 
+        battle_log: list[str] = []
+
         msg = await ctx.send(
-            embed=battle_embed(ctx.author, opponent, hp1_start, hp2_start, max_hp)
+            embed=battle_embed(
+                ctx.author,
+                opponent,
+                hp1_start,
+                hp2_start,
+                max_hp,
+                "⚔️ Battle started!"
+            )
         )
 
         delay = await self.config.guild(ctx.guild).turn_delay()
-        log_lines = []
 
         for turn in turns:
-            side = turn[0]
-            dmg = turn[1]
-            hp = turn[2]
-            attack = turn[3] if len(turn) > 3 else "Attack"
-            crit = turn[4] if len(turn) > 4 else False
+            side, dmg, hp, attack, crit = turn
 
             await asyncio.sleep(delay)
 
@@ -183,9 +193,11 @@ class CrewBattles(commands.Cog):
                 actor = opponent.display_name
 
             crit_txt = " 💥 **CRITICAL HIT!**" if crit else ""
-            log_lines.append(
+            battle_log.append(
                 f"⚔️ **{actor}** used **{attack}** and dealt **{dmg}** damage!{crit_txt}"
             )
+
+            log_text = "\n".join(battle_log[-6:])  # KEEP AS STRING
 
             await msg.edit(
                 embed=battle_embed(
@@ -194,7 +206,7 @@ class CrewBattles(commands.Cog):
                     hp1,
                     hp2,
                     max_hp,
-                    "\n".join(log_lines[-5:])  # rolling log
+                    log_text
                 )
             )
 
@@ -223,41 +235,34 @@ class CrewBattles(commands.Cog):
         # TEAM POINTS
         # -------------------------------
         await self.teams.award_win(
-            ctx.guild, winner_user, g["crew_points_win"]
+            ctx.guild,
+            winner_user,
+            g["crew_points_win"]
         )
 
         # -------------------------------
         # BERI CORE (CORRECT API)
         # -------------------------------
-        beri = self.bot.get_cog("BeriCore")
-        if beri:
+        core = self._beri()
+        if core:
             try:
-                economy = beri.economy
-                await economy.add_balance(
-                    guild=ctx.guild,
-                    user=winner_user,
-                    amount=g["beri_win"],
-                    reason="Crew Battle Win",
-                    source="CrewBattles",
-                    notify=True,
-                    channel=ctx.channel,
+                await core.add_beri(
+                    winner_user,
+                    g["beri_win"],
+                    reason="pvp:crew_battle:win"
                 )
             except Exception as e:
-                print(f"[CrewBattles] BeriCore win error: {e}")
+                print(f"[CrewBattles] Beri win error: {e}")
 
-            if g.get("beri_loss", 0):
+            if g.get("beri_loss", 0) != 0:
                 try:
-                    await economy.add_balance(
-                        guild=ctx.guild,
-                        user=loser_user,
-                        amount=g["beri_loss"],
-                        reason="Crew Battle Loss",
-                        source="CrewBattles",
-                        notify=False,
-                        channel=None,
+                    await core.add_beri(
+                        loser_user,
+                        g["beri_loss"],
+                        reason="pvp:crew_battle:loss"
                     )
                 except Exception as e:
-                    print(f"[CrewBattles] BeriCore loss error: {e}")
+                    print(f"[CrewBattles] Beri loss error: {e}")
 
         await ctx.reply(
             f"🏆 **{winner_user.display_name}** won the Crew Battle against "
