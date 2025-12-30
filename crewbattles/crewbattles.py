@@ -5,7 +5,7 @@ import discord
 import copy
 from redbot.core import commands, Config
 
-from .constants import DEFAULT_GUILD, DEFAULT_USER
+from .constants import DEFAULT_GUILD, DEFAULT_USER, BASE_HP
 from .player_manager import PlayerManager
 from .fruits import FruitManager
 from .battle_engine import simulate
@@ -590,7 +590,13 @@ class CrewBattles(commands.Cog):
         if not p1["started"] or not p2["started"]:
             return await ctx.reply("❌ Both players must `.startcb` first.")
 
-        winner, turns, hp1, hp2 = simulate(p1, p2)
+        # before calling simulate or before rendering the per-turn embed, compute both maxima:
+        # assuming p1_data and p2_data are the player dicts used by simulate
+        max_hp1 = BASE_HP + int(p1.get("level", 1)) * 6
+        max_hp2 = BASE_HP + int(p2.get("level", 1)) * 6
+
+        # simulate stays the same (returns hp1/hp2 current values in your turns list)
+        winner, turns, final_hp1, final_hp2 = simulate(p1, p2)
 
         hp1_start = 100 + p1["level"] * 6
         hp2_start = 100 + p2["level"] * 6
@@ -677,7 +683,8 @@ class CrewBattles(commands.Cog):
                     opponent,
                     hp1,
                     hp2,
-                    max_hp,
+                    max_hp1,    # p1 max HP
+                    max_hp2,    # p2 max HP
                     log_text
                 )
             )
