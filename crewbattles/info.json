@@ -1,0 +1,8 @@
+{
+  "name": "CrewBattles",
+  "author": ["grillribba"],
+  "short": "One Piece crew battles with leveling, fruits, haki, teams.",
+  "description": "Crew vs crew battles with Devil Fruits, Haki, Teams & BeriCore integration.",
+  "tags": ["onepiece", "rpg", "teams", "battles"],
+  "min_bot_version": "3.5.0"
+}

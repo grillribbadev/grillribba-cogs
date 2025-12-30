@@ -1,8 +1,4 @@
-from redbot.core.bot import Red
-from .crew import CrewTournament
+from .crewbattles import CrewBattles
 
-
-async def setup(bot: Red):
-    """Load the Deathmatch cog."""
-    cog = CrewTournament(bot)
-    await bot.add_cog(cog)
+async def setup(bot):
+    await bot.add_cog(CrewBattles(bot))
