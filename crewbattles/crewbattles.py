@@ -645,7 +645,7 @@ class CrewBattles(commands.Cog):
     # =========================================================
 
     @commands.command()
-    async def battle(self, ctx, *args, **kwargs):
+    async def battle(self, ctx, opponent: discord.Member = None, *args, **kwargs):
         """
         Existing battle command entrypoint.
         Wrap start of the command so only one battle can run per channel.
@@ -657,6 +657,10 @@ class CrewBattles(commands.Cog):
         # reserve the channel
         self._active_battles.add(chan_id)
         try:
+            # Ensure an opponent was provided
+            if opponent is None:
+                return await ctx.reply("❌ You must mention an opponent: `.battle @user`")
+
             p1 = await self.players.get(ctx.author)
             p2 = await self.players.get(opponent)
 
