@@ -6,6 +6,7 @@ import math
 import copy
 import json
 from redbot.core import commands, Config
+from redbot.core import bank
 
 
 from .constants import DEFAULT_GUILD, DEFAULT_USER, BASE_HP, MAX_LEVEL
@@ -89,6 +90,71 @@ class CrewBattles(commands.Cog):
     def _beri(self):
         """Safe accessor for BeriCore cog (may be None)."""
         return self.bot.get_cog("BeriCore")
+
+    async def _get_beri_balance(self, member: discord.abc.User) -> int:
+        """Get balance from BeriCore if available, else fallback to Red bank."""
+        core = self._beri()
+        if core:
+            for name in ("get_beri", "get_balance", "balance", "get"):
+                fn = getattr(core, name, None)
+                if not fn:
+                    continue
+                try:
+                    res = fn(member)
+                    if asyncio.iscoroutine(res):
+                        res = await res
+                    return int(res or 0)
+                except Exception as e:
+                    print(f"[CrewBattles] BeriCore.{name} failed: {e}")
+        # fallback: Red bank
+        try:
+            return int(await bank.get_balance(member))
+        except Exception as e:
+            print(f"[CrewBattles] bank.get_balance failed: {e}")
+            return 0
+
+    async def _add_beri(self, member: discord.abc.User, delta: int, reason: str = "") -> bool:
+        """Add/subtract Beri. Returns True if the operation succeeded."""
+        try:
+            delta = int(delta)
+        except Exception:
+            return False
+
+        core = self._beri()
+        if core:
+            # try common BeriCore signatures
+            candidates = ("add_beri", "add_balance", "change_balance", "add")
+            for name in candidates:
+                fn = getattr(core, name, None)
+                if not fn:
+                    continue
+                # try a few call shapes; some cogs accept reason/bypass_cap, some don't
+                for kwargs in (
+                    {"reason": reason, "bypass_cap": True},
+                    {"reason": reason},
+                    {},
+                ):
+                    try:
+                        res = fn(member, delta, **kwargs)
+                        if asyncio.iscoroutine(res):
+                            await res
+                        return True
+                    except TypeError:
+                        continue
+                    except Exception as e:
+                        print(f"[CrewBattles] BeriCore.{name} failed: {e}")
+                        continue
+
+        # fallback: Red bank deposit/withdraw
+        try:
+            if delta >= 0:
+                await bank.deposit_credits(member, delta)
+            else:
+                await bank.withdraw_credits(member, abs(delta))
+            return True
+        except Exception as e:
+            print(f"[CrewBattles] bank deposit/withdraw failed: {e}")
+            return False
 
     async def _team_of(self, guild, member):
         """
@@ -264,22 +330,14 @@ class CrewBattles(commands.Cog):
         if not core:
             return await ctx.reply("❌ Economy system unavailable.")
 
-        # Decrement stock if applicable
-        if fruit.get("stock") is not None:
-            fruit["stock"] -= 1
-            self.fruits.update(fruit)
-
-        balance = await core.get_beri(ctx.author)
+        balance = await self._get_beri_balance(ctx.author)
         if balance < price:
             return await ctx.reply(f"❌ You need **{price:,} Beri** to buy this fruit.")
 
-        # Charge user
-        await core.add_beri(
-            ctx.author,
-            -price,
-            reason="shop:devil_fruit:purchase",
-            bypass_cap=True,
-        )
+        # Charge user (must succeed)
+        ok = await self._add_beri(ctx.author, -price, reason="shop:devil_fruit:purchase")
+        if not ok:
+            return await ctx.reply("❌ Purchase failed: economy system error (could not charge). Try again later.")
 
         p["fruit"] = fruit.get("name")
         await self.players.save(ctx.author, p)
@@ -302,16 +360,13 @@ class CrewBattles(commands.Cog):
         if not core:
             return await ctx.reply("❌ Economy system unavailable.")
 
-        balance = await core.get_beri(ctx.author)
+        balance = await self._get_beri_balance(ctx.author)
         if balance < cost:
             return await ctx.reply(f"❌ You need **{cost:,} Beri** to remove your fruit.")
 
-        await core.add_beri(
-            ctx.author,
-            -cost,
-            reason="shop:devil_fruit:remove",
-            bypass_cap=True,
-        )
+        ok = await self._add_beri(ctx.author, -cost, reason="shop:devil_fruit:remove")
+        if not ok:
+            return await ctx.reply("❌ Remove failed: economy system error (could not charge). Try again later.")
 
         old = p["fruit"]
         p["fruit"] = None
@@ -1063,31 +1118,14 @@ class CrewBattles(commands.Cog):
                 await self.players.save(opponent, p2)
 
             # beri rewards (if BeriCore present)
-            core = self._beri()
-            if core:
-                try:
-                    await core.add_beri(winner_user, int(g.get("beri_win", 0) or 0), reason="pvp:crew_battle:win")
-                except Exception:
-                    pass
-                try:
-                    loss_amt = int(g.get("beri_loss", 0) or 0)
-                    if loss_amt:
-                        await core.add_beri(loser_user, loss_amt, reason="pvp:crew_battle:loss")
-                except Exception:
-                    pass
-
-            # Award crew/team points via TeamsBridge (best-effort)
-            try:
-                crew_points = int(g.get("crew_points_win", 0) or 0)
-            except Exception:
-                crew_points = 0
-            if crew_points and getattr(self, "teams", None):
-                try:
-                    ok = await self.teams.award_win(ctx.guild, winner_user, crew_points)
-                    if not ok:
-                        print(f"[CrewBattles] teams_bridge: failed to award {crew_points} points for {winner_user} (no matching Teams method).")
-                except Exception as e:
-                    print(f"[CrewBattles] teams_bridge error awarding points: {e}")
+            beri_win = int(g.get("beri_win", 0) or 0)
+            beri_loss = int(g.get("beri_loss", 0) or 0)
+            beri_ok_win = True
+            beri_ok_loss = True
+            if beri_win:
+                beri_ok_win = await self._add_beri(winner_user, beri_win, reason="pvp:crew_battle:win")
+            if beri_loss:
+                beri_ok_loss = await self._add_beri(loser_user, beri_loss, reason="pvp:crew_battle:loss")
 
             # final result embed
             try:
@@ -1102,7 +1140,7 @@ class CrewBattles(commands.Cog):
             )
             if winner_avatar:
                 res.set_thumbnail(url=winner_avatar)
-            res.add_field(name="Rewards", value=f"EXP: **+{int(g.get('exp_win',0))}**\nBeri: **+{int(g.get('beri_win',0)):,}**", inline=False)
+            res.add_field(name="Rewards", value=f"EXP: **+{int(g.get('exp_win', 0) or 0)}**\nBeri: **+{beri_win:,}**" if beri_ok_win else f"EXP: **+{int(g.get('exp_win', 0) or 0)}**\nBeri: **+{beri_win:,}** (FAILED)", inline=False)
             # show any level-ups
             level_lines = []
             try:
