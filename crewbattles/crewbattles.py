@@ -331,33 +331,54 @@ class CrewBattles(commands.Cog):
     async def cbadmin(self, ctx: commands.Context):
         """Admin commands for CrewBattles."""
         if ctx.invoked_subcommand is None:
-            await ctx.reply("Use `.help cbadmin` to see admin subcommands.")
+            # shows subcommands reliably instead of doing nothing
+            return await ctx.send_help()
 
-    @cbadmin.command(name="resetall", aliases=["resetalldata", "resetallusers"])
+    @cbadmin.command(name="resetall", aliases=["resetalldata", "wipeall", "wipeusers"])
     async def cbadmin_resetall(self, ctx: commands.Context, confirm: str = None):
         """
-        Reset ALL users' CrewBattles data.
+        HARD WIPE: removes ALL stored CrewBattles user data for every known user id.
         Usage: .cbadmin resetall confirm
         """
         if confirm != "confirm":
-            return await ctx.reply("❗ This will reset ALL player data. Run: `.cbadmin resetall confirm`")
+            return await ctx.reply("❗ HARD WIPE. Run: `.cbadmin resetall confirm`")
 
-        # Prefer scanning guild members (reliable) and reset only those who started.
-        count = 0
-        for member in ctx.guild.members:
+        async with ctx.typing():
+            # 1) Best source: Config knows exactly which users have data
+            uids = set()
             try:
-                pdata = await self.players.get(member)
-            except Exception:
-                continue
-            if not (pdata or {}).get("started"):
-                continue
-            try:
-                await self.players.save(member, copy.deepcopy(DEFAULT_USER))
-                count += 1
+                all_users = await self.players._conf.all_users()
+                # keys are usually ints; but normalize anyway
+                for k in (all_users or {}).keys():
+                    try:
+                        uids.add(int(k))
+                    except Exception:
+                        pass
             except Exception:
                 pass
 
-        await ctx.reply(f"✅ Reset CrewBattles data for **{count}** users (started players in this server).")
+            # 2) Fallback: include current guild members (at least wipes this server)
+            if not uids and ctx.guild:
+                try:
+                    for m in ctx.guild.members:
+                        uids.add(int(m.id))
+                except Exception:
+                    pass
+
+            if not uids:
+                return await ctx.reply("⚠️ No user IDs found to wipe. (No stored users and no guild members found.)")
+
+            wiped = 0
+            for uid in uids:
+                try:
+                    # clear removes the user entry for THIS cog's Config only
+                    await self.players._conf.user_from_id(uid).clear()
+                    wiped += 1
+                except Exception:
+                    # continue wiping others
+                    pass
+
+        await ctx.reply(f"✅ CrewBattles HARD WIPE complete. Cleared data for **{wiped}** user IDs.")
 
     @cbadmin.command()
     async def setberi(self, ctx, win: int, loss: int = 0):
@@ -1371,34 +1392,33 @@ class CrewBattles(commands.Cog):
  
         await ctx.reply("❌ Usage: `.cbmaintenance on|off`")
 
-    async def cog_check(self, ctx):
+    # =========================================================
+    # MAINTENANCE CHECK (must return True/False)
+    # =========================================================
+    async def cog_check(self, ctx: commands.Context) -> bool:
         """
-        Cog-level check to enforce global maintenance mode.
-        When maintenance is enabled only the bot owner or guild administrators may use commands.
+        When maintenance is enabled, only bot owner or guild administrators may use this cog.
+        MUST return a bool (returning None will block commands with no response).
         """
-        # Read global maintenance flag (safe)
         try:
-            maintenance = await self.config.maintenance()
+            maintenance = bool(await self.config.maintenance())
         except Exception:
             maintenance = False
 
         if not maintenance:
             return True
 
-        # Bot owner always allowed
         try:
             if await self.bot.is_owner(ctx.author):
                 return True
         except Exception:
             pass
 
-        # Guild administrators allowed (when in a guild)
         if ctx.guild and getattr(ctx.author, "guild_permissions", None) and ctx.author.guild_permissions.administrator:
             return True
 
-        # Deny for everyone else
         try:
-            await ctx.reply("⚠️ Crew Battles is currently in maintenance mode. Only server administrators or the bot owner may use these commands.")
+            await ctx.reply("⚠️ Crew Battles is in maintenance mode (admins/owner only).")
         except Exception:
             pass
         return False
