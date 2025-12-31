@@ -21,6 +21,11 @@ from .utils import exp_to_next
 HAKI_TRAIN_COST = 500
 HAKI_TRAIN_COOLDOWN = 60 * 60  # 1 hour
 
+# Default per-user battle cooldown (seconds) if user hasn't set one
+DEFAULT_BATTLE_COOLDOWN = 60
+MIN_BATTLE_COOLDOWN = 10
+MAX_BATTLE_COOLDOWN = 3600
+
 
 class CrewBattles(commands.Cog):
     """Crew Battles – PvP battles with Devil Fruits, Teams & BeriCore integration"""
@@ -1037,16 +1042,42 @@ class CrewBattles(commands.Cog):
         if opponent.bot:
             return await ctx.reply("❌ You cannot battle bots.")
 
-        # Check if already in a battle
-        if ctx.channel.id in self._active_battles:
-            return await ctx.reply("❌ A battle is already in progress in this channel.")
-
-        # Fetch players
+        # Per-user cooldown check (both initiator and opponent)
+        now = int(time.time())
         p1 = await self.players.get(ctx.author)
         p2 = await self.players.get(opponent)
 
         if not p1.get("started") or not p2.get("started"):
             return await ctx.reply("❌ Both players must `.startcb` first.")
+
+        cd1 = int(p1.get("battle_cd", DEFAULT_BATTLE_COOLDOWN) or DEFAULT_BATTLE_COOLDOWN)
+        cd2 = int(p2.get("battle_cd", DEFAULT_BATTLE_COOLDOWN) or DEFAULT_BATTLE_COOLDOWN)
+        last1 = int(p1.get("last_battle", 0) or 0)
+        last2 = int(p2.get("last_battle", 0) or 0)
+
+        rem1 = (last1 + cd1) - now
+        if rem1 > 0:
+            return await ctx.reply(f"⏳ You must wait **{rem1}**s before starting another battle.")
+
+        rem2 = (last2 + cd2) - now
+        if rem2 > 0:
+            return await ctx.reply(f"⏳ {opponent.display_name} is on battle cooldown for **{rem2}**s.")
+
+        # Check if already in a battle
+        if ctx.channel.id in self._active_battles:
+            return await ctx.reply("❌ A battle is already in progress in this channel.")
+
+        # Stamp battle start time immediately (prevents spam/retry loops)
+        p1["last_battle"] = now
+        p2["last_battle"] = now
+        try:
+            await self.players.save(ctx.author, p1)
+        except Exception:
+            pass
+        try:
+            await self.players.save(opponent, p2)
+        except Exception:
+            pass
 
         # Enforce cross-team-only duels when team info is available
         try:
