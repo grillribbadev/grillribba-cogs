@@ -1,27 +1,28 @@
 import discord
 
-def hp_bar(hp, max_hp):
-    filled = int((hp / max_hp) * 10) if max_hp > 0 else 0
-    filled = max(0, min(10, filled))
-    return "█" * filled + "░" * (10 - filled)
+def hp_bar(hp: int, max_hp: int, length: int = 18) -> str:
+    hp = max(0, int(hp))
+    max_hp = max(1, int(max_hp))
+    filled = int((hp / max_hp) * length)
+    return "█" * filled + "░" * (length - filled)
 
-def battle_embed(p1, p2, hp1, hp2, max_hp1, max_hp2, last=None):
-    e = discord.Embed(title="⚔️ Crew Battle", color=discord.Color.blurple())
-    # p1 field
-    e.add_field(
-        name=f"{p1.display_name}",
-        value=f"HP: **{hp1:,} / {max_hp1:,}**\n{hp_bar(hp1, max_hp1)}",
-        inline=True,
+def battle_embed(p1, p2, hp1, hp2, max_hp1, max_hp2, log_text: str):
+    """
+    p1/p2 are discord.Member-like objects (for display). log_text is recent log.
+    """
+    emb = discord.Embed(
+        title="⚔️ Crew Battle",
+        color=discord.Color.blurple()
     )
-    # p2 field
-    e.add_field(
-        name=f"{p2.display_name}",
-        value=f"HP: **{hp2:,} / {max_hp2:,}**\n{hp_bar(hp2, max_hp2)}",
-        inline=True,
+    emb.add_field(
+        name=f"{p1.display_name} — HP",
+        value=f"{hp_bar(hp1, max_hp1)}\n{hp1}/{max_hp1}",
+        inline=True
     )
-
-    if last:
-        e.add_field(name="Recent Log", value=last, inline=False)
-
-    e.set_footer(text="Crew Battles • Progress is saved")
-    return e
+    emb.add_field(
+        name=f"{p2.display_name} — HP",
+        value=f"{hp_bar(hp2, max_hp2)}\n{hp2}/{max_hp2}",
+        inline=True
+    )
+    emb.add_field(name="Battle Log", value=log_text or "—", inline=False)
+    return emb

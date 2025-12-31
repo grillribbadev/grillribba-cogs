@@ -2,7 +2,10 @@ from pathlib import Path
 import json
 import random
 
-DATA = Path(__file__).parent / "data" / "fruits.json"
+DATA = Path(__file__).parent / "data" / "fruits_cache.json"
+DATA.parent.mkdir(parents=True, exist_ok=True)
+if not DATA.exists():
+    DATA.write_text("[]", encoding="utf-8")
 
 class FruitManager:
     def __init__(self):
@@ -11,9 +14,6 @@ class FruitManager:
 
     def _load(self):
         try:
-            if not DATA.exists():
-                DATA.parent.mkdir(parents=True, exist_ok=True)
-                DATA.write_text("[]", encoding="utf-8")
             with DATA.open("r", encoding="utf-8") as fh:
                 self._data = json.load(fh) or []
         except Exception:
@@ -21,9 +21,8 @@ class FruitManager:
 
     def _save(self):
         try:
-            DATA.parent.mkdir(parents=True, exist_ok=True)
             with DATA.open("w", encoding="utf-8") as fh:
-                json.dump(self._data, fh, indent=2, ensure_ascii=False)
+                json.dump(self._data, fh, ensure_ascii=False, indent=2)
         except Exception:
             pass
 
@@ -35,17 +34,17 @@ class FruitManager:
         """Case-insensitive lookup by name. Returns fruit dict or None."""
         if not name:
             return None
-        name_l = name.strip().lower()
+        nl = str(name).strip().lower()
         for f in self._data:
-            if f.get("name", "").strip().lower() == name_l:
-                return f
+            if str(f.get("name", "")).strip().lower() == nl:
+                return dict(f)
         return None
 
     def random(self):
         """Return a random fruit dict or None if no fruits."""
         if not self._data:
             return None
-        return random.choice(self._data)
+        return dict(random.choice(self._data))
 
     def add(self, name: str, ftype: str, bonus: int, price: int, stock=None, ability: str = ""):
         """Add a new fruit (overwrites if same name exists)."""
@@ -55,11 +54,15 @@ class FruitManager:
             "bonus": int(bonus),
             "price": int(price),
             "stock": None if stock is None else int(stock),
-            "ability": str(ability or "")
+            "ability": str(ability or ""),
         }
         existing = self.get(name)
         if existing:
-            existing.update(fruit)
+            # update in-place
+            for idx, it in enumerate(self._data):
+                if str(it.get("name","")).strip().lower() == str(name).strip().lower():
+                    self._data[idx] = fruit
+                    break
         else:
             self._data.append(fruit)
         self._save()
@@ -69,9 +72,9 @@ class FruitManager:
         """Update an existing fruit by name. If not found, append."""
         if not fruit or "name" not in fruit:
             return
-        name_l = fruit["name"].strip().lower()
-        for idx, f in enumerate(self._data):
-            if f.get("name", "").strip().lower() == name_l:
+        name = str(fruit["name"]).strip().lower()
+        for idx, it in enumerate(self._data):
+            if str(it.get("name","")).strip().lower() == name:
                 self._data[idx] = fruit
                 self._save()
                 return
@@ -114,7 +117,7 @@ class FruitManager:
                     stock = int(stock)
                 except Exception:
                     stock = None
-            ability = str(item.get("ability", ""))  # special ability text
+            ability = str(item.get("ability", "") or "")  # special ability text
             new_list.append({
                 "name": str(name),
                 "type": str(ftype),

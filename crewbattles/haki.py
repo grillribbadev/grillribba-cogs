@@ -1,10 +1,14 @@
-def haki_bonus(player):
-    bonus = 0
-    bonus += player["haki"]["armament"] * 2
-    bonus += player["haki"]["observation"]
-    if player["haki"]["conquerors"]:
-        bonus += 5
-    return bonus
+def haki_bonus(player: dict) -> float:
+    """
+    Small helper returning an attack multiplier based on player's armament haki.
+    (Used optionally in battle engine.)
+    """
+    try:
+        haki = player.get("haki", {}) or {}
+        arm = int(haki.get("armament", 0))
+    except Exception:
+        arm = 0
+    return 1.0 + (arm * 0.01)
 
 def get_haki_effects(player):
     """
