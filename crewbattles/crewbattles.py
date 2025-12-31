@@ -29,6 +29,8 @@ class CrewBattles(commands.Cog):
         # config for guild defaults
         self.config = Config.get_conf(self, identifier=0xC0A55EE, force_registration=True)
         self.config.register_guild(**DEFAULT_GUILD)
+        # global config: maintenance mode (when True, non-admins cannot use commands)
+        self.config.register_global(maintenance=False)
 
         # managers
         self.players = PlayerManager(self)
@@ -355,14 +357,26 @@ class CrewBattles(commands.Cog):
         )
 
     @cbadmin.command()
-    async def setfruitstock(self, ctx, *, name: str, stock: int):
+    async def setfruitstock(self, ctx, name: str, stock):
+        """Set shop stock for a fruit: .cbadmin setfruitstock <name> <stock|none>"""
         fruit = self.fruits.get(name)
         if not fruit:
             return await ctx.reply("❌ Fruit not found.")
 
-        fruit["stock"] = stock
+        # allow "none"/"unlimited"/"∞" to mean unlimited stock
+        if isinstance(stock, str) and stock.lower() in ("none", "unlimited", "∞"):
+            stock_val = None
+        else:
+            try:
+                stock_val = int(stock)
+                if stock_val < 0:
+                    return await ctx.reply("❌ Stock must be 0 or a positive integer, or 'none' for unlimited.")
+            except Exception:
+                return await ctx.reply("❌ Stock must be an integer or 'none' for unlimited.")
+
+        fruit["stock"] = stock_val
         self.fruits.update(fruit)
-        await ctx.reply(f"📦 Stock for **{name}** set to **{stock}**")
+        await ctx.reply(f"📦 Stock for **{fruit['name']}** set to **{stock_val if stock_val is not None else '∞'}**")
 
     @cbadmin.command()
     async def resetuser(self, ctx, member: discord.Member):
@@ -893,6 +907,10 @@ class CrewBattles(commands.Cog):
             delay = await self.config.guild(ctx.guild).turn_delay()
             battle_log = []
 
+            # ensure these exist in outer scope to avoid UnboundLocalError in any error path
+            attack = "Attack"
+            crit = False
+
             for turn in turns:
                 # ensure defaults exist so 'crit' is always defined
                 attack = "Attack"
@@ -1196,3 +1214,42 @@ class CrewBattles(commands.Cog):
         await self.players.save(ctx.author, p)
 
         await ctx.reply(f"🏆 **{ctx.author.display_name}** unlocked Conqueror's Haki!")
+
+    @commands.command(name="cbmaintenance")
+    async def cbmaintenance(self, ctx, mode: str = None):
+        """
+        Toggle or view maintenance mode.
+        Usage:
+          .cbmaintenance           -> show current status
+          .cbmaintenance on|off    -> enable/disable maintenance
+        Allowed to toggle: bot owner or server administrators.
+        When enabled, non-admins cannot use any Crew Battles commands.
+        """
+        # permission: bot owner OR guild administrator
+        is_owner = False
+        try:
+            is_owner = await self.bot.is_owner(ctx.author)
+        except Exception:
+            pass
+        is_admin = ctx.guild and getattr(ctx.author, "guild_permissions", None) and ctx.author.guild_permissions.administrator
+        if not (is_owner or is_admin):
+            return await ctx.reply("❌ You must be the bot owner or a server administrator to change maintenance mode.")
+ 
+        # read current
+        try:
+            current = await self.config.maintenance()
+        except Exception:
+            current = False
+ 
+        if not mode:
+            return await ctx.reply(f"⚙️ Maintenance mode is currently **{'ON' if current else 'OFF'}**.")
+ 
+        m = mode.lower().strip()
+        if m in ("on", "true", "enable"):
+            await self.config.maintenance.set(True)
+            return await ctx.reply("🔧 Maintenance mode enabled. Non-admin users cannot use Crew Battles commands.")
+        if m in ("off", "false", "disable"):
+            await self.config.maintenance.set(False)
+            return await ctx.reply("✅ Maintenance mode disabled. Crew Battles commands are available again.")
+ 
+        await ctx.reply("❌ Usage: `.cbmaintenance on|off`")
