@@ -25,18 +25,16 @@ class CrewBattles(commands.Cog):
 
     def __init__(self, bot):
         self.bot = bot
+        # config for guild defaults
+        self.config = Config.get_conf(self, identifier=0xC0A55EE, force_registration=True)
+        self.config.register_guild(**DEFAULT_GUILD)
+
+        # managers
         self.players = PlayerManager(self)
         self.fruits = FruitManager()
         self.teams = TeamsBridge(bot)
 
-        self.config = Config.get_conf(
-            self,
-            identifier=444888221,
-            force_registration=True
-        )
-        self.config.register_guild(**DEFAULT_GUILD)
-
-        # track active battles by channel id to prevent more than one per channel
+        # one-battle-per-channel lock
         self._active_battles = set()
 
     # =========================================================
@@ -44,7 +42,7 @@ class CrewBattles(commands.Cog):
     # =========================================================
 
     def _beri(self):
-        """Safely fetch BeriCore."""
+        """Safe accessor for BeriCore cog (may be None)."""
         return self.bot.get_cog("BeriCore")
 
     async def _team_of(self, guild, member):
@@ -971,7 +969,7 @@ class CrewBattles(commands.Cog):
     @commands.command()
     async def cbleaderboard(self, ctx, metric: str = "wins", limit: int = 10):
         """
-        Show a simple leaderboard with better diagnostics when storage is empty.
+        Show a simple leaderboard with a guild-member fallback when raw storage is unavailable.
         metric: wins | winrate | level | exp
         """
         metric = (metric or "wins").lower()
@@ -983,70 +981,51 @@ class CrewBattles(commands.Cog):
         except Exception:
             limit = 10
 
-        # Fetch raw storage and provide diagnostics when it's empty / unexpected.
+        # Try to read raw storage first
         try:
             raw = await self.players.all()
         except Exception as e:
             print(f"[CrewBattles] cbleaderboard: players.all() raised: {e}")
-            return await ctx.reply("❌ Could not read player storage (exception). Check bot logs.")
+            raw = {}
 
-        # debug log for maintainer
-        try:
-            info = f"type={type(raw).__name__}"
-            if isinstance(raw, (list, tuple, dict, set)):
-                info += f", len={len(raw)}"
-            print("[CrewBattles] cbleaderboard raw:", info)
-        except Exception:
-            pass
-
-        if not raw:
-            # helpful user message
-            await ctx.reply("⚠️ No player data found. Make sure players have used `.startcb` and the cog has initialized storage.\n"
-                            "If data exists, check bot logs for `CrewBattles cbleaderboard raw` to see the raw storage format.")
-            return
-
+        # If storage empty, fall back to scanning guild members (works reliably)
         entries = []
-        # Normalize multiple possible shapes into (uid, pdata) pairs
-        if isinstance(raw, dict):
-            # common shape: {str(uid): pdata}
-            for k, v in raw.items():
+        if raw:
+            if isinstance(raw, dict):
+                for k, v in raw.items():
+                    try:
+                        uid = int(k)
+                    except Exception:
+                        try:
+                            uid = int(str(k))
+                        except Exception:
+                            continue
+                    entries.append((uid, v or {}))
+            else:
+                # attempt best-effort normalization for non-dict raw shapes
                 try:
-                    uid = int(k)
+                    for item in raw:
+                        if isinstance(item, dict) and item.get("id"):
+                            entries.append((int(item["id"]), item))
+                        elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                            entries.append((int(item[0]), item[1] or {}))
                 except Exception:
-                    # some raw shapes use ints already as keys
-                    try:
-                        uid = int(str(k))
-                    except Exception:
-                        continue
-                entries.append((uid, v or {}))
-        elif isinstance(raw, (list, tuple)):
-            # list of raw items: could be [ { "id": id, ...}, ... ] or [ (id, pdata), ... ]
-            for item in raw:
-                if isinstance(item, dict) and item.get("id"):
-                    try:
-                        uid = int(item["id"])
-                        entries.append((uid, item))
-                        continue
-                    except Exception:
-                        pass
-                if isinstance(item, (list, tuple)) and len(item) >= 2:
-                    try:
-                        uid = int(item[0])
-                        entries.append((uid, item[1] or {}))
-                        continue
-                    except Exception:
-                        pass
-                # fallback: skip unknown shapes
-        else:
-            # Unknown shape
-            print(f"[CrewBattles] cbleaderboard: unrecognized storage shape: {type(raw)}")
-            return await ctx.reply("❌ Unrecognized player storage format. Check bot logs for details.")
+                    pass
 
         if not entries:
-            await ctx.reply("⚠️ Player storage contained no usable entries. Check bot logs for raw storage details.")
-            return
+            # fallback: scan guild members and gather started players
+            for member in ctx.guild.members:
+                try:
+                    pdata = await self.players.get(member)
+                except Exception:
+                    continue
+                if pdata and pdata.get("started"):
+                    entries.append((member.id, pdata))
 
-        # compute scores
+        if not entries:
+            return await ctx.reply("⚠️ No player data found. Make sure players have used `.startcb` and the cog has initialized storage.")
+
+        # compute score rows
         rows = []
         for uid, pdata in entries:
             if not isinstance(pdata, dict):
@@ -1090,3 +1069,47 @@ class CrewBattles(commands.Cog):
         embed.set_footer(text=f"Showing top {len(top)} — use .cbleaderboard <metric> <limit>")
 
         await ctx.reply(embed=embed)
+
+    @commands.command()
+    async def cbunlockconqueror(self, ctx):
+        """
+        Player command to unlock Conqueror's Haki.
+        Requirements: started, level >= 10, pays configured cost (default 5000 Beri).
+        """
+        p = await self.players.get(ctx.author)
+        if not p.get("started"):
+            return await ctx.reply("❌ You must start Crew Battles first with `.startcb`.")
+
+        haki = p.get("haki", {}) or {}
+        if bool(haki.get("conquerors")):
+            return await ctx.reply("✅ You already have Conqueror's Haki unlocked.")
+
+        lvl = int(p.get("level", 1) or 1)
+        if lvl < 10:
+            return await ctx.reply("❌ You must reach level 10 to unlock Conqueror's Haki.")
+
+        g = await self.config.guild(ctx.guild).all()
+        cost = int(g.get("conqueror_unlock_cost", 5000) or 5000)
+
+        core = self._beri()
+        if not core:
+            return await ctx.reply("❌ Economy (BeriCore) is required to buy this. Ask an admin to enable BeriCore.")
+
+        try:
+            bal = await core.get_beri(ctx.author)
+        except Exception:
+            return await ctx.reply("❌ Could not read your Beri balance. Try again later.")
+
+        if bal < cost:
+            return await ctx.reply(f"❌ You need **{cost:,} Beri** to unlock Conqueror's Haki (you have {bal:,}).")
+
+        try:
+            await core.add_beri(ctx.author, -cost, reason="haki:unlock_conqueror", bypass_cap=True)
+        except Exception:
+            return await ctx.reply("❌ Failed to charge Beri. Unlock aborted.")
+
+        haki["conquerors"] = True
+        p["haki"] = haki
+        await self.players.save(ctx.author, p)
+
+        await ctx.reply(f"🏆 **{ctx.author.display_name}** unlocked Conqueror's Haki!")
