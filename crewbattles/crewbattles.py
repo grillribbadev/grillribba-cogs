@@ -8,7 +8,6 @@ import json
 from redbot.core import commands, Config
 from redbot.core import bank
 
-
 from .constants import DEFAULT_GUILD, DEFAULT_USER, BASE_HP, MAX_LEVEL
 from .player_manager import PlayerManager
 from .fruits import FruitManager
@@ -1534,3 +1533,101 @@ class CrewBattles(commands.Cog):
         except Exception:
             pass
         return False
+
+    def _combat_stats(self, p: dict) -> dict:
+        """
+        Everyone starts at 1 in all stats.
+        Level + Haki increase derived stats (no per-user stat storage required).
+          - Armament -> Attack/Defense
+          - Observation -> Speed/Dexterity
+          - Conqueror -> Intimidation/Strength
+        """
+        lvl = int(p.get("level", 1) or 1)
+        h = p.get("haki", {}) or {}
+        arm = int(h.get("armament", 0) or 0)
+        obs = int(h.get("observation", 0) or 0)
+        conq_unlocked = bool(h.get("conquerors"))
+        conq_lvl = int(h.get("conqueror", 0) or 0) if h.get("conqueror") is not None else 0
+
+        base = 1
+        level_scale_a = lvl // 4
+        level_scale_b = lvl // 5
+        level_scale_c = lvl // 6
+
+        strength = base + level_scale_b + ((conq_lvl // 10) if conq_unlocked else 0)
+        attack = base + level_scale_a + (arm // 5)
+        defense = base + level_scale_a + (arm // 6)
+        speed = base + level_scale_b + (obs // 5)
+        dexterity = base + level_scale_b + (obs // 6)
+        intimidation = base + level_scale_c + ((10 + (conq_lvl // 5)) if conq_unlocked else 0)
+
+        # expose a couple battle-relevant derived modifiers (matches battle_engine style)
+        # defender dodge bonus from observation (0..0.22)
+        obs_dodge_bonus = min(0.22, (obs / 500.0))
+        # armament passive damage bump used by engine (arm/20)
+        arm_passive = arm // 20 if arm > 0 else 0
+
+        return {
+            "level": lvl,
+            "armament": arm,
+            "observation": obs,
+            "conqueror_unlocked": conq_unlocked,
+            "conqueror_level": conq_lvl,
+            "strength": int(strength),
+            "attack": int(attack),
+            "defense": int(defense),
+            "speed": int(speed),
+            "dexterity": int(dexterity),
+            "intimidation": int(intimidation),
+            "obs_dodge_bonus": float(obs_dodge_bonus),
+            "arm_passive": int(arm_passive),
+        }
+    
+    @commands.command(name="cbcombatstats")
+    async def cbcombatstats(self, ctx: commands.Context, member: discord.Member = None):
+        """Show derived combat stats (base 1 for everyone; scaled by level + haki)."""
+        member = member or ctx.author
+        p = await self.players.get(member)
+        s = self._combat_stats(p)
+
+        # HP is part of "combat stats" too
+        max_hp = int(BASE_HP + int(s["level"]) * 6)
+
+        e = discord.Embed(
+            title="📊 Crew Battles — Combat Stats",
+            description=f"Stats for **{member.display_name}** (base stats start at 1; level/haki scale them).",
+            color=discord.Color.blurple(),
+        )
+        e.add_field(name="Core", value=f"Level: **{s['level']}**\nMax HP: **{max_hp}**", inline=True)
+        e.add_field(
+            name="Haki",
+            value=(
+                f"Armament: **{s['armament']}**\n"
+                f"Observation: **{s['observation']}**\n"
+                f"Conqueror: **{'Unlocked' if s['conqueror_unlocked'] else 'Locked'}**"
+                + (f" (Lv **{s['conqueror_level']}**)" if s["conqueror_unlocked"] else "")
+            ),
+            inline=True,
+        )
+        e.add_field(
+            name="Derived RPG Stats",
+            value=(
+                f"Strength: **{s['strength']}**\n"
+                f"Attack: **{s['attack']}**\n"
+                f"Defense: **{s['defense']}**\n"
+                f"Speed: **{s['speed']}**\n"
+                f"Dexterity: **{s['dexterity']}**\n"
+                f"Intimidation: **{s['intimidation']}**"
+            ),
+            inline=False,
+        )
+        e.add_field(
+            name="Battle Modifiers (engine-derived)",
+            value=(
+                f"Observation dodge bonus: **+{s['obs_dodge_bonus']*100:.1f}%**\n"
+                f"Armament passive damage: **+{s['arm_passive']}**"
+            ),
+            inline=False,
+        )
+
+        await ctx.reply(embed=e)
