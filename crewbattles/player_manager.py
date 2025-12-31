@@ -69,9 +69,7 @@ class PlayerManager:
                 return res
 
         # Last-resort: try to read known users by retrieving all keys from the underlying store
-        # If not possible, return empty mapping to avoid crashing leaderboard.
         try:
-            # Some Config implementations expose _get_data or similar
             if hasattr(self._conf, "_get_data"):
                 d = self._conf._get_data()
                 if hasattr(d, "__await__"):
