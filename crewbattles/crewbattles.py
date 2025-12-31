@@ -49,10 +49,82 @@ class CrewBattles(commands.Cog):
 
     async def _team_of(self, guild, member):
         """
-        Try several TeamsBridge method signatures to obtain a member's team id/name.
-        Returns a normalized string or None when no team info is available.
+        Return a normalized team identifier (string) for a member in a guild, or None.
+        - First tries the real 'Teams' cog structure (common implementation).
+        - Falls back to calling common bridge methods if available.
         """
-        candidates = (
+        # 1) Direct Teams cog support (most reliable for your setup)
+        teams_cog = self.bot.get_cog("Teams")
+        if teams_cog:
+            try:
+                guild_map = getattr(teams_cog, "teams", None)
+                if isinstance(guild_map, dict):
+                    guild_teams = guild_map.get(guild.id, {}) or {}
+                    for team in guild_teams.values():
+                        # team.members may be a list of Member objects or member ids
+                        members = getattr(team, "members", None)
+                        if members:
+                            try:
+                                if member in members or member.id in members:
+                                    # prefer id/name/display_name
+                                    tid = getattr(team, "id", None) or getattr(team, "team_id", None) or getattr(team, "name", None) or getattr(team, "display_name", None)
+                                    return str(tid).strip().lower() if tid is not None else None
+                            except Exception:
+                                # fallback: iterate and compare ids
+                                for m in members:
+                                    try:
+                                        if (hasattr(m, "id") and m.id == member.id) or (isinstance(m, int) and m == member.id) or (isinstance(m, str) and str(m) == str(member.id)):
+                                            tid = getattr(team, "id", None) or getattr(team, "team_id", None) or getattr(team, "name", None) or getattr(team, "display_name", None)
+                                            return str(tid).strip().lower() if tid is not None else None
+                                    except Exception:
+                                        pass
+            except Exception:
+                pass
+
+        # 2) Fallback: try bridge-like methods on any bridge object (self.teams or other)
+        # Keep previous flexible approach but call real Teams cog first to avoid missed matches.
+        bridge_candidates = (self.teams, self.bot.get_cog("TeamsBridge"), self.bot.get_cog("Teams"))
+        tried = set()
+        async def _try_fn(fn, *args):
+            try:
+                res = fn(*args)
+            except TypeError:
+                return None
+            except Exception:
+                return None
+            if asyncio.iscoroutine(res):
+                try:
+                    res = await res
+                except Exception:
+                    return None
+            return res
+
+        def _normalize(res):
+            if res is None:
+                return None
+            if isinstance(res, dict):
+                for key in ("id", "team_id", "name", "team"):
+                    if key in res and res[key] is not None:
+                        return str(res[key]).strip().lower()
+                for v in res.values():
+                    if isinstance(v, (str, int)):
+                        return str(v).strip().lower()
+            if hasattr(res, "id") or hasattr(res, "name"):
+                val = getattr(res, "id", None) or getattr(res, "name", None)
+                return str(val).strip().lower() if val is not None else None
+            if isinstance(res, (list, tuple)) and len(res):
+                for item in res:
+                    if isinstance(item, (str, int)):
+                        return str(item).strip().lower()
+                    if hasattr(item, "id") or hasattr(item, "name"):
+                        v = getattr(item, "id", None) or getattr(item, "name", None)
+                        if v is not None:
+                            return str(v).strip().lower()
+            if isinstance(res, (str, int)):
+                return str(res).strip().lower()
+            return None
+
+        candidate_names = (
             "get_team",
             "get_member_team",
             "get_team_of",
@@ -62,65 +134,28 @@ class CrewBattles(commands.Cog):
             "get_member_team_async",
             "fetch_member_team",
         )
-
-        def _normalize(res):
-            if res is None:
-                return None
-            # dict-like
-            if isinstance(res, dict):
-                for key in ("id", "team_id", "name", "team"):
-                    if key in res and res[key] is not None:
-                        return str(res[key]).strip().lower()
-                # if dict contains nested team object
-                for v in res.values():
-                    if isinstance(v, (str, int)):
-                        return str(v).strip().lower()
-            # object with attributes
-            if hasattr(res, "id") or hasattr(res, "name"):
-                val = getattr(res, "id", None) or getattr(res, "name", None)
-                return str(val).strip().lower() if val is not None else None
-            # tuple/list
-            if isinstance(res, (list, tuple)) and len(res):
-                # prefer first non-null scalar
-                for item in res:
-                    if isinstance(item, (str, int)):
-                        return str(item).strip().lower()
-                    if hasattr(item, "id") or hasattr(item, "name"):
-                        v = getattr(item, "id", None) or getattr(item, "name", None)
-                        if v is not None:
-                            return str(v).strip().lower()
-            # scalar
-            if isinstance(res, (str, int)):
-                return str(res).strip().lower()
-            return None
-
-        for name in candidates:
-            fn = getattr(self.teams, name, None)
-            if not fn:
+        for bridge in bridge_candidates:
+            if not bridge:
                 continue
-            for call_sig in (
-                (guild, member),
-                (guild, member.id),
-                (guild.id, member),
-                (guild.id, member.id),
-                (member,),
-                (member.id,),
-            ):
-                try:
-                    res = fn(*call_sig)
-                except TypeError:
+            for name in candidate_names:
+                fn = getattr(bridge, name, None)
+                if not fn or (bridge, name) in tried:
                     continue
-                except Exception:
-                    # ignore bridge errors and try other signatures
-                    res = None
-                if asyncio.iscoroutine(res):
-                    try:
-                        res = await res
-                    except Exception:
-                        res = None
-                val = _normalize(res)
-                if val:
-                    return val
+                tried.add((bridge, name))
+                # try multiple call signatures
+                for call_sig in (
+                    (guild, member),
+                    (guild, member.id),
+                    (guild.id, member),
+                    (guild.id, member.id),
+                    (member,),
+                    (member.id,),
+                ):
+                    res = await _try_fn(fn, *call_sig)
+                    val = _normalize(res)
+                    if val:
+                        return val
+
         return None
 
     @commands.command()
