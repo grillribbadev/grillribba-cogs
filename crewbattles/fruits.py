@@ -1,57 +1,95 @@
 from pathlib import Path
 import json
 import random
+import shutil
 
-# data file inside the cog folder (used as fallback)
+# cog-local cache (fallback)
 DATA = Path(__file__).parent / "data" / "fruits_cache.json"
 DATA.parent.mkdir(parents=True, exist_ok=True)
 
-# project-root fruits.json (one level up from the cog folder), used as primary persistent store
+# root-level fruits.json (persistent across reloads)
 ROOT = Path(__file__).resolve().parents[1] / "fruits.json"
 
 class FruitManager:
     def __init__(self):
+        # make sure ROOT exists (prefer it). If not, try to populate it from DATA or create empty.
+        self._ensure_root_exists()
         self._data = []
         self._load()
 
+    def _ensure_root_exists(self):
+        try:
+            if not ROOT.exists():
+                # prefer cog-local DATA if present
+                if DATA.exists():
+                    try:
+                        shutil.copy2(DATA, ROOT)
+                        print(f"[CrewBattles] fruits: copied {DATA} -> {ROOT}")
+                    except Exception as e:
+                        print(f"[CrewBattles] fruits: failed to copy DATA to ROOT: {e}")
+                        try:
+                            ROOT.write_text("[]", encoding="utf-8")
+                            print(f"[CrewBattles] fruits: created empty {ROOT}")
+                        except Exception as e2:
+                            print(f"[CrewBattles] fruits: failed to create ROOT file: {e2}")
+                else:
+                    try:
+                        ROOT.write_text("[]", encoding="utf-8")
+                        print(f"[CrewBattles] fruits: created empty {ROOT}")
+                    except Exception as e:
+                        print(f"[CrewBattles] fruits: failed to create ROOT file: {e}")
+            # ensure DATA exists too so cog-local fallback remains
+            if not DATA.exists():
+                try:
+                    DATA.write_text("[]", encoding="utf-8")
+                    print(f"[CrewBattles] fruits: created empty {DATA}")
+                except Exception as e:
+                    print(f"[CrewBattles] fruits: failed to create DATA file: {e}")
+        except Exception as e:
+            print(f"[CrewBattles] fruits: unexpected _ensure_root_exists error: {e}")
+
     def _load(self):
-        # Prefer root fruits.json if it exists (keeps imports across reloads)
-        if ROOT.exists():
-            try:
+        # Prefer ROOT (persistent); fallback to DATA
+        try:
+            if ROOT.exists():
                 with ROOT.open("r", encoding="utf-8") as fh:
                     self._data = json.load(fh) or []
                     return
-            except Exception:
-                # fall back to DATA
-                pass
+        except Exception as e:
+            print(f"[CrewBattles] fruits: failed to load ROOT {ROOT}: {e}")
 
-        # Fall back to cog-local data file
-        if DATA.exists():
-            try:
+        try:
+            if DATA.exists():
                 with DATA.open("r", encoding="utf-8") as fh:
                     self._data = json.load(fh) or []
                     return
-            except Exception:
-                pass
+        except Exception as e:
+            print(f"[CrewBattles] fruits: failed to load DATA {DATA}: {e}")
 
-        # default: empty list
         self._data = []
 
     def _save(self):
-        # Always attempt to save both: root (if writable) and cog data file.
+        # persist to both DATA and ROOT; print diagnostics on error
         try:
             with DATA.open("w", encoding="utf-8") as fh:
                 json.dump(self._data, fh, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[CrewBattles] fruits: failed to write DATA {DATA}: {e}")
 
         try:
-            # attempt to write root file so imports survive reloads
             with ROOT.open("w", encoding="utf-8") as fh:
                 json.dump(self._data, fh, ensure_ascii=False, indent=2)
-        except Exception:
-            # ignore permission errors; cog will still have DATA fallback
-            pass
+        except Exception as e:
+            print(f"[CrewBattles] fruits: failed to write ROOT {ROOT}: {e}")
+            # try an atomic fallback via temp file
+            try:
+                tmp = ROOT.with_suffix(".tmp")
+                with tmp.open("w", encoding="utf-8") as fh:
+                    json.dump(self._data, fh, ensure_ascii=False, indent=2)
+                tmp.replace(ROOT)
+                print(f"[CrewBattles] fruits: wrote ROOT via tmp {tmp}")
+            except Exception as e2:
+                print(f"[CrewBattles] fruits: atomic write fallback failed: {e2}")
 
     def all(self):
         return list(self._data)
@@ -81,7 +119,6 @@ class FruitManager:
         }
         existing = self.get(name)
         if existing:
-            # update in-place
             for idx, it in enumerate(self._data):
                 if str(it.get("name","")).strip().lower() == str(name).strip().lower():
                     self._data[idx] = fruit
