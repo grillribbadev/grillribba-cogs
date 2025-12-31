@@ -1549,12 +1549,19 @@ class CrewBattles(commands.Cog):
         """
         Everyone starts at 1 in all stats.
         Level + Haki increase derived stats.
-        This version uses smooth scaling so gains show up immediately.
+
+        Rule change:
+          - +1 stat per level (baseline)
+          - +1 stat per haki point in the corresponding stats:
+              Armament -> Attack/Defense
+              Observation -> Speed/Dexterity
+              Conqueror -> Strength/Intimidation (only if unlocked)
         """
         try:
             lvl = int(p.get("level", 1) or 1)
         except Exception:
             lvl = 1
+        lvl = max(1, lvl)
 
         h = p.get("haki", {}) or {}
         try:
@@ -1572,19 +1579,22 @@ class CrewBattles(commands.Cog):
         except Exception:
             conq_lvl = 0
 
-        base = 1.0
+        arm = max(0, arm)
+        obs = max(0, obs)
+        conq_lvl = max(0, conq_lvl)
 
-        # Smooth scaling (tweak freely)
-        attack = base + (lvl * 0.40) + (arm * 0.08)
-        defense = base + (lvl * 0.35) + (arm * 0.06)
-        speed = base + (lvl * 0.25) + (obs * 0.08)
-        dexterity = base + (lvl * 0.25) + (obs * 0.06)
+        # Base stats: level 1 => 1, level 2 => 2, etc.
+        base_stat = float(lvl)
 
-        strength = base + (lvl * 0.30)
-        intimidation = base + (lvl * 0.20)
-        if conq_unlocked:
-            strength += 2.0 + (conq_lvl * 0.08)
-            intimidation += 5.0 + (conq_lvl * 0.10)
+        # +1 per haki point in corresponding stats
+        attack_f = base_stat + float(arm)
+        defense_f = base_stat + float(arm)
+        speed_f = base_stat + float(obs)
+        dexterity_f = base_stat + float(obs)
+
+        conq_bonus = float(conq_lvl) if conq_unlocked else 0.0
+        strength_f = base_stat + conq_bonus
+        intimidation_f = base_stat + conq_bonus
 
         # Engine-relevant modifiers (keep aligned with battle_engine)
         obs_dodge_bonus = min(0.22, (obs / 500.0))
@@ -1596,12 +1606,23 @@ class CrewBattles(commands.Cog):
             "observation": obs,
             "conqueror_unlocked": conq_unlocked,
             "conqueror_level": conq_lvl,
-            "strength": int(round(strength)),
-            "attack": int(round(attack)),
-            "defense": int(round(defense)),
-            "speed": int(round(speed)),
-            "dexterity": int(round(dexterity)),
-            "intimidation": int(round(intimidation)),
+
+            # raw (decimals; now they’ll be .00)
+            "strength_f": float(strength_f),
+            "attack_f": float(attack_f),
+            "defense_f": float(defense_f),
+            "speed_f": float(speed_f),
+            "dexterity_f": float(dexterity_f),
+            "intimidation_f": float(intimidation_f),
+
+            # rounded (integers)
+            "strength": int(round(strength_f)),
+            "attack": int(round(attack_f)),
+            "defense": int(round(defense_f)),
+            "speed": int(round(speed_f)),
+            "dexterity": int(round(dexterity_f)),
+            "intimidation": int(round(intimidation_f)),
+
             "obs_dodge_bonus": float(obs_dodge_bonus),
             "arm_passive": int(arm_passive),
         }
@@ -1613,12 +1634,11 @@ class CrewBattles(commands.Cog):
         p = await self.players.get(member)
         s = self._combat_stats(p)
 
-        # HP is part of "combat stats" too
         max_hp = int(BASE_HP + int(s["level"]) * 6)
 
         e = discord.Embed(
             title="📊 Crew Battles — Combat Stats",
-            description=f"Stats for **{member.display_name}** (base stats start at 1; level/haki scale them).",
+            description=f"Stats for **{member.display_name}** (decimals update every point).",
             color=discord.Color.blurple(),
         )
         e.add_field(name="Core", value=f"Level: **{s['level']}**\nMax HP: **{max_hp}**", inline=True)
@@ -1632,23 +1652,25 @@ class CrewBattles(commands.Cog):
             ),
             inline=True,
         )
+
         e.add_field(
-            name="Derived RPG Stats",
+            name="Derived RPG Stats (raw)",
             value=(
-                f"Strength: **{s['strength']}**\n"
-                f"Attack: **{s['attack']}**\n"
-                f"Defense: **{s['defense']}**\n"
-                f"Speed: **{s['speed']}**\n"
-                f"Dexterity: **{s['dexterity']}**\n"
-                f"Intimidation: **{s['intimidation']}**"
+                f"Strength: **{s['strength_f']:.2f}**\n"
+                f"Attack: **{s['attack_f']:.2f}**\n"
+                f"Defense: **{s['defense_f']:.2f}**\n"
+                f"Speed: **{s['speed_f']:.2f}**\n"
+                f"Dexterity: **{s['dexterity_f']:.2f}**\n"
+                f"Intimidation: **{s['intimidation_f']:.2f}**"
             ),
             inline=False,
         )
+
         e.add_field(
             name="Battle Modifiers (engine-derived)",
             value=(
                 f"Observation dodge bonus: **+{s['obs_dodge_bonus']*100:.1f}%**\n"
-                f"Armament passive damage: **+{s['arm_passive']}**"
+                f"Armament passive damage: **+{s['arm_passive']}** (updates every 20 Armament)"
             ),
             inline=False,
         )
