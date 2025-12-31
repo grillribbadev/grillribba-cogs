@@ -28,17 +28,14 @@ MAX_BATTLE_COOLDOWN = 3600
 
 
 class CrewBattles(commands.Cog):
-    """Crew Battles – PvP battles with Devil Fruits, Teams & BeriCore integration"""
-
     def __init__(self, bot):
         self.bot = bot
-        # config for guild defaults
         self.config = Config.get_conf(self, identifier=0xC0A55EE, force_registration=True)
-        self.config.register_guild(**DEFAULT_GUILD)
-        # ensure global maintenance key exists
-        self.config.register_global(maintenance=False)
 
-        # managers
+        self.config.register_global(maintenance=False)
+        self.config.register_guild(**DEFAULT_GUILD)
+        self.config.register_user(**DEFAULT_USER)
+
         self.players = PlayerManager(self)
         self.fruits = FruitManager()
         self.teams = TeamsBridge(bot)

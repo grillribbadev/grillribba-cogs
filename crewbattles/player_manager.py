@@ -1,4 +1,7 @@
+import copy
+import discord
 from redbot.core import Config
+
 from .constants import DEFAULT_USER
 
 class PlayerManager:
@@ -10,73 +13,45 @@ class PlayerManager:
       - all() -> returns mapping of user_id -> dict (may be implementation-dependent)
     """
     def __init__(self, cog):
-        # unique identifier for storage; change if you need to reset storage
-        self._conf = Config.get_conf(cog, identifier=0xC0FFEE1234567890, force_registration=True)
-        self._conf.register_user(**DEFAULT_USER)
+        self.cog = cog
+        # Ensure this points at your cog Config user scope
+        # If you already have _conf, keep it; otherwise set it like below:
+        self._conf = cog.config
 
-    async def get(self, member):
-        data = await self._conf.user(member).all()
-        if not data:
-            # ensure shape
-            return dict(DEFAULT_USER)
-        # return shallow copy so callers mutate saved object explicitly
-        return dict(data)
-
-    async def save(self, member, data):
-        # ensure keys exist by merging with defaults
-        merged = dict(DEFAULT_USER)
-        merged.update(data or {})
-        await self._conf.user(member).set(merged)
-
-    async def all(self):
-        """
-        Return a mapping of user_id -> data dict.
-        Tries several Config internals (backwards compatible with multiple Red versions).
-        Falls back to {} if none are available.
-        """
-        # try several likely internal APIs
-        candidates = (
-            "_get_raw_data",  # older Red
-            "_get_all",       # some variants
-            "_raw",           # possible internal attr
-            "raw",            # less likely
-        )
-        for name in candidates:
-            fn = getattr(self._conf, name, None)
-            if not fn:
-                continue
-            try:
-                res = fn()
-            except TypeError:
-                # maybe it's an async method
-                try:
-                    res = await fn()
-                except Exception:
-                    continue
-            except Exception:
-                continue
-
-            if res is None:
-                continue
-            # If coroutine returned (rare), await it
-            if hasattr(res, "__await__"):
-                try:
-                    res = await res
-                except Exception:
-                    continue
-            # Expect a dict-like mapping of raw storage
-            if isinstance(res, dict):
-                return res
-
-        # Last-resort: try to read known users by retrieving all keys from the underlying store
+    async def get(self, user: discord.abc.User) -> dict:
+        """Get a user's data WITHOUT writing defaults back to storage."""
+        uid = getattr(user, "id", int(user))
         try:
-            if hasattr(self._conf, "_get_data"):
-                d = self._conf._get_data()
-                if hasattr(d, "__await__"):
-                    d = await d
-                if isinstance(d, dict):
-                    return d
+            stored = await self._conf.user_from_id(uid).all()
+        except Exception:
+            stored = None
+
+        # If nothing stored, return defaults (do NOT save here)
+        if not isinstance(stored, dict) or not stored:
+            return copy.deepcopy(DEFAULT_USER)
+
+        # Merge stored onto defaults safely (preserves existing values)
+        merged = copy.deepcopy(DEFAULT_USER)
+        merged.update(stored)
+
+        # Merge nested haki dict safely
+        merged_haki = copy.deepcopy(DEFAULT_USER.get("haki", {}))
+        try:
+            if isinstance(stored.get("haki"), dict):
+                merged_haki.update(stored["haki"])
         except Exception:
             pass
+        merged["haki"] = merged_haki
 
-        return {}
+        return merged
+
+    async def save(self, user: discord.abc.User, data: dict):
+        """Persist user data (deepcopy to avoid shared references)."""
+        uid = getattr(user, "id", int(user))
+        if not isinstance(data, dict):
+            data = copy.deepcopy(DEFAULT_USER)
+        await self._conf.user_from_id(uid).set(copy.deepcopy(data))
+
+    async def all(self) -> dict:
+        """Return raw all_users mapping (uid -> dict)."""
+        return await self._conf.all_users()
