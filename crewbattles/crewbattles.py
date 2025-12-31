@@ -326,12 +326,13 @@ class CrewBattles(commands.Cog):
     # ADMIN COMMANDS
     # =========================================================
 
-    @commands.group(name="cbadmin")
+    @commands.group(name="cbadmin", invoke_without_command=True)
     @commands.admin_or_permissions(administrator=True)
     async def cbadmin(self, ctx: commands.Context):
         """Admin commands for CrewBattles."""
+        # If no subcommand was invoked, show help exactly once.
         if ctx.invoked_subcommand is None:
-            return await ctx.send_help()
+            await ctx.send_help()
 
     @cbadmin.command(name="resetall", aliases=["wipeall", "wipeusers"])
     async def cbadmin_resetall(self, ctx: commands.Context, confirm: str = None):
