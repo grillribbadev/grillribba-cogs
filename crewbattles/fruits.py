@@ -2,10 +2,12 @@ from pathlib import Path
 import json
 import random
 
+# data file inside the cog folder (used as fallback)
 DATA = Path(__file__).parent / "data" / "fruits_cache.json"
 DATA.parent.mkdir(parents=True, exist_ok=True)
-if not DATA.exists():
-    DATA.write_text("[]", encoding="utf-8")
+
+# project-root fruits.json (one level up from the cog folder), used as primary persistent store
+ROOT = Path(__file__).resolve().parents[1] / "fruits.json"
 
 class FruitManager:
     def __init__(self):
@@ -13,25 +15,48 @@ class FruitManager:
         self._load()
 
     def _load(self):
-        try:
-            with DATA.open("r", encoding="utf-8") as fh:
-                self._data = json.load(fh) or []
-        except Exception:
-            self._data = []
+        # Prefer root fruits.json if it exists (keeps imports across reloads)
+        if ROOT.exists():
+            try:
+                with ROOT.open("r", encoding="utf-8") as fh:
+                    self._data = json.load(fh) or []
+                    return
+            except Exception:
+                # fall back to DATA
+                pass
+
+        # Fall back to cog-local data file
+        if DATA.exists():
+            try:
+                with DATA.open("r", encoding="utf-8") as fh:
+                    self._data = json.load(fh) or []
+                    return
+            except Exception:
+                pass
+
+        # default: empty list
+        self._data = []
 
     def _save(self):
+        # Always attempt to save both: root (if writable) and cog data file.
         try:
             with DATA.open("w", encoding="utf-8") as fh:
                 json.dump(self._data, fh, ensure_ascii=False, indent=2)
         except Exception:
             pass
 
+        try:
+            # attempt to write root file so imports survive reloads
+            with ROOT.open("w", encoding="utf-8") as fh:
+                json.dump(self._data, fh, ensure_ascii=False, indent=2)
+        except Exception:
+            # ignore permission errors; cog will still have DATA fallback
+            pass
+
     def all(self):
-        """Return list of all fruits (shallow copy)."""
         return list(self._data)
 
     def get(self, name: str):
-        """Case-insensitive lookup by name. Returns fruit dict or None."""
         if not name:
             return None
         nl = str(name).strip().lower()
@@ -41,13 +66,11 @@ class FruitManager:
         return None
 
     def random(self):
-        """Return a random fruit dict or None if no fruits."""
         if not self._data:
             return None
         return dict(random.choice(self._data))
 
     def add(self, name: str, ftype: str, bonus: int, price: int, stock=None, ability: str = ""):
-        """Add a new fruit (overwrites if same name exists)."""
         fruit = {
             "name": str(name),
             "type": str(ftype),
@@ -69,7 +92,6 @@ class FruitManager:
         return fruit
 
     def update(self, fruit: dict):
-        """Update an existing fruit by name. If not found, append."""
         if not fruit or "name" not in fruit:
             return
         name = str(fruit["name"]).strip().lower()
@@ -83,32 +105,20 @@ class FruitManager:
         return
 
     def import_json(self, json_obj):
-        """
-        Replace current shop with provided JSON data.
-        json_obj can be a list of fruit objects or a JSON string.
-        Each fruit must include: name, type, bonus, price, ability.
-        stock is optional (use null for unlimited).
-        """
-        # accept raw string
         if isinstance(json_obj, str):
-            try:
-                parsed = json.loads(json_obj)
-            except Exception as e:
-                raise ValueError(f"Invalid JSON: {e}")
+            parsed = json.loads(json_obj)
         else:
             parsed = json_obj
-
         if not isinstance(parsed, list):
-            raise ValueError("Imported JSON must be a list of fruit objects.")
-
-        new_list = []
+            raise ValueError("Import must be a list of fruit objects")
+        new = []
         for item in parsed:
             if not isinstance(item, dict):
                 continue
             name = item.get("name")
-            ftype = item.get("type") or item.get("ftype")
-            if not name or not ftype:
-                raise ValueError(f"Each fruit must include 'name' and 'type'. Problem: {item}")
+            typ = item.get("type") or item.get("ftype")
+            if not name or not typ:
+                raise ValueError("Each fruit must include 'name' and 'type'")
             bonus = int(item.get("bonus", 0))
             price = int(item.get("price", 0))
             stock = item.get("stock", None)
@@ -117,17 +127,15 @@ class FruitManager:
                     stock = int(stock)
                 except Exception:
                     stock = None
-            ability = str(item.get("ability", "") or "")  # special ability text
-            new_list.append({
+            ability = str(item.get("ability", "") or "")
+            new.append({
                 "name": str(name),
-                "type": str(ftype),
+                "type": str(typ),
                 "bonus": bonus,
                 "price": price,
                 "stock": stock,
                 "ability": ability,
             })
-
-        # override current shop
-        self._data = new_list
+        self._data = new
         self._save()
-        return len(new_list)
+        return len(new)
