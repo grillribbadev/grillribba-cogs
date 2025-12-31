@@ -897,6 +897,11 @@ class CrewBattles(commands.Cog):
         hp1 = int(max_hp1)
         hp2 = int(max_hp2)
         initial_log = "⚔️ Battle started!"
+
+        # Ensure these exist in the function scope so any path can't reference them before assignment
+        attack_default = "Attack"
+        crit = False
+
         msg = await ctx.reply(embed=battle_embed(ctx.author, opponent, hp1, hp2, max_hp1, max_hp2, initial_log))
 
         try:
