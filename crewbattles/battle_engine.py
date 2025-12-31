@@ -1,5 +1,5 @@
-import random
 from .constants import BASE_HP
+import random
 
 # small Flair
 ATTACKS = [
@@ -7,110 +7,208 @@ ATTACKS = [
     "King Cobra", "Hiken", "Shishi Sonson", "Rengoku", "Armament Strike",
     "Observation Stab", "Sky Walk Kick", "Elephant Gun"
 ]
-FLARE = ["🔥","⚡️","💥","✨","🌪️","🔪","🥊"]
 
-def _flair(name):
-    return f"{random.choice(FLARE)} {name} {random.choice(FLARE)}"
+# Haki-themed attacks (only used if the user actually has that haki unlocked/leveled)
+ARMAMENT_ATTACKS = [
+    "Armament Punch", "Armament Kick", "Armament Strike", "Black Fist", "Hardening Smash"
+]
+CONQUEROR_ATTACKS = [
+    "Conqueror's Burst", "Haoshoku Wave", "King's Pressure"
+]
 
-def simulate(p1, p2, fruits):
+def _haki_dict(p):
+    h = p.get("haki", {}) or {}
+    # normalize keys that your code uses
+    arm = int(h.get("armament", 0) or 0)
+    obs = int(h.get("observation", 0) or 0)
+    conq_unlocked = bool(h.get("conquerors"))
+    conq_lvl = int(h.get("conqueror", 0) or 0) if h.get("conqueror") is not None else 0
+    return arm, obs, conq_unlocked, conq_lvl
+
+def _fruit_bonus(fruits_mgr, fruit_name):
+    if not fruit_name:
+        return 0
+    try:
+        f = fruits_mgr.get(fruit_name)
+    except Exception:
+        f = None
+    if not f:
+        return 0
+    try:
+        return int(f.get("bonus", 0) or 0)
+    except Exception:
+        return 0
+
+def simulate(p1: dict, p2: dict, fruits_mgr):
     """
-    Lightweight deterministic-ish simulate used by the cog.
-    Returns (winner, turns, final_hp1, final_hp2)
-    turns: list of tuples (side, dmg, hp_after, attack_name, crit)
-    side: "p1" or "p2"
+    Returns:
+      winner: "p1" or "p2"
+      turns: list[(side, dmg, defender_hp_after, attack_name, crit)]
+      final_hp1, final_hp2
+    Notes:
+      - side == "p1" means p1 is the attacker and hp is p2's hp AFTER the hit
+      - side == "p2" means p2 is the attacker and hp is p1's hp AFTER the hit
+      - attack_name == "Dodged" triggers dodge text in your renderer
+      - attack_name contains "Frightened" triggers skip text in your renderer
     """
-    max_hp1 = BASE_HP + int(p1.get("level", 1)) * 6
-    max_hp2 = BASE_HP + int(p2.get("level", 1)) * 6
+    lvl1 = int(p1.get("level", 1) or 1)
+    lvl2 = int(p2.get("level", 1) or 1)
+
+    max_hp1 = int(BASE_HP + lvl1 * 6)
+    max_hp2 = int(BASE_HP + lvl2 * 6)
     hp1 = max_hp1
     hp2 = max_hp2
+
+    fruit1 = p1.get("fruit")
+    fruit2 = p2.get("fruit")
+    bonus1 = _fruit_bonus(fruits_mgr, fruit1)
+    bonus2 = _fruit_bonus(fruits_mgr, fruit2)
+
+    arm1, obs1, conq1, conq_lvl1 = _haki_dict(p1)
+    arm2, obs2, conq2, conq_lvl2 = _haki_dict(p2)
+
+    # status flags: if True, that player loses their next turn
+    frightened_1 = False
+    frightened_2 = False
+
     turns = []
+    attacker = "p1"
 
-    # state
-    conq_used = {"p1": False, "p2": False}
-    fruit_cd = {"p1": 0, "p2": 0}
-    consec_named = {"p1": 0, "p2": 0}
+    # cap turns to avoid infinite loops
+    for _ in range(200):
+        if hp1 <= 0 or hp2 <= 0:
+            break
 
-    current = "p1"
-    while hp1 > 0 and hp2 > 0:
-        attacker = p1 if current == "p1" else p2
-        defender = p2 if current == "p1" else p1
+        if attacker == "p1":
+            atk_p, def_p = p1, p2
+            atk_lvl, def_lvl = lvl1, lvl2
+            atk_bonus, def_bonus = bonus1, bonus2
+            atk_arm, atk_obs, atk_conq, atk_conq_lvl = arm1, obs1, conq1, conq_lvl1
+            def_arm, def_obs, def_conq, def_conq_lvl = arm2, obs2, conq2, conq_lvl2
+            # skip due to frightened
+            if frightened_1:
+                frightened_1 = False
+                turns.append(("p1", 0, hp2, "Frightened", False))
+                attacker = "p2"
+                continue
 
-        # decrement cooldowns
-        for k in fruit_cd:
-            if fruit_cd[k] > 0:
-                fruit_cd[k] -= 1
+            # defender dodge chance
+            base_dodge = 0.06  # regular dodge
+            obs_dodge = min(0.22, (def_obs / 500.0))  # up to +22% at 110-ish; obs max is 100 => +0.20
+            dodge_roll = random.random()
+            if dodge_roll < (base_dodge + obs_dodge):
+                turns.append(("p1", 0, hp2, "Dodged", False))
+                attacker = "p2"
+                continue
 
-        # base attack selection
-        # more frequent named attacks
-        named_prob = 0.45 + (int((attacker.get("haki") or {}).get("armament",0)) * 0.01)
-        named_prob = min(0.9, named_prob * (1.0 / (1.0 + consec_named[current]*0.35)))
-        use_named = random.random() < named_prob
+            # choose attack type/name (Haki attacks only if user has that haki)
+            crit = False
+            attack_name = random.choice(ATTACKS)
 
-        if use_named:
-            attack_name = _flair(random.choice(ATTACKS))
-            consec_named[current] += 1
-        else:
-            attack_name = random.choice(["Kick","Punch","Jab","Hit"])
-            consec_named[current] = 0
+            # Armament chance scales with armament level; only if armament > 0
+            arm_chance = min(0.40, atk_arm / 250.0) if atk_arm > 0 else 0.0
+            # Conqueror chance only if unlocked; scales mildly with conqueror level
+            conq_chance = (0.06 + min(0.12, atk_conq_lvl / 800.0)) if atk_conq else 0.0
 
-        # fruit ability as its own attack (if owned and off-cd)
-        fruit_obj = None
-        fname = (attacker.get("fruit") or "")
-        if fruits and fname:
-            fruit_obj = fruits.get(fname)
-        if fruit_obj and fruit_cd[current] == 0:
-            bonus = int(fruit_obj.get("bonus", 0))
-            chance = min(0.5, 0.15 + bonus*0.03)
-            if random.random() < chance:
-                ability = fruit_obj.get("ability","Ability")
-                attack_name = f"{ability} — {fruit_obj.get('name')}"
-                dmg = int(random.randint(12, 26) * (1 + bonus*0.01))
-                fruit_cd[current] = 3
-                markers = True
-            else:
-                markers = False
-        else:
-            markers = False
+            r = random.random()
+            if atk_conq and r < conq_chance:
+                attack_name = random.choice(CONQUEROR_ATTACKS)
+            elif atk_arm > 0 and r < (conq_chance + arm_chance):
+                attack_name = random.choice(ARMAMENT_ATTACKS)
 
-        # IMPORTANT: crit must always be defined each turn
-        crit = False
-        attack_name = "Attack"
+            # damage model (simple but flavorful)
+            base = random.randint(10, 18)
+            level_scale = int(atk_lvl * 0.9)
+            fruit_scale = int(atk_bonus * 1.2)
 
-        # base damage
-        if not markers:
-            dmg = random.randint(8, 18)
-            # haki armament bonus
-            arm = int((attacker.get("haki") or {}).get("armament", 0) or 0)
-            dmg = int(dmg * (1.0 + arm*0.01))
-            # conqueror possibility (only if unlocked)
-            if (attacker.get("haki") or {}).get("conquerors"):
-                if not conq_used[current] and random.random() < 0.06:
-                    dmg = int(dmg * 1.8)
-                    conq_used[current] = True
-                    attack_name = f"Conqueror's {attack_name} ⚡️"
-            # crit small chance
-            if random.random() < 0.06:
-                dmg = int(dmg * 1.5)
+            # armament adds damage when armament attack happens (and a smaller passive bump)
+            passive_arm = int(atk_arm / 20) if atk_arm > 0 else 0
+            arm_burst = int(atk_arm / 8) if attack_name in ARMAMENT_ATTACKS else 0
+
+            dmg = base + level_scale + fruit_scale + passive_arm + arm_burst
+
+            # crit
+            crit_chance = 0.10
+            if attack_name in ARMAMENT_ATTACKS:
+                crit_chance += 0.06
+            if random.random() < crit_chance:
                 crit = True
+                dmg = int(dmg * 1.5)
 
-        # defender observation dodge
-        d_obs = int((defender.get("haki") or {}).get("observation", 0) or 0)
-        dodge_chance = min(0.6, d_obs * 0.01)
-        if random.random() < dodge_chance:
-            turns.append((current, 0, hp2 if current=="p1" else hp1, "Dodged", False))
-            current = "p2" if current=="p1" else "p1"
+            # conqueror special: small chance to frighten defender (skip next turn)
+            if attack_name in CONQUEROR_ATTACKS:
+                # frighten chance
+                fright_chance = 0.25 + min(0.25, atk_conq_lvl / 400.0)  # 25%..50%
+                if random.random() < fright_chance:
+                    frightened_2 = True
+                # conqueror hits slightly harder
+                dmg = int(dmg * 1.15)
+
+            dmg = max(0, int(dmg))
+            hp2 = max(0, hp2 - dmg)
+            turns.append(("p1", dmg, hp2, attack_name, crit))
+            attacker = "p2"
             continue
 
-        # apply damage and append
-        if current == "p1":
-            hp2 = max(0, hp2 - int(dmg))
-            hp_after = hp2
-        else:
-            hp1 = max(0, hp1 - int(dmg))
-            hp_after = hp1
+        else:  # attacker == "p2"
+            atk_p, def_p = p2, p1
+            atk_lvl, def_lvl = lvl2, lvl1
+            atk_bonus, def_bonus = bonus2, bonus1
+            atk_arm, atk_obs, atk_conq, atk_conq_lvl = arm2, obs2, conq2, conq_lvl2
+            def_arm, def_obs, def_conq, def_conq_lvl = arm1, obs1, conq1, conq_lvl1
 
-        turns.append((current, int(dmg), int(hp_after), attack_name, bool(crit)))
-        current = "p2" if current == "p1" else "p1"
+            if frightened_2:
+                frightened_2 = False
+                turns.append(("p2", 0, hp1, "Frightened", False))
+                attacker = "p1"
+                continue
 
-    winner = "p1" if hp2 <= 0 and hp1 > 0 else ("p2" if hp1 <= 0 and hp2 > 0 else ("p1" if hp2<=0 else "p2"))
-    return winner, turns, max(0,int(hp1)), max(0,int(hp2))
+            base_dodge = 0.06
+            obs_dodge = min(0.22, (def_obs / 500.0))
+            if random.random() < (base_dodge + obs_dodge):
+                turns.append(("p2", 0, hp1, "Dodged", False))
+                attacker = "p1"
+                continue
+
+            crit = False
+            attack_name = random.choice(ATTACKS)
+
+            arm_chance = min(0.40, atk_arm / 250.0) if atk_arm > 0 else 0.0
+            conq_chance = (0.06 + min(0.12, atk_conq_lvl / 800.0)) if atk_conq else 0.0
+
+            r = random.random()
+            if atk_conq and r < conq_chance:
+                attack_name = random.choice(CONQUEROR_ATTACKS)
+            elif atk_arm > 0 and r < (conq_chance + arm_chance):
+                attack_name = random.choice(ARMAMENT_ATTACKS)
+
+            base = random.randint(10, 18)
+            level_scale = int(atk_lvl * 0.9)
+            fruit_scale = int(atk_bonus * 1.2)
+
+            passive_arm = int(atk_arm / 20) if atk_arm > 0 else 0
+            arm_burst = int(atk_arm / 8) if attack_name in ARMAMENT_ATTACKS else 0
+
+            dmg = base + level_scale + fruit_scale + passive_arm + arm_burst
+
+            crit_chance = 0.10
+            if attack_name in ARMAMENT_ATTACKS:
+                crit_chance += 0.06
+            if random.random() < crit_chance:
+                crit = True
+                dmg = int(dmg * 1.5)
+
+            if attack_name in CONQUEROR_ATTACKS:
+                fright_chance = 0.25 + min(0.25, atk_conq_lvl / 400.0)
+                if random.random() < fright_chance:
+                    frightened_1 = True
+                dmg = int(dmg * 1.15)
+
+            dmg = max(0, int(dmg))
+            hp1 = max(0, hp1 - dmg)
+            turns.append(("p2", dmg, hp1, attack_name, crit))
+            attacker = "p1"
+            continue
+
+    winner = "p1" if hp2 <= 0 and hp1 > 0 else "p2"
+    return winner, turns, hp1, hp2
