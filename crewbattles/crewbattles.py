@@ -741,6 +741,22 @@ class CrewBattles(commands.Cog):
 
         await ctx.reply(f"✅ Recalculated levels for stored users. Updated **{changed}** / **{total}** records.")
 
+    @cbadmin.command(name="storedcounts")
+    async def cbadmin_storedcounts(self, ctx: commands.Context):
+        """Show how many user records exist + how many are started."""
+        try:
+            all_users = await self.config.all_users()
+        except Exception as e:
+            return await ctx.reply(f"❌ Could not read storage: {e}")
+
+        total = len(all_users or {})
+        started = 0
+        for _, pdata in (all_users or {}).items():
+            if isinstance(pdata, dict) and pdata.get("started"):
+                started += 1
+
+        await ctx.reply(f"Stored user records: **{total}** | started=True: **{started}**")
+
     # =========================================================
     # PLAYER COMMANDS
     # =========================================================
