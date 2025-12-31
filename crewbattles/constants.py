@@ -8,7 +8,7 @@ DEFAULT_GUILD = {
     "beri_loss": 0,
     "exp_win": 10,
     "exp_loss": 2,
-    "crew_points_win": 0,
+    "crew_points_win": 1,  # points awarded to winner's team per win (set to 0 to disable)
     "haki_cost": 500,
     "haki_cooldown": 3600,
 }

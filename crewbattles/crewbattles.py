@@ -1152,7 +1152,18 @@ class CrewBattles(commands.Cog):
             )
             if winner_avatar:
                 res.set_thumbnail(url=winner_avatar)
-            res.add_field(name="Rewards", value=f"EXP: **+{int(g.get('exp_win', 0) or 0)}**\nBeri: **+{beri_win:,}**" if beri_ok_win else f"EXP: **+{int(g.get('exp_win', 0) or 0)}**\nBeri: **+{beri_win:,}** (FAILED)", inline=False)
+
+            exp_win = int(g.get("exp_win", 0) or 0)
+            rewards_lines = [f"EXP: **+{exp_win}**"]
+
+            if beri_win:
+                rewards_lines.append(f"Beri: **+{beri_win:,}**" if beri_ok_win else f"Beri: **+{beri_win:,}** (FAILED)")
+
+            # Only show crew points if enabled (>0)
+            if points and points > 0:
+                rewards_lines.append(f"Crew Points: **+{points}**" if ok else f"Crew Points: **+{points}** (FAILED)")
+
+            res.add_field(name="Rewards", value="\n".join(rewards_lines), inline=False)
             # show any level-ups
             level_lines = []
             try:
@@ -1387,6 +1398,19 @@ class CrewBattles(commands.Cog):
             return await ctx.reply("✅ Maintenance mode disabled. Crew Battles commands are available again.")
  
         await ctx.reply("❌ Usage: `.cbmaintenance on|off`")
+
+    @cbadmin.command(name="setcrewpointswin", aliases=["setcrewwinpoints", "setcrewpoints"])
+    async def setcrewpointswin(self, ctx, points: int):
+        """Set how many Teams points the winner's crew receives per win (0 disables)."""
+        try:
+            points = int(points)
+        except Exception:
+            return await ctx.reply("❌ Points must be an integer.")
+        if points < 0:
+            return await ctx.reply("❌ Points cannot be negative.")
+
+        await self.config.guild(ctx.guild).crew_points_win.set(points)
+        await ctx.reply(f"✅ Crew points per win set to **{points}** (0 = disabled).")
 
     # =========================================================
     # MAINTENANCE CHECK (must return True/False)
