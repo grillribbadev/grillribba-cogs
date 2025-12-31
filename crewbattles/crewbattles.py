@@ -5,8 +5,18 @@ import discord
 import math
 import copy
 import json
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+import asyncio
+import time
+import json
+import copy
+
+import discord
 from redbot.core import commands, Config
 from redbot.core import bank
+from redbot.core.data_manager import cog_data_path
 
 from .constants import DEFAULT_GUILD, DEFAULT_USER, BASE_HP, MAX_LEVEL
 from .player_manager import PlayerManager
@@ -43,359 +53,102 @@ class CrewBattles(commands.Cog):
         # one-battle-per-channel lock
         self._active_battles = set()
 
+        # periodic backups to disk
+        self._backup_task = self.bot.loop.create_task(self._periodic_backup())
+
     # =========================================================
-    # INTERNAL HELPERS
+    # BACKUPS (Config -> JSON on disk)
     # =========================================================
-    def _apply_exp(self, player: dict, gain: int) -> int:
-        """
-        Add EXP to a player dict, level up while thresholds are met.
-        Returns number of levels gained (0 if none).
-        Mutates player['exp'] and player['level'] (ensures ints).
-        """
-        try:
-            gain = int(gain or 0)
-        except Exception:
-            gain = 0
-        # normalize stored values to ints
-        try:
-            cur_level = int(player.get("level", 1) or 1)
-        except Exception:
-            cur_level = 1
-        try:
-            cur_exp = int(player.get("exp", 0) or 0)
-        except Exception:
-            cur_exp = 0
-        cur_exp += gain
-        leveled = 0
-        # loop until we can't level or hit MAX_LEVEL
-        while cur_level < MAX_LEVEL:
-            needed = exp_to_next(cur_level)
+    def _backup_dir(self) -> Path:
+        d = cog_data_path(self) / "backups"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    async def _write_backup(self, *, note: str = "") -> Path:
+        all_users = await self.config.all_users()
+        payload = {
+            "meta": {
+                "cog": "crewbattles",
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "note": note,
+                "count": len(all_users or {}),
+            },
+            "users": all_users or {},
+        }
+        fname = f"users_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.json"
+        path = self._backup_dir() / fname
+
+        def _sync_write():
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2, ensure_ascii=False)
+
+        await asyncio.to_thread(_sync_write)
+        return path
+
+    async def _periodic_backup(self):
+        await asyncio.sleep(30)
+        while True:
             try:
-                needed = int(needed)
-            except Exception:
-                break
-            if needed <= 0:
-                break
+                await self._write_backup(note="periodic")
+            except Exception as e:
+                print(f"[CrewBattles] periodic backup failed: {e}")
+            await asyncio.sleep(6 * 60 * 60)
 
-            if cur_exp >= needed:
-                cur_exp -= needed
-                cur_level += 1
-                leveled += 1
-            else:
-                break
-        # If at max level, clamp exp to one below next threshold for display
-        if cur_level >= MAX_LEVEL:
-            # keep some exp but not overflow; set to min(remaining, next-1) for consistency
+    async def _restore_backup(self, backup_path: Path) -> int:
+        def _sync_read():
+            with open(backup_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+
+        data = await asyncio.to_thread(_sync_read)
+        users = (data or {}).get("users") or {}
+        if not isinstance(users, dict):
+            raise ValueError("Backup file format invalid: users is not a dict")
+
+        restored = 0
+        for uid, pdata in users.items():
             try:
-                cur_exp = min(cur_exp, exp_to_next(cur_level) - 1)
+                uid_int = int(uid)
             except Exception:
-                cur_exp = 0
-        # ensure integers stored
-        player["level"] = int(cur_level)
-        player["exp"] = int(cur_exp)
-        return leveled
-
-    def _beri(self):
-        """Safe accessor for BeriCore cog (may be None)."""
-        return self.bot.get_cog("BeriCore")
-
-    async def _get_beri_balance(self, member: discord.abc.User) -> int:
-        """Get balance from BeriCore if available, else fallback to Red bank."""
-        core = self._beri()
-        if core:
-            for name in ("get_beri", "get_balance", "balance", "get"):
-                fn = getattr(core, name, None)
-                if not fn:
-                    continue
-                try:
-                    res = fn(member)
-                    if asyncio.iscoroutine(res):
-                        res = await res
-                    return int(res or 0)
-                except Exception as e:
-                    print(f"[CrewBattles] BeriCore.{name} failed: {e}")
-        # fallback: Red bank
-        try:
-            return int(await bank.get_balance(member))
-        except Exception as e:
-            print(f"[CrewBattles] bank.get_balance failed: {e}")
-            return 0
-
-    async def _add_beri(self, member: discord.abc.User, delta: int, reason: str = "") -> bool:
-        """Add/subtract Beri. Returns True if the operation succeeded."""
-        try:
-            delta = int(delta)
-        except Exception:
-            return False
-
-        core = self._beri()
-        if core:
-            # try common BeriCore signatures
-            candidates = ("add_beri", "add_balance", "change_balance", "add")
-            for name in candidates:
-                fn = getattr(core, name, None)
-                if not fn:
-                    continue
-                # try a few call shapes; some cogs accept reason/bypass_cap, some don't
-                for kwargs in (
-                    {"reason": reason, "bypass_cap": True},
-                    {"reason": reason},
-                    {},
-                ):
-                    try:
-                        res = fn(member, delta, **kwargs)
-                        if asyncio.iscoroutine(res):
-                            await res
-                        return True
-                    except TypeError:
-                        continue
-                    except Exception as e:
-                        print(f"[CrewBattles] BeriCore.{name} failed: {e}")
-                        continue
-
-        # fallback: Red bank deposit/withdraw
-        try:
-            if delta >= 0:
-                await bank.deposit_credits(member, delta)
-            else:
-                await bank.withdraw_credits(member, abs(delta))
-            return True
-        except Exception as e:
-            print(f"[CrewBattles] bank deposit/withdraw failed: {e}")
-            return False
-
-    async def _team_of(self, guild, member):
-        """
-        Return a normalized team identifier (string) for a member in a guild, or None.
-        - First tries the real 'Teams' cog structure (common implementation).
-        - Falls back to calling common bridge methods if available.
-        """
-        # 1) Direct Teams cog support (most reliable for your setup)
-        teams_cog = self.bot.get_cog("Teams")
-        if teams_cog:
-            try:
-                guild_map = getattr(teams_cog, "teams", None)
-                if isinstance(guild_map, dict):
-                    guild_teams = guild_map.get(guild.id, {}) or {}
-                    for team in guild_teams.values():
-                        # team.members may be a list of Member objects or member ids
-                        members = getattr(team, "members", None)
-                        if members:
-                            try:
-                                if member in members or member.id in members:
-                                    # prefer id/name/display_name
-                                    tid = getattr(team, "id", None) or getattr(team, "team_id", None) or getattr(team, "name", None) or getattr(team, "display_name", None)
-                                    return str(tid).strip().lower() if tid is not None else None
-                            except Exception:
-                                # fallback: iterate and compare ids
-                                for m in members:
-                                    try:
-                                        if (hasattr(m, "id") and m.id == member.id) or (isinstance(m, int) and m == member.id) or (isinstance(m, str) and str(m) == str(member.id)):
-                                            tid = getattr(team, "id", None) or getattr(team, "team_id", None) or getattr(team, "name", None) or getattr(team, "display_name", None)
-                                            return str(tid).strip().lower() if tid is not None else None
-                                    except Exception:
-                                        pass
-            except Exception:
-                pass
-
-        # 2) Fallback: try bridge-like methods on any bridge object (self.teams or other)
-        # Keep previous flexible approach but call real Teams cog first to avoid missed matches.
-        bridge_candidates = (self.teams, self.bot.get_cog("TeamsBridge"), self.bot.get_cog("Teams"))
-        tried = set()
-        async def _try_fn(fn, *args):
-            try:
-                res = fn(*args)
-            except TypeError:
-                return None
-            except Exception:
-                return None
-            if asyncio.iscoroutine(res):
-                try:
-                    res = await res
-                except Exception:
-                    return None
-            return res
-
-        def _normalize(res):
-            if res is None:
-                return None
-            if isinstance(res, dict):
-                for key in ("id", "team_id", "name", "team"):
-                    if key in res and res[key] is not None:
-                        return str(res[key]).strip().lower()
-                for v in res.values():
-                    if isinstance(v, (str, int)):
-                        return str(v).strip().lower()
-            if hasattr(res, "id") or hasattr(res, "name"):
-                val = getattr(res, "id", None) or getattr(res, "name", None)
-                return str(val).strip().lower() if val is not None else None
-            if isinstance(res, (list, tuple)) and len(res):
-                for item in res:
-                    if isinstance(item, (str, int)):
-                        return str(item).strip().lower()
-                    if hasattr(item, "id") or hasattr(item, "name"):
-                        v = getattr(item, "id", None) or getattr(item, "name", None)
-                        if v is not None:
-                            return str(v).strip().lower()
-            if isinstance(res, (str, int)):
-                return str(res).strip().lower()
-            return None
-
-        candidate_names = (
-            "get_team",
-            "get_member_team",
-            "get_team_of",
-            "member_team",
-            "team_of",
-            "get_team_for",
-            "get_member_team_async",
-            "fetch_member_team",
-        )
-        for bridge in bridge_candidates:
-            if not bridge:
                 continue
-            for name in candidate_names:
-                fn = getattr(bridge, name, None)
-                if not fn or (bridge, name) in tried:
-                    continue
-                tried.add((bridge, name))
-                # try multiple call signatures
-                for call_sig in (
-                    (guild, member),
-                    (guild, member.id),
-                    (guild.id, member),
-                    (guild.id, member.id),
-                    (member,),
-                    (member.id,),
-                ):
-                    res = await _try_fn(fn, *call_sig)
-                    val = _normalize(res)
-                    if val:
-                        return val
-
-        return None
-
-    @commands.command()
-    async def cbshop(self, ctx, page: int = 1):
-        """Show the devil fruit shop (paginated). Use .cbshop <page> to navigate."""
-        fruits = self.fruits.all()
-        if not fruits:
-            return await ctx.reply("🛒 The shop is currently empty.")
-
-        per_page = 10  # number of fruits per embed page (keeps fields well under 25)
-        total = len(fruits)
-        total_pages = max(1, math.ceil(total / per_page))
-        page = max(1, min(total_pages, int(page or 1)))
-
-        start = (page - 1) * per_page
-        end = start + per_page
-        slice_ = fruits[start:end]
-
-        embed = discord.Embed(
-            title=f"🍎 Devil Fruit Shop — Page {page}/{total_pages}",
-            color=discord.Color.gold(),
-            description=f"Showing {start + 1}-{min(end, total)} of {total} fruits. Use `.cbshop <page>` to view other pages."
-        )
-
-        for f in slice_:
-            name = f.get("name", "Unknown Fruit")
-            ftype = f.get("type", "Unknown")
-            bonus = f.get("bonus", 0)
-            price = f.get("price", 0)
-            stock = f.get("stock", None)
-            ability = f.get("ability", "") or "—"
-
-            stock_text = "Unlimited" if stock is None else str(stock)
-            value = (
-                f"Type: {ftype}\n"
-                f"Ability: {ability}\n"
-                f"Bonus: {bonus}\n"
-                f"Price: {price:,} Beri\n"
-                f"Stock: {stock_text}"
-            )
-            embed.add_field(name=name, value=value, inline=False)
-
-        await ctx.reply(embed=embed)
-
-    @commands.command()
-    async def cbbuy(self, ctx, *, fruit_name: str):
-        """Buy a Devil Fruit"""
-        p = await self.players.get(ctx.author)
-
-        if p.get("fruit"):
-            return await ctx.reply("❌ You already have a Devil Fruit. Remove it first.")
-
-        fruit = self.fruits.get(fruit_name)
-        if not fruit:
-            return await ctx.reply("❌ That Devil Fruit does not exist.")
-
-        stock = fruit.get("stock")
-        if stock is not None and stock <= 0:
-            return await ctx.reply("❌ That Devil Fruit is out of stock.")
-
-        price = fruit.get("price", 25000)
-        core = self._beri()
-        if not core:
-            return await ctx.reply("❌ Economy system unavailable.")
-
-        balance = await self._get_beri_balance(ctx.author)
-        if balance < price:
-            return await ctx.reply(f"❌ You need **{price:,} Beri** to buy this fruit.")
-
-        # Charge user (must succeed)
-        ok = await self._add_beri(ctx.author, -price, reason="shop:devil_fruit:purchase")
-        if not ok:
-            return await ctx.reply("❌ Purchase failed: economy system error (could not charge). Try again later.")
-
-        p["fruit"] = fruit.get("name")
-        await self.players.save(ctx.author, p)
-
-        await ctx.reply(
-            f"🍈 **{fruit['name']}** purchased successfully!\n"
-            f"💰 Spent **{price:,} Beri**"
-        )
-
-    @commands.command()
-    async def cbremovefruit(self, ctx):
-        """Remove your Devil Fruit (costs 5,000 Beri)"""
-        p = await self.players.get(ctx.author)
-
-        if not p.get("fruit"):
-            return await ctx.reply("❌ You do not have a Devil Fruit.")
-
-        cost = 5000
-        core = self._beri()
-        if not core:
-            return await ctx.reply("❌ Economy system unavailable.")
-
-        balance = await self._get_beri_balance(ctx.author)
-        if balance < cost:
-            return await ctx.reply(f"❌ You need **{cost:,} Beri** to remove your fruit.")
-
-        ok = await self._add_beri(ctx.author, -cost, reason="shop:devil_fruit:remove")
-        if not ok:
-            return await ctx.reply("❌ Remove failed: economy system error (could not charge). Try again later.")
-
-        old = p["fruit"]
-        p["fruit"] = None
-        await self.players.save(ctx.author, p)
-
-        await ctx.reply(
-            f"🗑️ Removed **{old}**\n"
-            f"💰 Cost: **{cost:,} Beri**"
-        )
+            if not isinstance(pdata, dict):
+                continue
+            await self.config.user_from_id(uid_int).set(pdata)
+            restored += 1
+        return restored
 
     # =========================================================
     # ADMIN COMMANDS
     # =========================================================
-
     @commands.group(name="cbadmin", invoke_without_command=True)
     @commands.admin_or_permissions(administrator=True)
     async def cbadmin(self, ctx: commands.Context):
-        """Admin commands for CrewBattles."""
-        # If no subcommand was invoked, show help exactly once.
         if ctx.invoked_subcommand is None:
             await ctx.send_help()
+
+    @cbadmin.command(name="backup")
+    async def cbadmin_backup(self, ctx: commands.Context):
+        async with ctx.typing():
+            path = await self._write_backup(note=f"manual by {ctx.author.id}")
+        await ctx.reply(f"✅ Backup written: `{path.name}`")
+
+    @cbadmin.command(name="restore")
+    async def cbadmin_restore(self, ctx: commands.Context, filename: str = None, confirm: str = None):
+        if not filename:
+            files = sorted([p.name for p in self._backup_dir().glob("users_*.json")])[-10:]
+            if not files:
+                return await ctx.reply("⚠️ No backup files found.")
+            return await ctx.reply("Available backups (latest 10):\n" + "\n".join(f"• `{n}`" for n in files))
+
+        if confirm != "confirm":
+            return await ctx.reply("❗ This will overwrite current stored user data. Run: `.cbadmin restore <filename> confirm`")
+
+        bp = self._backup_dir() / filename
+        if not bp.exists():
+            return await ctx.reply("❌ Backup file not found in the backups folder.")
+
+        async with ctx.typing():
+            restored = await self._restore_backup(bp)
+        await ctx.reply(f"✅ Restored **{restored}** user record(s) from `{bp.name}`")
 
     @cbadmin.command(name="resetall", aliases=["resetstarted", "resetplayers"])
     async def cbadmin_resetall(self, ctx: commands.Context, confirm: str = None):
@@ -407,6 +160,11 @@ class CrewBattles(commands.Cog):
             return await ctx.reply("❗ This will reset ALL STARTED players. Run: `.cbadmin resetall confirm`")
 
         async with ctx.typing():
+            # backup first
+            try:
+                await self._write_backup(note=f"pre-resetall by {ctx.author.id}")
+            except Exception as e:
+                return await ctx.reply(f"❌ Backup failed; aborting reset to be safe: {e}")
             try:
                 all_users = await self.players._conf.all_users()
             except Exception as e:
@@ -444,6 +202,11 @@ class CrewBattles(commands.Cog):
             return await ctx.reply("❗ HARD WIPE. Run: `.cbadmin wipeall confirm`")
 
         async with ctx.typing():
+            # backup first
+            try:
+                await self._write_backup(note=f"pre-wipeall by {ctx.author.id}")
+            except Exception as e:
+                return await ctx.reply(f"❌ Backup failed; aborting wipe to be safe: {e}")
             try:
                 all_users = await self.players._conf.all_users()
             except Exception as e:
@@ -758,31 +521,102 @@ class CrewBattles(commands.Cog):
         await ctx.reply(f"Stored user records: **{total}** | started=True: **{started}**")
 
     # =========================================================
+    # COMBAT STATS (FIXED: this was accidentally pasted into cbshop)
+    # =========================================================
+    def _combat_stats(self, p: dict) -> dict:
+        """
+        Rule:
+          - base stats scale with level: base_stat = level (lvl 1 => 1)
+          - +1 per haki point in the corresponding stats:
+              Armament -> Attack/Defense
+              Observation -> Speed/Dexterity
+              Conqueror (if unlocked) -> Strength/Intimidation
+        """
+        try:
+            lvl = int((p or {}).get("level", 1) or 1)
+        except Exception:
+            lvl = 1
+        lvl = max(1, lvl)
+
+        h = (p or {}).get("haki", {}) or {}
+        try:
+            arm = int(h.get("armament", 0) or 0)
+        except Exception:
+            arm = 0
+        try:
+            obs = int(h.get("observation", 0) or 0)
+        except Exception:
+            obs = 0
+
+        conq_unlocked = bool(h.get("conquerors"))
+        try:
+            conq_lvl = int(h.get("conqueror", 0) or 0)
+        except Exception:
+            conq_lvl = 0
+
+        arm = max(0, arm)
+        obs = max(0, obs)
+        conq_lvl = max(0, conq_lvl)
+
+        base_stat = float(lvl)
+
+        attack_f = base_stat + float(arm)
+        defense_f = base_stat + float(arm)
+        speed_f = base_stat + float(obs)
+        dexterity_f = base_stat + float(obs)
+
+        conq_bonus = float(conq_lvl) if conq_unlocked else 0.0
+        strength_f = base_stat + conq_bonus
+        intimidation_f = base_stat + conq_bonus
+
+        obs_dodge_bonus = min(0.22, (obs / 500.0))
+        arm_passive = arm // 20 if arm > 0 else 0
+
+        return {
+            "level": lvl,
+            "armament": arm,
+            "observation": obs,
+            "conqueror_unlocked": conq_unlocked,
+            "conqueror_level": conq_lvl,
+            "strength_f": float(strength_f),
+            "attack_f": float(attack_f),
+            "defense_f": float(defense_f),
+            "speed_f": float(speed_f),
+            "dexterity_f": float(dexterity_f),
+            "intimidation_f": float(intimidation_f),
+            "obs_dodge_bonus": float(obs_dodge_bonus),
+            "arm_passive": int(arm_passive),
+        }
+
+    # =========================================================
     # PLAYER COMMANDS
     # =========================================================
 
     @commands.command()
-    async def startcb(self, ctx):
-        p = await self.players.get(ctx.author)
-        if p["started"]:
-            return await ctx.reply("❌ You already started Crew Battles.")
+    async def cbshop(self, ctx, page: int = 1):
+        """Show the devil fruit shop."""
+        items = self.fruits.all()
+        if not items:
+            return await ctx.reply("🛒 Shop is empty.")
+        page = max(1, int(page or 1))
+        per = 8
+        start = (page - 1) * per
+        chunk = items[start : start + per]
+        if not chunk:
+            return await ctx.reply("🛒 That page is empty.")
 
-        fruit = self.fruits.random()
-        p["started"] = True
-        p["fruit"] = fruit["name"] if fruit else None
-
-        await self.players.save(ctx.author, p)
-
-        embed = discord.Embed(
-            title="🏴‍☠️ Journey Begun!",
-            color=discord.Color.gold(),
-            description=(
-                f"**Level:** 1\n"
-                f"**Devil Fruit:** {p['fruit'] or 'None'}\n\n"
-                "You can now battle using `.battle @user`"
-            ),
-        )
-        await ctx.reply(embed=embed)
+        e = discord.Embed(title="🛒 Devil Fruit Shop", color=discord.Color.gold())
+        lines = []
+        for f in chunk:
+            name = f.get("name", "Unknown")
+            price = int(f.get("price", 0) or 0)
+            bonus = int(f.get("bonus", 0) or 0)
+            stock = f.get("stock", None)
+            stock_txt = "∞" if stock is None else str(stock)
+            lines.append(f"• **{name}** — {price:,} Beri — Bonus +{bonus} — Stock: {stock_txt}")
+        e.description = "\n".join(lines)
+        e.set_footer(text=f"Page {page} • Buy: .cbbuy <fruit name>")
+        await ctx.reply(embed=e)
 
     @commands.command(name="cbprofile")
     async def cbprofile(self, ctx, member: discord.Member = None):
@@ -1620,134 +1454,812 @@ class CrewBattles(commands.Cog):
             pass
         return False
 
-    def _combat_stats(self, p: dict) -> dict:
+    def _apply_exp(self, player: dict, gain: int) -> int:
         """
-        Everyone starts at 1 in all stats.
-        Level + Haki increase derived stats.
-
-        Rule change:
-          - +1 stat per level (baseline)
-          - +1 stat per haki point in the corresponding stats:
-              Armament -> Attack/Defense
-              Observation -> Speed/Dexterity
-              Conqueror -> Strength/Intimidation (only if unlocked)
+        Add EXP to a player dict, level up while thresholds are met.
+        Returns number of levels gained (0 if none).
+        Mutates player['exp'] and player['level'] (ensures ints).
         """
         try:
-            lvl = int(p.get("level", 1) or 1)
+            gain = int(gain or 0)
         except Exception:
-            lvl = 1
-        lvl = max(1, lvl)
-
-        h = p.get("haki", {}) or {}
+            gain = 0
+        # normalize stored values to ints
         try:
-            arm = int(h.get("armament", 0) or 0)
+            cur_level = int(player.get("level", 1) or 1)
         except Exception:
-            arm = 0
+            cur_level = 1
         try:
-            obs = int(h.get("observation", 0) or 0)
+            cur_exp = int(player.get("exp", 0) or 0)
         except Exception:
-            obs = 0
+            cur_exp = 0
+        cur_exp += gain
+        leveled = 0
+        # loop until we can't level or hit MAX_LEVEL
+        while cur_level < MAX_LEVEL:
+            needed = exp_to_next(cur_level)
+            try:
+                needed = int(needed)
+            except Exception:
+                break
+            if needed <= 0:
+                break
 
-        conq_unlocked = bool(h.get("conquerors"))
+            if cur_exp >= needed:
+                cur_exp -= needed
+                cur_level += 1
+                leveled += 1
+            else:
+                break
+        # If at max level, clamp exp to one below next threshold for display
+        if cur_level >= MAX_LEVEL:
+            # keep some exp but not overflow; set to min(remaining, next-1) for consistency
+            try:
+                cur_exp = min(cur_exp, exp_to_next(cur_level) - 1)
+            except Exception:
+                cur_exp = 0
+        # ensure integers stored
+        player["level"] = int(cur_level)
+        player["exp"] = int(cur_exp)
+        return leveled
+
+    def _beri(self):
+        """Safe accessor for BeriCore cog (may be None)."""
+        return self.bot.get_cog("BeriCore")
+
+    async def _get_beri_balance(self, member: discord.abc.User) -> int:
+        """Get balance from BeriCore if available, else fallback to Red bank."""
+        core = self._beri()
+        if core:
+            for name in ("get_beri", "get_balance", "balance", "get"):
+                fn = getattr(core, name, None)
+                if not fn:
+                    continue
+                try:
+                    res = fn(member)
+                    if asyncio.iscoroutine(res):
+                        res = await res
+                    return int(res or 0)
+                except Exception as e:
+                    print(f"[CrewBattles] BeriCore.{name} failed: {e}")
+        # fallback: Red bank
         try:
-            conq_lvl = int(h.get("conqueror", 0) or 0)
+            return int(await bank.get_balance(member))
+        except Exception as e:
+            print(f"[CrewBattles] bank.get_balance failed: {e}")
+            return 0
+
+    async def _add_beri(self, member: discord.abc.User, delta: int, reason: str = "") -> bool:
+        """Add/subtract Beri. Returns True if the operation succeeded."""
+        try:
+            delta = int(delta)
         except Exception:
-            conq_lvl = 0
+            return False
 
-        arm = max(0, arm)
-        obs = max(0, obs)
-        conq_lvl = max(0, conq_lvl)
+        core = self._beri()
+        if core:
+            # try common BeriCore signatures
+            candidates = ("add_beri", "add_balance", "change_balance", "add")
+            for name in candidates:
+                fn = getattr(core, name, None)
+                if not fn:
+                    continue
+                # try a few call shapes; some cogs accept reason/bypass_cap, some don't
+                for kwargs in (
+                    {"reason": reason, "bypass_cap": True},
+                    {"reason": reason},
+                    {},
+                ):
+                    try:
+                        res = fn(member, delta, **kwargs)
+                        if asyncio.iscoroutine(res):
+                            await res
+                        return True
+                    except TypeError:
+                        continue
+                    except Exception as e:
+                        print(f"[CrewBattles] BeriCore.{name} failed: {e}")
+                        continue
 
-        # Base stats: level 1 => 1, level 2 => 2, etc.
-        base_stat = float(lvl)
+        # fallback: Red bank deposit/withdraw
+        try:
+            if delta >= 0:
+                await bank.deposit_credits(member, delta)
+            else:
+                await bank.withdraw_credits(member, abs(delta))
+            return True
+        except Exception as e:
+            print(f"[CrewBattles] bank deposit/withdraw failed: {e}")
+            return False
 
-        # +1 per haki point in corresponding stats
-        attack_f = base_stat + float(arm)
-        defense_f = base_stat + float(arm)
-        speed_f = base_stat + float(obs)
-        dexterity_f = base_stat + float(obs)
+    async def _team_of(self, guild, member):
+        """
+        Return a normalized team identifier (string) for a member in a guild, or None.
+        - First tries the real 'Teams' cog structure (common implementation).
+        - Falls back to calling common bridge methods if available.
+        """
+        # 1) Direct Teams cog support (most reliable for your setup)
+        teams_cog = self.bot.get_cog("Teams")
+        if teams_cog:
+            try:
+                guild_map = getattr(teams_cog, "teams", None)
+                if isinstance(guild_map, dict):
+                    guild_teams = guild_map.get(guild.id, {}) or {}
+                    for team in guild_teams.values():
+                        # team.members may be a list of Member objects or member ids
+                        members = getattr(team, "members", None)
+                        if members:
+                            try:
+                                if member in members or member.id in members:
+                                    # prefer id/name/display_name
+                                    tid = getattr(team, "id", None) or getattr(team, "team_id", None) or getattr(team, "name", None) or getattr(team, "display_name", None)
+                                    return str(tid).strip().lower() if tid is not None else None
+                            except Exception:
+                                # fallback: iterate and compare ids
+                                for m in members:
+                                    try:
+                                        if (hasattr(m, "id") and m.id == member.id) or (isinstance(m, int) and m == member.id) or (isinstance(m, str) and str(m) == str(member.id)):
+                                            tid = getattr(team, "id", None) or getattr(team, "team_id", None) or getattr(team, "name", None) or getattr(team, "display_name", None)
+                                            return str(tid).strip().lower() if tid is not None else None
+                                    except Exception:
+                                        pass
+            except Exception:
+                pass
 
-        conq_bonus = float(conq_lvl) if conq_unlocked else 0.0
-        strength_f = base_stat + conq_bonus
-        intimidation_f = base_stat + conq_bonus
+        # 2) Fallback: try bridge-like methods on any bridge object (self.teams or other)
+        # Keep previous flexible approach but call real Teams cog first to avoid missed matches.
+        bridge_candidates = (self.teams, self.bot.get_cog("TeamsBridge"), self.bot.get_cog("Teams"))
+        tried = set()
+        async def _try_fn(fn, *args):
+            try:
+                res = fn(*args)
+            except TypeError:
+                return None
+            except Exception:
+                return None
+            if asyncio.iscoroutine(res):
+                try:
+                    res = await res
+                except Exception:
+                    return None
+            return res
 
-        # Engine-relevant modifiers (keep aligned with battle_engine)
-        obs_dodge_bonus = min(0.22, (obs / 500.0))
-        arm_passive = arm // 20 if arm > 0 else 0
+        def _normalize(res):
+            if res is None:
+                return None
+            if isinstance(res, dict):
+                for key in ("id", "team_id", "name", "team"):
+                    if key in res and res[key] is not None:
+                        return str(res[key]).strip().lower()
+                for v in res.values():
+                    if isinstance(v, (str, int)):
+                        return str(v).strip().lower()
+            if hasattr(res, "id") or hasattr(res, "name"):
+                val = getattr(res, "id", None) or getattr(res, "name", None)
+                return str(val).strip().lower() if val is not None else None
+            if isinstance(res, (list, tuple)) and len(res):
+                for item in res:
+                    if isinstance(item, (str, int)):
+                        return str(item).strip().lower()
+                    if hasattr(item, "id") or hasattr(item, "name"):
+                        v = getattr(item, "id", None) or getattr(item, "name", None)
+                        if v is not None:
+                            return str(v).strip().lower()
+            if isinstance(res, (str, int)):
+                return str(res).strip().lower()
+            return None
 
-        return {
-            "level": lvl,
-            "armament": arm,
-            "observation": obs,
-            "conqueror_unlocked": conq_unlocked,
-            "conqueror_level": conq_lvl,
+        candidate_names = (
+            "get_team",
+            "get_member_team",
+            "get_team_of",
+            "member_team",
+            "team_of",
+            "get_team_for",
+            "get_member_team_async",
+            "fetch_member_team",
+        )
+        for bridge in bridge_candidates:
+            if not bridge:
+                continue
+            for name in candidate_names:
+                fn = getattr(bridge, name, None)
+                if not fn or (bridge, name) in tried:
+                    continue
+                tried.add((bridge, name))
+                # try multiple call signatures
+                for call_sig in (
+                    (guild, member),
+                    (guild, member.id),
+                    (guild.id, member),
+                    (guild.id, member.id),
+                    (member,),
+                    (member.id,),
+                ):
+                    res = await _try_fn(fn, *call_sig)
+                    val = _normalize(res)
+                    if val:
+                        return val
 
-            # raw (decimals; now they’ll be .00)
-            "strength_f": float(strength_f),
-            "attack_f": float(attack_f),
-            "defense_f": float(defense_f),
-            "speed_f": float(speed_f),
-            "dexterity_f": float(dexterity_f),
-            "intimidation_f": float(intimidation_f),
+        return None
 
-            # rounded (integers)
-            "strength": int(round(strength_f)),
-            "attack": int(round(attack_f)),
-            "defense": int(round(defense_f)),
-            "speed": int(round(speed_f)),
-            "dexterity": int(round(dexterity_f)),
-            "intimidation": int(round(intimidation_f)),
+    @commands.command()
+    async def cbshop(self, ctx, page: int = 1):
+        """Show the devil fruit shop."""
+        items = self.fruits.all()
+        if not items:
+            return await ctx.reply("🛒 Shop is empty.")
+        page = max(1, int(page or 1))
+        per = 8
+        start = (page - 1) * per
+        chunk = items[start : start + per]
+        if not chunk:
+            return await ctx.reply("🛒 That page is empty.")
 
-            "obs_dodge_bonus": float(obs_dodge_bonus),
-            "arm_passive": int(arm_passive),
-        }
-    
-    @commands.command(name="cbcombatstats")
-    async def cbcombatstats(self, ctx: commands.Context, member: discord.Member = None):
-        """Show derived combat stats (base 1 for everyone; scaled by level + haki)."""
+        e = discord.Embed(title="🛒 Devil Fruit Shop", color=discord.Color.gold())
+        lines = []
+        for f in chunk:
+            name = f.get("name", "Unknown")
+            price = int(f.get("price", 0) or 0)
+            bonus = int(f.get("bonus", 0) or 0)
+            stock = f.get("stock", None)
+            stock_txt = "∞" if stock is None else str(stock)
+            lines.append(f"• **{name}** — {price:,} Beri — Bonus +{bonus} — Stock: {stock_txt}")
+        e.description = "\n".join(lines)
+        e.set_footer(text=f"Page {page} • Buy: .cbbuy <fruit name>")
+        await ctx.reply(embed=e)
+
+    @commands.command(name="cbprofile")
+    async def cbprofile(self, ctx, member: discord.Member = None):
         member = member or ctx.author
         p = await self.players.get(member)
-        s = self._combat_stats(p)
 
-        max_hp = int(BASE_HP + int(s["level"]) * 6)
+        if not p["started"]:
+            return await ctx.reply("❌ This player has not started Crew Battles yet.")
 
-        e = discord.Embed(
-            title="📊 Crew Battles — Combat Stats",
-            description=f"Stats for **{member.display_name}** (decimals update every point).",
-            color=discord.Color.blurple(),
+        wins = p.get("wins", 0)
+        losses = p.get("losses", 0)
+        total = wins + losses
+        winrate = (wins / total * 100) if total else 0.0
+        haki = p.get("haki", {})
+
+        # small visual bar for haki values (0-100)
+        def _bar(value, max_value=100, length=12):
+            try:
+                v = int(value)
+            except Exception:
+                v = 0
+            v = max(0, min(v, max_value))
+            filled = int(v / max_value * length) if max_value else 0
+            return "█" * filled + "░" * (length - filled)
+
+        # fruit display (include basic details if available)
+        fruit_name = p.get("fruit") or "None"
+        fruit_detail = None
+        if p.get("fruit"):
+            try:
+                fruit_detail = self.fruits.get(fruit_name)
+            except Exception:
+                fruit_detail = None
+
+        if fruit_detail:
+            fruit_txt = f"{fruit_name} • {fruit_detail.get('type','').title()} • +{fruit_detail.get('bonus',0)}"
+        else:
+            fruit_txt = fruit_name
+
+        # build embed
+        embed = discord.Embed(
+            title=f"🏴‍☠️ {member.display_name}'s Crew Profile",
+            color=discord.Color.gold(),
+            timestamp=discord.utils.utcnow()
         )
-        e.add_field(name="Core", value=f"Level: **{s['level']}**\nMax HP: **{max_hp}**", inline=True)
-        e.add_field(
-            name="Haki",
-            value=(
-                f"Armament: **{s['armament']}**\n"
-                f"Observation: **{s['observation']}**\n"
-                f"Conqueror: **{'Unlocked' if s['conqueror_unlocked'] else 'Locked'}**"
-                + (f" (Lv **{s['conqueror_level']}**)" if s["conqueror_unlocked"] else "")
-            ),
-            inline=True,
-        )
 
-        e.add_field(
-            name="Derived RPG Stats (raw)",
+        # thumbnail (compatible with different discord.py versions)
+        try:
+            avatar_url = member.display_avatar.url
+        except Exception:
+            avatar_url = getattr(member, "avatar_url", None)
+        if avatar_url:
+            embed.set_thumbnail(url=avatar_url)
+
+        embed.add_field(
+            name="📊 Stats",
             value=(
-                f"Strength: **{s['strength_f']:.2f}**\n"
-                f"Attack: **{s['attack_f']:.2f}**\n"
-                f"Defense: **{s['defense_f']:.2f}**\n"
-                f"Speed: **{s['speed_f']:.2f}**\n"
-                f"Dexterity: **{s['dexterity_f']:.2f}**\n"
-                f"Intimidation: **{s['intimidation_f']:.2f}**"
+                f"**Level:** {p.get('level', 1)}  •  **EXP:** {p.get('exp', 0)}\n"
+                f"**Wins:** {wins}  •  **Losses:** {losses}  •  **Win Rate:** {winrate:.1f}%"
             ),
             inline=False,
         )
 
-        e.add_field(
-            name="Battle Modifiers (engine-derived)",
+        embed.add_field(
+            name="🍈 Devil Fruit",
+            value=fruit_txt,
+            inline=False,
+        )
+
+        arm = haki.get("armament", 0)
+        obs = haki.get("observation", 0)
+        conquer = "Unlocked ✅" if haki.get("conquerors") else "Locked ❌"
+
+        embed.add_field(
+            name="✨ Haki",
             value=(
-                f"Observation dodge bonus: **+{s['obs_dodge_bonus']*100:.1f}%**\n"
-                f"Armament passive damage: **+{s['arm_passive']}** (updates every 20 Armament)"
+                f"🛡 Armament: {arm} {_bar(arm)}\n"
+                f"👁 Observation: {obs} {_bar(obs)}\n"
+                f"👑 Conqueror’s: {conquer}"
             ),
             inline=False,
         )
 
-        await ctx.reply(embed=e)
+        embed.set_footer(text="Crew Battles • Progress is saved")
+        await ctx.reply(embed=embed)
+
+    @commands.command()
+    async def cbhaki(self, ctx, member: discord.Member = None):
+        """View a member's Haki stats"""
+        member = member or ctx.author
+        p = await self.players.get(member)
+        if not p.get("started"):
+            return await ctx.reply("❌ This player has not started Crew Battles yet.")
+        haki = p.get("haki", {}) or {}
+        arm = int(haki.get("armament", 0))
+        obs = int(haki.get("observation", 0))
+        conq_unlocked = bool(haki.get("conquerors"))
+        conq_lvl = int(haki.get("conqueror", 0)) if haki.get("conqueror") is not None else None
+
+        def _bar(value, max_value=100, length=12):
+            v = max(0, min(int(value or 0), max_value))
+            filled = int(v / max_value * length) if max_value else 0
+            return "█" * filled + "░" * (length - filled)
+
+        embed = discord.Embed(
+            title=f"✨ {member.display_name}'s Haki",
+            color=discord.Color.purple()
+        )
+
+        embed.add_field(
+            name="🛡 Armament",
+            value=f"{arm} / 100  { _bar(arm) }",
+            inline=False
+        )
+        embed.add_field(
+            name="👁 Observation",
+            value=f"{obs} / 100  { _bar(obs) }",
+            inline=False
+        )
+
+        conq_text = "Unlocked ✅" if conq_unlocked else "Locked ❌"
+        if conq_lvl is not None and conq_unlocked:
+            conq_text += f"  •  Level: {conq_lvl}/100"
+        embed.add_field(
+            name="👑 Conqueror",
+            value=conq_text,
+            inline=False
+        )
+
+        embed.set_footer(text="Train Haki with .cbtrainhaki — unlock Conqueror at level 10 (.cbunlockconqueror)")
+        await ctx.reply(embed=embed)
+
+
+    @commands.command()
+    async def cbtrainhaki(self, ctx, haki_type: str, points: int = 1):
+        """
+        Train Haki:
+        Usage: .cbtrainhaki <armament|observation|conqueror> [points]
+        """
+        haki_type = (haki_type or "").lower().strip()
+        if haki_type in ("conquerors", "conqueror's"):
+            haki_type = "conqueror"
+
+        if haki_type not in ("armament", "observation", "conqueror"):
+            return await ctx.reply("❌ Haki type must be one of: armament, observation, conqueror")
+
+        try:
+            points = max(1, int(points))
+        except Exception:
+            return await ctx.reply("❌ Points must be a positive integer.")
+
+        p = await self.players.get(ctx.author)
+        if not p.get("started"):
+            return await ctx.reply("❌ You must start Crew Battles first (.startcb).")
+
+        g = await self.config.guild(ctx.guild).all()
+        cost_per_point = int(g.get("haki_cost", HAKI_TRAIN_COST))
+        cooldown = int(g.get("haki_cooldown", HAKI_TRAIN_COOLDOWN))
+
+        last = int(p.get("last_haki_train", 0) or 0)
+        now = int(time.time())
+        if now - last < cooldown:
+            remaining = cooldown - (now - last)
+            return await ctx.reply(f"⏳ You must wait {remaining//60}m {remaining%60}s before training again.")
+
+        core = self._beri()
+        if not core:
+            return await ctx.reply("❌ Economy system unavailable.")
+
+        haki = p.get("haki", {}) or {}
+
+        if haki_type == "conqueror":
+            if not bool(haki.get("conquerors")):
+                return await ctx.reply("❌ You must unlock Conqueror's Haki first (.cbunlockconqueror).")
+            cur = int(haki.get("conqueror", 0))
+        else:
+            cur = int(haki.get(haki_type, 0))
+
+        new = min(100, cur + points)
+        actual = new - cur
+        if actual <= 0:
+            return await ctx.reply(f"⚠️ {haki_type.capitalize()} Haki is already at max (100).")
+
+        total_cost = cost_per_point * actual
+        balance = await core.get_beri(ctx.author)
+        if balance < total_cost:
+            return await ctx.reply(f"❌ You need **{total_cost:,} Beri** to train {actual} point(s).")
+
+        await core.add_beri(ctx.author, -total_cost, reason="haki:train", bypass_cap=True)
+        if haki_type == "conqueror":
+            haki["conqueror"] = new
+        else:
+            haki[haki_type] = new
+        p["haki"] = haki
+        p["last_haki_train"] = now
+        await self.players.save(ctx.author, p)
+
+        # nice embed reply
+        embed = discord.Embed(
+            title="✅ Haki Trained",
+            color=discord.Color.blue(),
+            description=f"Trained **{actual}** point(s) into **{haki_type.capitalize()}** Haki."
+        )
+        embed.add_field(name="New Value", value=f"**{new}** / 100", inline=True)
+        embed.add_field(name="Cost", value=f"**{total_cost:,} Beri**", inline=True)
+        embed.set_footer(text=f"Next training available in {cooldown//60} minutes")
+        await ctx.reply(embed=embed)
+
+
+    @commands.command()
+    async def cbtutorial(self, ctx):
+        """Show basic commands and how to play (non-staff)"""
+        embed = discord.Embed(
+            title="📘 Crew Battles — Quick Tutorial",
+            color=discord.Color.teal(),
+            description="Commands listed here are available to regular players."
+        )
+
+        embed.add_field(
+            name="Getting Started",
+            value=(
+                "• `.startcb` — begin your journey (gets you a random Devil Fruit)\n"
+                "• `.cbprofile [@member]` — view a crew profile (level/EXP, wins/losses, fruit, haki)\n"
+                "• `.cbcombatstats [@member]` — view derived combat stats (how level + haki affects you)"
+            ),
+            inline=False
+        )
+
+        embed.add_field(
+            name="Battling",
+            value=(
+                "• `.battle @user` — challenge another player to a duel\n"
+                "• `.cbleaderboard [wins|winrate|level|exp] [limit]` — view top players\n"
+                "Notes:\n"
+                "• Both players must have used `.startcb`\n"
+                "• If Teams is enabled, you can only fight players from other teams"
+            ),
+            inline=False
+        )
+
+        embed.add_field(
+            name="Devil Fruit Shop",
+            value=(
+                "• `.cbshop [page]` — view the Devil Fruit shop\n"
+                "• `.cbbuy <fruit name>` — buy a fruit from the shop (requires economy)\n"
+                "• `.cbremovefruit` — remove your fruit (costs Beri)"
+            ),
+            inline=False
+        )
+
+        embed.add_field(
+            name="Haki & Training",
+            value=(
+                "• `.cbhaki [@member]` — view Haki stats\n"
+                "• `.cbtrainhaki <armament|observation|conqueror> [points]` — train Haki (cost & cooldown apply)\n"
+                "• `.cbunlockconqueror` — unlock Conqueror’s Haki at level 10"
+            ),
+            inline=False
+        )
+
+        embed.set_footer(text="Tip: use .cbshop to browse fruits and .cbcombatstats to understand your build.")
+        await ctx.reply(embed=embed)
+
+    @commands.command(name="cbbattlecd", aliases=["cbcd", "cdbcooldown"])
+    async def cbbattlecd(self, ctx: commands.Context, seconds: int = None):
+        """
+        Set your personal battle cooldown (seconds).
+        Usage:
+          .cbbattlecd           -> shows your current cooldown
+          .cbbattlecd 120       -> sets to 120 seconds
+        Default is 60 seconds.
+        """
+        p = await self.players.get(ctx.author)
+        if not p.get("started"):
+            return await ctx.reply("❌ You must start Crew Battles first (.startcb).")
+
+        current = int(p.get("battle_cd", DEFAULT_BATTLE_COOLDOWN) or DEFAULT_BATTLE_COOLDOWN)
+        if seconds is None:
+            return await ctx.reply(f"⏱️ Your battle cooldown is **{current}** seconds.")
+
+        try:
+            seconds = int(seconds)
+        except Exception:
+            return await ctx.reply("❌ Cooldown must be an integer number of seconds.")
+
+        if seconds < MIN_BATTLE_COOLDOWN or seconds > MAX_BATTLE_COOLDOWN:
+            return await ctx.reply(
+                f"❌ Cooldown must be between **{MIN_BATTLE_COOLDOWN}** and **{MAX_BATTLE_COOLDOWN}** seconds."
+            )
+
+        p["battle_cd"] = seconds
+        await self.players.save(ctx.author, p)
+        await ctx.reply(f"✅ Your battle cooldown is now **{seconds}** seconds.")
+
+    @commands.command()
+    async def battle(self, ctx, opponent: discord.Member):
+        """Challenge another player to a battle"""
+        if ctx.author == opponent:
+            return await ctx.reply("❌ You cannot battle yourself.")
+
+        if opponent.bot:
+            return await ctx.reply("❌ You cannot battle bots.")
+
+        # Per-user cooldown check (both initiator and opponent)
+        now = int(time.time())
+        p1 = await self.players.get(ctx.author)
+        p2 = await self.players.get(opponent)
+
+        if not p1.get("started") or not p2.get("started"):
+            return await ctx.reply("❌ Both players must `.startcb` first.")
+
+        cd1 = int(p1.get("battle_cd", DEFAULT_BATTLE_COOLDOWN) or DEFAULT_BATTLE_COOLDOWN)
+        cd2 = int(p2.get("battle_cd", DEFAULT_BATTLE_COOLDOWN) or DEFAULT_BATTLE_COOLDOWN)
+        last1 = int(p1.get("last_battle", 0) or 0)
+        last2 = int(p2.get("last_battle", 0) or 0)
+
+        rem1 = (last1 + cd1) - now
+        if rem1 > 0:
+            return await ctx.reply(f"⏳ You must wait **{rem1}**s before starting another battle.")
+
+        rem2 = (last2 + cd2) - now
+        if rem2 > 0:
+            return await ctx.reply(f"⏳ {opponent.display_name} is on battle cooldown for **{rem2}**s.")
+
+        # Check if already in a battle
+        if ctx.channel.id in self._active_battles:
+            return await ctx.reply("❌ A battle is already in progress in this channel.")
+
+        # Stamp battle start time immediately (prevents spam/retry loops)
+        p1["last_battle"] = now
+        p2["last_battle"] = now
+        try:
+            await self.players.save(ctx.author, p1)
+        except Exception:
+            pass
+        try:
+            await self.players.save(opponent, p2)
+        except Exception:
+            pass
+
+        # Enforce cross-team-only duels when team info is available
+        try:
+            t1 = await self._team_of(ctx.guild, ctx.author)
+            t2 = await self._team_of(ctx.guild, opponent)
+        except Exception:
+            t1 = t2 = None
+        # only block if both players have a team and it's the same
+        if t1 is not None and t2 is not None and t1 == t2:
+            return await ctx.reply("❌ You can only challenge players from other teams.")
+
+        # Mark channel as busy
+        self._active_battles.add(ctx.channel.id)
+
+        # Prepare battle data
+        battle_data = {
+            "channel": ctx.channel,
+            "player1": ctx.author,
+            "player2": opponent,
+            "fruits": [p1.get("fruit"), p2.get("fruit")],
+            "teams": [p1.get("team"), p2.get("team")],
+            "haki": [p1.get("haki"), p2.get("haki")],
+            "players": [p1, p2],
+            "turn_delay": 5,  # seconds
+            "last_action": [0, 0],  # timestamps
+            "log": [],  # battle log
+        }
+
+        # Start the battle loop
+        await ctx.reply(f"⚔️ **{ctx.author.display_name}** has challenged **{opponent.display_name}**!")
+        # build a proper initial embed and create the single message we'll edit each turn
+        max_hp1 = BASE_HP + int(p1.get("level", 1)) * 6
+        max_hp2 = BASE_HP + int(p2.get("level", 1)) * 6
+        hp1 = int(max_hp1)
+        hp2 = int(max_hp2)
+        initial_log = "⚔️ Battle started!"
+
+        # Ensure these exist in the function scope so any path can't reference them before assignment
+        attack_default = "Attack"
+        crit = False
+
+        msg = await ctx.reply(embed=battle_embed(ctx.author, opponent, hp1, hp2, max_hp1, max_hp2, initial_log))
+
+        try:
+            # Run deterministic simulation and iterate its turns (shows abilities/haki)
+            winner, turns, final_hp1, final_hp2 = simulate(p1, p2, self.fruits)
+
+            # (msg already created above) reuse it for per-turn edits
+            delay = await self.config.guild(ctx.guild).turn_delay()
+            battle_log = []
+
+            # safe defaults in outer scope
+            attack_default = "Attack"
+            crit = False
+
+            for turn in turns:
+                # start each turn with safe defaults
+                attack = attack_default
+                crit = False
+
+                # flexible unpack with safe fallbacks
+                if isinstance(turn, (list, tuple)):
+                    side = str(turn[0]) if len(turn) > 0 else "p1"
+                    try:
+                        dmg = int(turn[1]) if len(turn) > 1 else 0
+                    except Exception:
+                        dmg = 0
+                    try:
+                        hp = int(turn[2]) if len(turn) > 2 else (hp2 if side == "p1" else hp1)
+                    except Exception:
+                        hp = (hp2 if side == "p1" else hp1)
+                    if len(turn) > 3 and turn[3] is not None:
+                        attack = str(turn[3])
+                    if len(turn) > 4:
+                        crit = bool(turn[4])
+                else:
+                    side, dmg, hp = "p1", 0, (hp2 if "hp2" in locals() else 0)
+
+                # apply hp update from engine's hp value
+                await asyncio.sleep(max(0.1, float(delay or 1)))
+                if side == "p1":
+                    hp2 = int(hp)
+                    actor_user = ctx.author
+                    defender_user = opponent
+                    actor_p = p1
+                    defender_p = p2
+                else:
+                    hp1 = int(hp)
+                    actor_user = opponent
+                    defender_user = ctx.author
+                    actor_p = p2
+                    defender_p = p1
+
+                attack_str = str(attack or "")
+
+                # nicer human-friendly events
+                if "Frightened" in attack_str:
+                    line = f"😨 **{actor_user.display_name}** was frightened and skipped their turn!"
+                elif "Dodged" in attack_str or attack_str.strip().lower() == "dodged":
+                    obs_val = int((defender_p.get("haki") or {}).get("observation", 0))
+                    if obs_val > 0:
+                        line = f"👁️ **{defender_user.display_name}** used Observation Haki and dodged!"
+                    else:
+                        line = f"🛡️ **{defender_user.display_name}** dodged the attack!"
+                else:
+                    crit_txt = " 💥 **CRITICAL HIT!**" if crit else ""
+                    if int(dmg) <= 0:
+                        line = f"⚔️ **{actor_user.display_name}** attacked with **{attack_str}** but it dealt no damage.{crit_txt}"
+                    else:
+                        line = f"⚔️ **{actor_user.display_name}** used **{attack_str}** and dealt **{int(dmg)}** damage!{crit_txt}"
+
+                battle_log.append(line)
+                log_text = "\n".join(battle_log[-6:])
+
+                await msg.edit(embed=battle_embed(ctx.author, opponent, hp1, hp2, max_hp1, max_hp2, log_text))
+
+            # apply results/stats/rewards
+            g = await self.config.guild(ctx.guild).all()
+            winner_user = ctx.author if winner == "p1" else opponent
+            loser_user = opponent if winner == "p1" else ctx.author
+            winner_p = p1 if winner == "p1" else p2
+            loser_p = p2 if winner == "p1" else p1
+
+            # record wins/losses
+            winner_p["wins"] = winner_p.get("wins", 0) + 1
+            loser_p["losses"] = loser_p.get("losses", 0) + 1
+
+            # EXP gains (use ranges; fallback to exp_win/exp_loss if ranges missing)
+            win_min = int(g.get("exp_win_min", g.get("exp_win", 0)) or 0)
+            win_max = int(g.get("exp_win_max", g.get("exp_win", 0)) or 0)
+            loss_min = int(g.get("exp_loss_min", g.get("exp_loss", 0)) or 0)
+            loss_max = int(g.get("exp_loss_max", g.get("exp_loss", 0)) or 0)
+
+            win_gain = random.randint(min(win_min, win_max), max(win_min, win_max)) if max(win_min, win_max) > 0 else 0
+            loss_gain = random.randint(min(loss_min, loss_max), max(loss_min, loss_max)) if max(loss_min, loss_max) > 0 else 0
+
+            leveled_w = self._apply_exp(winner_p, win_gain)
+            leveled_l = self._apply_exp(loser_p, loss_gain)
+
+            # persist both player records using explicit winner/loser mapping
+            try:
+                await self.players.save(winner_user, winner_p)
+            except Exception:
+                # best-effort fallback
+                await self.players.save(ctx.author, p1)
+            try:
+                await self.players.save(loser_user, loser_p)
+            except Exception:
+                await self.players.save(opponent, p2)
+
+            # beri rewards (if BeriCore present)
+            beri_win = int(g.get("beri_win", 0) or 0)
+            beri_loss = int(g.get("beri_loss", 0) or 0)
+            beri_ok_win = True
+            beri_ok_loss = True
+            if beri_win:
+                beri_ok_win = await self._add_beri(winner_user, beri_win, reason="pvp:crew_battle:win")
+            if beri_loss:
+                beri_ok_loss = await self._add_beri(loser_user, beri_loss, reason="pvp:crew_battle:loss")
+
+            # Teams points for winner (best-effort)
+            try:
+                points = int(g.get("crew_points_win", 1) or 1)
+            except Exception:
+                points = 1
+            try:
+                ok = await self.teams.award_win(ctx, winner_user, points)
+                if not ok:
+                    print(f"[CrewBattles] Teams points NOT awarded for win (winner={winner_user.id}, points={points}).")
+            except Exception as e:
+                print(f"[CrewBattles] Teams award_win crashed: {e}")
+
+            # final result embed
+            try:
+                winner_avatar = getattr(winner_user.display_avatar, "url", None) if hasattr(winner_user, "display_avatar") else getattr(winner_user, "avatar_url", None)
+            except Exception:
+                winner_avatar = None
+
+            res = discord.Embed(
+                title="🏆 Crew Battle Result",
+                description=f"**{winner_user.display_name}** defeated **{loser_user.display_name}**",
+                color=discord.Color.green()
+            )
+            if winner_avatar:
+                res.set_thumbnail(url=winner_avatar)
+
+            exp_win = int(g.get("exp_win", 0) or 0)
+            rewards_lines = [f"EXP: **+{win_gain}**"]
+
+            if beri_win:
+                rewards_lines.append(f"Beri: **+{beri_win:,}**" if beri_ok_win else f"Beri: **+{beri_win:,}** (FAILED)")
+
+            # Only show crew points if enabled (>0)
+            if points and points > 0:
+                rewards_lines.append(f"Crew Points: **+{points}**" if ok else f"Crew Points: **+{points}** (FAILED)")
+
+            res.add_field(name="Rewards", value="\n".join(rewards_lines), inline=False)
+            # show any level-ups
+            level_lines = []
+            try:
+                if leveled_w:
+                    level_lines.append(f"🏅 **{winner_user.display_name}** leveled up +{leveled_w} → Level {winner_p.get('level')}")
+                if leveled_l:
+                    level_lines.append(f"🔰 **{loser_user.display_name}** leveled up +{leveled_l} → Level {loser_p.get('level')}")
+                if level_lines:
+                    res.add_field(name="Level Ups", value="\n".join(level_lines), inline=False)
+            except Exception:
+                pass
+            res.set_footer(text="Crew Battles • Results")
+            await ctx.reply(embed=res)
+
+        except Exception as e:
+            await ctx.reply(f"❌ Battle error: {e}")
+        finally:
+            # always free the channel lock
+            self._active_battles.discard(ctx.channel.id)
