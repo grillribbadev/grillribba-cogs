@@ -1033,6 +1033,37 @@ class CrewBattles(commands.Cog):
         embed.set_footer(text="Tip: use .cbshop to browse fruits and .cbcombatstats to understand your build.")
         await ctx.reply(embed=embed)
 
+    @commands.command(name="cbbattlecd", aliases=["cbcd", "cdbcooldown"])
+    async def cbbattlecd(self, ctx: commands.Context, seconds: int = None):
+        """
+        Set your personal battle cooldown (seconds).
+        Usage:
+          .cbbattlecd           -> shows your current cooldown
+          .cbbattlecd 120       -> sets to 120 seconds
+        Default is 60 seconds.
+        """
+        p = await self.players.get(ctx.author)
+        if not p.get("started"):
+            return await ctx.reply("❌ You must start Crew Battles first (.startcb).")
+
+        current = int(p.get("battle_cd", DEFAULT_BATTLE_COOLDOWN) or DEFAULT_BATTLE_COOLDOWN)
+        if seconds is None:
+            return await ctx.reply(f"⏱️ Your battle cooldown is **{current}** seconds.")
+
+        try:
+            seconds = int(seconds)
+        except Exception:
+            return await ctx.reply("❌ Cooldown must be an integer number of seconds.")
+
+        if seconds < MIN_BATTLE_COOLDOWN or seconds > MAX_BATTLE_COOLDOWN:
+            return await ctx.reply(
+                f"❌ Cooldown must be between **{MIN_BATTLE_COOLDOWN}** and **{MAX_BATTLE_COOLDOWN}** seconds."
+            )
+
+        p["battle_cd"] = seconds
+        await self.players.save(ctx.author, p)
+        await ctx.reply(f"✅ Your battle cooldown is now **{seconds}** seconds.")
+
     @commands.command()
     async def battle(self, ctx, opponent: discord.Member):
         """Challenge another player to a battle"""
