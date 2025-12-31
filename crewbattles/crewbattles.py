@@ -1548,34 +1548,46 @@ class CrewBattles(commands.Cog):
     def _combat_stats(self, p: dict) -> dict:
         """
         Everyone starts at 1 in all stats.
-        Level + Haki increase derived stats (no per-user stat storage required).
-          - Armament -> Attack/Defense
-          - Observation -> Speed/Dexterity
-          - Conqueror -> Intimidation/Strength
+        Level + Haki increase derived stats.
+        This version uses smooth scaling so gains show up immediately.
         """
-        lvl = int(p.get("level", 1) or 1)
+        try:
+            lvl = int(p.get("level", 1) or 1)
+        except Exception:
+            lvl = 1
+
         h = p.get("haki", {}) or {}
-        arm = int(h.get("armament", 0) or 0)
-        obs = int(h.get("observation", 0) or 0)
+        try:
+            arm = int(h.get("armament", 0) or 0)
+        except Exception:
+            arm = 0
+        try:
+            obs = int(h.get("observation", 0) or 0)
+        except Exception:
+            obs = 0
+
         conq_unlocked = bool(h.get("conquerors"))
-        conq_lvl = int(h.get("conqueror", 0) or 0) if h.get("conqueror") is not None else 0
+        try:
+            conq_lvl = int(h.get("conqueror", 0) or 0)
+        except Exception:
+            conq_lvl = 0
 
-        base = 1
-        level_scale_a = lvl // 4
-        level_scale_b = lvl // 5
-        level_scale_c = lvl // 6
+        base = 1.0
 
-        strength = base + level_scale_b + ((conq_lvl // 10) if conq_unlocked else 0)
-        attack = base + level_scale_a + (arm // 5)
-        defense = base + level_scale_a + (arm // 6)
-        speed = base + level_scale_b + (obs // 5)
-        dexterity = base + level_scale_b + (obs // 6)
-        intimidation = base + level_scale_c + ((10 + (conq_lvl // 5)) if conq_unlocked else 0)
+        # Smooth scaling (tweak freely)
+        attack = base + (lvl * 0.40) + (arm * 0.08)
+        defense = base + (lvl * 0.35) + (arm * 0.06)
+        speed = base + (lvl * 0.25) + (obs * 0.08)
+        dexterity = base + (lvl * 0.25) + (obs * 0.06)
 
-        # expose a couple battle-relevant derived modifiers (matches battle_engine style)
-        # defender dodge bonus from observation (0..0.22)
+        strength = base + (lvl * 0.30)
+        intimidation = base + (lvl * 0.20)
+        if conq_unlocked:
+            strength += 2.0 + (conq_lvl * 0.08)
+            intimidation += 5.0 + (conq_lvl * 0.10)
+
+        # Engine-relevant modifiers (keep aligned with battle_engine)
         obs_dodge_bonus = min(0.22, (obs / 500.0))
-        # armament passive damage bump used by engine (arm/20)
         arm_passive = arm // 20 if arm > 0 else 0
 
         return {
@@ -1584,12 +1596,12 @@ class CrewBattles(commands.Cog):
             "observation": obs,
             "conqueror_unlocked": conq_unlocked,
             "conqueror_level": conq_lvl,
-            "strength": int(strength),
-            "attack": int(attack),
-            "defense": int(defense),
-            "speed": int(speed),
-            "dexterity": int(dexterity),
-            "intimidation": int(intimidation),
+            "strength": int(round(strength)),
+            "attack": int(round(attack)),
+            "defense": int(round(defense)),
+            "speed": int(round(speed)),
+            "dexterity": int(round(dexterity)),
+            "intimidation": int(round(intimidation)),
             "obs_dodge_bonus": float(obs_dodge_bonus),
             "arm_passive": int(arm_passive),
         }

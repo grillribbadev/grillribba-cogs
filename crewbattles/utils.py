@@ -8,6 +8,8 @@ def exp_to_next(level: int) -> int:
         lvl = int(level)
     except Exception:
         lvl = 1
+
     if lvl >= MAX_LEVEL:
         return 0
-    return EXP_PER_LEVEL
+
+    return int(EXP_PER_LEVEL)
