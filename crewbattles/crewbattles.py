@@ -1127,6 +1127,18 @@ class CrewBattles(commands.Cog):
             if beri_loss:
                 beri_ok_loss = await self._add_beri(loser_user, beri_loss, reason="pvp:crew_battle:loss")
 
+            # Teams points for winner (best-effort)
+            try:
+                points = int(g.get("crew_points_win", 1) or 1)
+            except Exception:
+                points = 1
+            try:
+                ok = await self.teams.award_win(ctx, winner_user, points)
+                if not ok:
+                    print(f"[CrewBattles] Teams points NOT awarded for win (winner={winner_user.id}, points={points}).")
+            except Exception as e:
+                print(f"[CrewBattles] Teams award_win crashed: {e}")
+
             # final result embed
             try:
                 winner_avatar = getattr(winner_user.display_avatar, "url", None) if hasattr(winner_user, "display_avatar") else getattr(winner_user, "avatar_url", None)
