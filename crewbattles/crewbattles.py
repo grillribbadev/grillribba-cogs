@@ -592,6 +592,51 @@ class CrewBattles(commands.Cog):
     # PLAYER COMMANDS
     # =========================================================
 
+    @commands.command(name="startcb")
+    async def startcb(self, ctx: commands.Context):
+        """Start Crew Battles and initialize your profile (gives a random starter fruit)."""
+        p = await self.players.get(ctx.author)
+        if p.get("started"):
+            return await ctx.reply("✅ You have already started Crew Battles. Use `.cbprofile` to view your profile.")
+
+        # Initialize baseline profile (preserve DEFAULT_USER shape if present)
+        p = copy.deepcopy(DEFAULT_USER)
+        p["started"] = True
+        p["level"] = int(p.get("level", 1) or 1)
+        p["exp"] = int(p.get("exp", 0) or 0)
+        p["wins"] = int(p.get("wins", 0) or 0)
+        p["losses"] = int(p.get("losses", 0) or 0)
+
+        # Ensure haki dict exists
+        if not isinstance(p.get("haki"), dict):
+            p["haki"] = {"armament": 0, "observation": 0, "conquerors": False, "conqueror": 0}
+
+        # Give a random starter fruit (does NOT affect shop stock)
+        fruit_name = None
+        try:
+            items = self.fruits.all() or []
+            if items:
+                pick = random.choice(items)
+                fruit_name = pick.get("name") if isinstance(pick, dict) else None
+        except Exception:
+            fruit_name = None
+
+        p["fruit"] = fruit_name
+
+        await self.players.save(ctx.author, p)
+
+        if fruit_name:
+            return await ctx.reply(
+                f"🏴‍☠️ **{ctx.author.display_name}** has started Crew Battles!\n"
+                f"🍈 Starter Devil Fruit: **{fruit_name}**\n"
+                f"Use `.cbprofile` to view your profile."
+            )
+        return await ctx.reply(
+            f"🏴‍☠️ **{ctx.author.display_name}** has started Crew Battles!\n"
+            f"(No fruits available to grant right now.)\n"
+            f"Use `.cbprofile` to view your profile."
+        )
+
     @commands.command()
     async def cbshop(self, ctx, page: int = 1):
         """Show the devil fruit shop."""
