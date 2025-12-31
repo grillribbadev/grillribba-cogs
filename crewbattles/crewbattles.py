@@ -7,6 +7,7 @@ import copy
 import json
 from redbot.core import commands, Config
 
+
 from .constants import DEFAULT_GUILD, DEFAULT_USER, BASE_HP, MAX_LEVEL
 from .player_manager import PlayerManager
 from .fruits import FruitManager
@@ -325,11 +326,38 @@ class CrewBattles(commands.Cog):
     # ADMIN COMMANDS
     # =========================================================
 
-    @commands.group()
-    @commands.admin()
-    async def cbadmin(self, ctx):
-        """Crew Battles admin commands"""
-        pass
+    @commands.group(name="cbadmin")
+    @commands.admin_or_permissions(administrator=True)
+    async def cbadmin(self, ctx: commands.Context):
+        """Admin commands for CrewBattles."""
+        if ctx.invoked_subcommand is None:
+            await ctx.reply("Use `.help cbadmin` to see admin subcommands.")
+
+    @cbadmin.command(name="resetall", aliases=["resetalldata", "resetallusers"])
+    async def cbadmin_resetall(self, ctx: commands.Context, confirm: str = None):
+        """
+        Reset ALL users' CrewBattles data.
+        Usage: .cbadmin resetall confirm
+        """
+        if confirm != "confirm":
+            return await ctx.reply("❗ This will reset ALL player data. Run: `.cbadmin resetall confirm`")
+
+        # Prefer scanning guild members (reliable) and reset only those who started.
+        count = 0
+        for member in ctx.guild.members:
+            try:
+                pdata = await self.players.get(member)
+            except Exception:
+                continue
+            if not (pdata or {}).get("started"):
+                continue
+            try:
+                await self.players.save(member, copy.deepcopy(DEFAULT_USER))
+                count += 1
+            except Exception:
+                pass
+
+        await ctx.reply(f"✅ Reset CrewBattles data for **{count}** users (started players in this server).")
 
     @cbadmin.command()
     async def setberi(self, ctx, win: int, loss: int = 0):
