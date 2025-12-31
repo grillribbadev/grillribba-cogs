@@ -1100,11 +1100,17 @@ class CrewBattles(commands.Cog):
             winner_p["wins"] = winner_p.get("wins", 0) + 1
             loser_p["losses"] = loser_p.get("losses", 0) + 1
 
-            # apply EXP and handle level ups
-            gain_win = int(g.get("exp_win", 0) or 0)
-            gain_loss = int(g.get("exp_loss", 0) or 0)
-            leveled_w = self._apply_exp(winner_p, gain_win)
-            leveled_l = self._apply_exp(loser_p, gain_loss)
+            # EXP gains (use ranges; fallback to exp_win/exp_loss if ranges missing)
+            win_min = int(g.get("exp_win_min", g.get("exp_win", 0)) or 0)
+            win_max = int(g.get("exp_win_max", g.get("exp_win", 0)) or 0)
+            loss_min = int(g.get("exp_loss_min", g.get("exp_loss", 0)) or 0)
+            loss_max = int(g.get("exp_loss_max", g.get("exp_loss", 0)) or 0)
+
+            win_gain = random.randint(min(win_min, win_max), max(win_min, win_max)) if max(win_min, win_max) > 0 else 0
+            loss_gain = random.randint(min(loss_min, loss_max), max(loss_min, loss_max)) if max(loss_min, loss_max) > 0 else 0
+
+            leveled_w = self._apply_exp(winner_p, win_gain)
+            leveled_l = self._apply_exp(loser_p, loss_gain)
 
             # persist both player records using explicit winner/loser mapping
             try:
@@ -1411,6 +1417,28 @@ class CrewBattles(commands.Cog):
 
         await self.config.guild(ctx.guild).crew_points_win.set(points)
         await ctx.reply(f"✅ Crew points per win set to **{points}** (0 = disabled).")
+
+    @cbadmin.command(name="setexpwin")
+    async def cbadmin_setexpwin(self, ctx, min_exp: int, max_exp: int = None):
+        """Set EXP range for winners. Usage: .cbadmin setexpwin <min> [max]"""
+        if max_exp is None:
+            max_exp = min_exp
+        if min_exp < 0 or max_exp < 0 or max_exp < min_exp:
+            return await ctx.reply("❌ Invalid range. Use: min >= 0 and max >= min.")
+        await self.config.guild(ctx.guild).exp_win_min.set(int(min_exp))
+        await self.config.guild(ctx.guild).exp_win_max.set(int(max_exp))
+        await ctx.reply(f"✅ Winner EXP set to **{min_exp}–{max_exp}** per win.")
+
+    @cbadmin.command(name="setexploss")
+    async def cbadmin_setexploss(self, ctx, min_exp: int, max_exp: int = None):
+        """Set EXP range for losers. Usage: .cbadmin setexploss <min> [max]"""
+        if max_exp is None:
+            max_exp = min_exp
+        if min_exp < 0 or max_exp < 0 or max_exp < min_exp:
+            return await ctx.reply("❌ Invalid range. Use: min >= 0 and max >= min.")
+        await self.config.guild(ctx.guild).exp_loss_min.set(int(min_exp))
+        await self.config.guild(ctx.guild).exp_loss_max.set(int(max_exp))
+        await ctx.reply(f"✅ Loser EXP set to **{min_exp}–{max_exp}** per loss.")
 
     # =========================================================
     # MAINTENANCE CHECK (must return True/False)

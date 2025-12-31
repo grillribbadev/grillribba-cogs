@@ -6,8 +6,17 @@ DEFAULT_GUILD = {
     "turn_delay": 1.5,
     "beri_win": 0,
     "beri_loss": 0,
-    "exp_win": 10,
-    "exp_loss": 2,
+
+    # EXP rewards (ranges)
+    "exp_win_min": 40,
+    "exp_win_max": 60,
+    "exp_loss_min": 15,
+    "exp_loss_max": 30,
+
+    # (optional) keep older keys if your code still uses them elsewhere
+    "exp_win": 50,
+    "exp_loss": 20,
+
     "crew_points_win": 1,  # points awarded to winner's team per win (set to 0 to disable)
     "haki_cost": 500,
     "haki_cooldown": 3600,
