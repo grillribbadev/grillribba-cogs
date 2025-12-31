@@ -2,9 +2,10 @@ import asyncio
 
 class TeamsBridge:
     """
-    Wrapper bridge that tries to call the real Teams cog on the bot.
-    If no Teams cog exists, methods return None. This minimal wrapper
-    is safe and matches the call shapes the main cog expects.
+    Bridge to interact with a Teams cog if present.
+    Provides:
+      - get_team_of(guild, member) -> normalized team id/name or None
+      - award_win(guild, member, points) -> True on success
     """
     def __init__(self, bot):
         self.bot = bot
@@ -13,51 +14,135 @@ class TeamsBridge:
         teams = self.bot.get_cog("Teams")
         if not teams:
             return None
-        if hasattr(teams, "get_team_of"):
-            res = teams.get_team_of(guild, member)
-            if asyncio.iscoroutine(res):
-                return await res
-            return res
-        if hasattr(teams, "get_member_team"):
-            res = teams.get_member_team(guild, member)
-            if asyncio.iscoroutine(res):
-                return await res
-            return res
-        return None
 
-    # alias to support previous naming
-    async def get_team(self, guild, member):
-        return await self.get_team_of(guild, member)
+        # try common method names / signatures
+        candidates = ("get_team_of", "get_member_team", "get_team", "member_team", "team_of", "fetch_member_team")
+        for name in candidates:
+            fn = getattr(teams, name, None)
+            if not fn:
+                continue
+            # try several call shapes
+            for args in (
+                (guild, member),
+                (guild, member.id if hasattr(member, "id") else member),
+                (guild.id if hasattr(guild, "id") else guild, member),
+                (member,),
+                (member.id if hasattr(member, "id") else member,),
+            ):
+                try:
+                    res = fn(*args)
+                except TypeError:
+                    continue
+                except Exception:
+                    res = None
+                if asyncio.iscoroutine(res):
+                    try:
+                        res = await res
+                    except Exception:
+                        res = None
+                if res is None:
+                    continue
+                # normalize scalar/dict/object into string id
+                if isinstance(res, dict):
+                    for key in ("id", "team_id", "name", "team"):
+                        if key in res and res[key] is not None:
+                            return str(res[key]).strip().lower()
+                    # fallback: first string/int value
+                    for v in res.values():
+                        if isinstance(v, (str, int)):
+                            return str(v).strip().lower()
+                if isinstance(res, (str, int)):
+                    return str(res).strip().lower()
+                # object with id/name
+                if hasattr(res, "id") or hasattr(res, "name"):
+                    val = getattr(res, "id", None) or getattr(res, "name", None)
+                    if val is not None:
+                        return str(val).strip().lower()
+                # list/tuple -> first scalar candidate
+                if isinstance(res, (list, tuple)) and len(res):
+                    for item in res:
+                        if isinstance(item, (str, int)):
+                            return str(item).strip().lower()
+                        if hasattr(item, "id") or hasattr(item, "name"):
+                            v = getattr(item, "id", None) or getattr(item, "name", None)
+                            if v is not None:
+                                return str(v).strip().lower()
+        return None
 
     async def award_win(self, guild, member, points: int):
         """
-        Try to award crew/team points for a win. Returns True when succeeded.
-        Tries several common Teams cog method names and signatures.
+        Try to award team/crew points for a member's win.
+        Returns True when awarding succeeded (best-effort).
         """
         try:
-            teams = self.bot.get_cog("Teams")
-            if not teams:
-                return False
+            points = int(points or 0)
+        except Exception:
+            return False
+        if points <= 0:
+            return False
 
-            # Try direct award functions on Teams cog
-            candidate_names = ("award_win", "award_points", "add_points_to_team", "add_team_points", "award_team_points", "add_points")
-            for name in candidate_names:
+        teams = self.bot.get_cog("Teams")
+        if not teams:
+            return False
+
+        candidate_names = (
+            "award_win",
+            "award_points",
+            "add_points_to_team",
+            "add_team_points",
+            "award_team_points",
+            "add_points",
+            "give_points",
+        )
+
+        # Attempt to call direct functions on Teams cog
+        for name in candidate_names:
+            fn = getattr(teams, name, None)
+            if not fn:
+                continue
+            for sig in (
+                (guild, member, points),
+                (guild.id if hasattr(guild, "id") else guild, member, points),
+                (member, points),
+                (member.id if hasattr(member, "id") else member, points),
+            ):
+                try:
+                    res = fn(*sig)
+                except TypeError:
+                    continue
+                except Exception:
+                    res = None
+                if asyncio.iscoroutine(res):
+                    try:
+                        await res
+                        return True
+                    except Exception:
+                        continue
+                # If function returned without raising, assume success
+                return True
+
+        # Fallback: get the team id and call a team-id based method
+        team = None
+        try:
+            team = await self.get_team_of(guild, member)
+        except Exception:
+            team = None
+
+        if team is not None:
+            for name in ("add_points_to_team", "add_team_points", "award_team_points", "add_points", "give_points"):
                 fn = getattr(teams, name, None)
                 if not fn:
                     continue
-                # try several call signatures
                 for sig in (
-                    (guild, member, int(points)),
-                    (guild.id if hasattr(guild, "id") else guild, member.id if hasattr(member, "id") else member, int(points)),
-                    (member, int(points)),
-                    (member.id if hasattr(member, "id") else member, int(points)),
+                    (team, points),
+                    (guild, team, points),
+                    (guild.id if hasattr(guild, "id") else guild, team, points),
                 ):
                     try:
                         res = fn(*sig)
                     except TypeError:
                         continue
                     except Exception:
-                        # call failed for this signature; try others
                         res = None
                     if asyncio.iscoroutine(res):
                         try:
@@ -65,38 +150,6 @@ class TeamsBridge:
                             return True
                         except Exception:
                             continue
-                    # non-coroutine result - assume success if no exception
                     return True
 
-            # Fallback: find team id and call an "add_points" method that accepts team id
-            team = None
-            try:
-                team = await self.get_team_of(guild, member)
-            except Exception:
-                team = None
-            if team is not None:
-                # try team-id-based methods
-                for name in ("add_points_to_team", "add_team_points", "award_team_points", "add_points"):
-                    fn = getattr(teams, name, None)
-                    if not fn:
-                        continue
-                    try:
-                        res = fn(team, int(points))
-                    except TypeError:
-                        try:
-                            res = fn(guild, team, int(points))
-                        except Exception:
-                            res = None
-                    except Exception:
-                        res = None
-                    if asyncio.iscoroutine(res):
-                        try:
-                            await res
-                            return True
-                        except Exception:
-                            continue
-                    if res is not None:
-                        return True
-        except Exception:
-            pass
         return False

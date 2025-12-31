@@ -1007,6 +1007,19 @@ class CrewBattles(commands.Cog):
                 except Exception:
                     pass
 
+            # Award crew/team points via TeamsBridge (best-effort)
+            try:
+                crew_points = int(g.get("crew_points_win", 0) or 0)
+            except Exception:
+                crew_points = 0
+            if crew_points and getattr(self, "teams", None):
+                try:
+                    ok = await self.teams.award_win(ctx.guild, winner_user, crew_points)
+                    if not ok:
+                        print(f"[CrewBattles] teams_bridge: failed to award {crew_points} points for {winner_user} (no matching Teams method).")
+                except Exception as e:
+                    print(f"[CrewBattles] teams_bridge error awarding points: {e}")
+
             # final result embed
             try:
                 winner_avatar = getattr(winner_user.display_avatar, "url", None) if hasattr(winner_user, "display_avatar") else getattr(winner_user, "avatar_url", None)
