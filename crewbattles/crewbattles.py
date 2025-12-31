@@ -47,14 +47,21 @@ class CrewBattles(commands.Cog):
         """
         Add EXP to a player dict, level up while thresholds are met.
         Returns number of levels gained (0 if none).
-        Mutates player['exp'] and player['level'].
+        Mutates player['exp'] and player['level'] (ensures ints).
         """
         try:
             gain = int(gain or 0)
         except Exception:
             gain = 0
-        cur_level = int(player.get("level", 1) or 1)
-        cur_exp = int(player.get("exp", 0) or 0)
+        # normalize stored values to ints
+        try:
+            cur_level = int(player.get("level", 1) or 1)
+        except Exception:
+            cur_level = 1
+        try:
+            cur_exp = int(player.get("exp", 0) or 0)
+        except Exception:
+            cur_exp = 0
         cur_exp += gain
         leveled = 0
         # loop until we can't level or hit MAX_LEVEL
@@ -73,8 +80,9 @@ class CrewBattles(commands.Cog):
                 cur_exp = min(cur_exp, exp_to_next(cur_level) - 1)
             except Exception:
                 cur_exp = 0
-        player["level"] = cur_level
-        player["exp"] = cur_exp
+        # ensure integers stored
+        player["level"] = int(cur_level)
+        player["exp"] = int(cur_exp)
         return leveled
 
     def _beri(self):
@@ -389,6 +397,54 @@ class CrewBattles(commands.Cog):
         """View a user's raw Crew Battles data."""
         p = await self.players.get(member)
         await ctx.reply(f"Data for {member.display_name}: ```py\n{p}\n```")
+
+    @cbadmin.command()
+    async def resetalldata(self, ctx, confirm: str = None):
+        """
+        Reset all players' Crew Battles data to defaults (devil fruit, exp, level, haki, wins/losses).
+        Usage: .cbadmin resetalldata confirm
+        """
+        if confirm != "confirm":
+            return await ctx.reply("❗ This will reset ALL player data. To proceed run: `.cbadmin resetalldata confirm`")
+
+        try:
+            raw = await self.players.all()
+        except Exception as e:
+            return await ctx.reply(f"❌ Could not read player storage: {e}")
+
+        count = 0
+        # handle dict-like raw storage ({uid: pdata})
+        if isinstance(raw, dict):
+            for k in list(raw.keys()):
+                try:
+                    uid = int(k)
+                except Exception:
+                    continue
+                try:
+                    await self.players.save(uid, copy.deepcopy(DEFAULT_USER))
+                    count += 1
+                except Exception:
+                    # ignore per-user failures
+                    pass
+        elif isinstance(raw, (list, tuple)):
+            # handle list shapes: [ { "id": uid, ... }, ... ] or [ (uid, data), ... ]
+            for item in raw:
+                try:
+                    uid = None
+                    if isinstance(item, dict) and item.get("id"):
+                        uid = int(item["id"])
+                    elif isinstance(item, (list, tuple)) and len(item) >= 1:
+                        uid = int(item[0])
+                    if uid is None:
+                        continue
+                    await self.players.save(uid, copy.deepcopy(DEFAULT_USER))
+                    count += 1
+                except Exception:
+                    pass
+        else:
+            return await ctx.reply("❌ Unrecognized player storage format; manual reset required.")
+
+        await ctx.reply(f"✅ Reset Crew Battles data for {count} users. Leaderboard cleared accordingly.")
 
     @cbadmin.command()
     async def setlevel(self, ctx, member: discord.Member, level: int):
@@ -994,9 +1050,16 @@ class CrewBattles(commands.Cog):
             leveled_w = self._apply_exp(winner_p, gain_win)
             leveled_l = self._apply_exp(loser_p, gain_loss)
 
-            # persist both player records
-            await self.players.save(ctx.author, p1)
-            await self.players.save(opponent, p2)
+            # persist both player records using explicit winner/loser mapping
+            try:
+                await self.players.save(winner_user, winner_p)
+            except Exception:
+                # best-effort fallback
+                await self.players.save(ctx.author, p1)
+            try:
+                await self.players.save(loser_user, loser_p)
+            except Exception:
+                await self.players.save(opponent, p2)
 
             # beri rewards (if BeriCore present)
             core = self._beri()
