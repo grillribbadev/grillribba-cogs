@@ -819,12 +819,117 @@ class CrewBattles(commands.Cog):
         await ctx.reply(embed=battle_embed(ctx.author, opponent, hp1, hp2, max_hp1, max_hp2, initial_log))
 
         try:
-            while True:
-                # Battle logic here
-                await asyncio.sleep(1)  # prevent blocking
+            # Run deterministic simulation and iterate its turns (shows abilities/haki)
+            winner, turns, final_hp1, final_hp2 = simulate(p1, p2, self.fruits)
+
+            # message we will edit each turn
+            msg = await ctx.send(embed=battle_embed(ctx.author, opponent, hp1, hp2, max_hp1, max_hp2, initial_log))
+            delay = await self.config.guild(ctx.guild).turn_delay()
+            battle_log = []
+
+            for turn in turns:
+                # unpack flexible turn shapes
+                if isinstance(turn, (list, tuple)):
+                    if len(turn) >= 5:
+                        side, dmg, hp, attack, crit = turn[:5]
+                    elif len(turn) == 3:
+                        side, dmg, hp = turn
+                        attack = "Attack"
+                        crit = False
+                    else:
+                        side = turn[0] if len(turn) > 0 else "p1"
+                        dmg = turn[1] if len(turn) > 1 else 0
+                        hp = turn[2] if len(turn) > 2 else 0
+                        attack = str(turn[3]) if len(turn) > 3 else "Attack"
+                        crit = bool(turn[4]) if len(turn) > 4 else False
+                else:
+                    side, dmg, hp = "p1", 0, 0
+                    attack, crit = "Attack", False
+
+                # apply hp snapshot from engine
+                await asyncio.sleep(max(0.1, float(delay or 1)))
+                if side == "p1":
+                    hp2 = int(hp)
+                    actor_user = ctx.author
+                    defender_user = opponent
+                    actor_p = p1
+                    defender_p = p2
+                else:
+                    hp1 = int(hp)
+                    actor_user = opponent
+                    defender_user = ctx.author
+                    actor_p = p2
+                    defender_p = p1
+
+                attack_str = str(attack or "")
+                # nicer human-friendly events
+                if "Frightened" in attack_str:
+                    line = f"😨 **{actor_user.display_name}** was frightened and skipped their turn!"
+                elif "Dodged" in attack_str or attack_str.strip().lower() == "dodged":
+                    obs_val = int((defender_p.get("haki") or {}).get("observation", 0))
+                    if obs_val > 0:
+                        line = f"👁️ **{defender_user.display_name}** used Observation Haki and dodged!"
+                    else:
+                        line = f"🛡️ **{defender_user.display_name}** dodged the attack!"
+                else:
+                    crit_txt = " 💥 **CRITICAL HIT!**" if crit else ""
+                    if int(dmg) <= 0:
+                        line = f"⚔️ **{actor_user.display_name}** attacked with **{attack_str}** but it dealt no damage.{crit_txt}"
+                    else:
+                        line = f"⚔️ **{actor_user.display_name}** used **{attack_str}** and dealt **{int(dmg)}** damage!{crit_txt}"
+
+                battle_log.append(line)
+                log_text = "\n".join(battle_log[-6:])
+
+                await msg.edit(embed=battle_embed(ctx.author, opponent, hp1, hp2, max_hp1, max_hp2, log_text))
+
+            # apply results/stats/rewards
+            g = await self.config.guild(ctx.guild).all()
+            winner_user = ctx.author if winner == "p1" else opponent
+            loser_user = opponent if winner == "p1" else ctx.author
+            winner_p = p1 if winner == "p1" else p2
+            loser_p = p2 if winner == "p1" else p1
+
+            winner_p["wins"] = winner_p.get("wins", 0) + 1
+            loser_p["losses"] = loser_p.get("losses", 0) + 1
+            winner_p["exp"] = winner_p.get("exp", 0) + int(g.get("exp_win", 0) or 0)
+            loser_p["exp"] = loser_p.get("exp", 0) + int(g.get("exp_loss", 0) or 0)
+            await self.players.save(ctx.author, p1)
+            await self.players.save(opponent, p2)
+
+            # beri rewards (if BeriCore present)
+            core = self._beri()
+            if core:
+                try:
+                    await core.add_beri(winner_user, int(g.get("beri_win", 0) or 0), reason="pvp:crew_battle:win")
+                except Exception:
+                    pass
+                try:
+                    loss_amt = int(g.get("beri_loss", 0) or 0)
+                    if loss_amt:
+                        await core.add_beri(loser_user, loss_amt, reason="pvp:crew_battle:loss")
+                except Exception:
+                    pass
+
+            # final result embed
+            try:
+                winner_avatar = getattr(winner_user.display_avatar, "url", None) if hasattr(winner_user, "display_avatar") else getattr(winner_user, "avatar_url", None)
+            except Exception:
+                winner_avatar = None
+
+            res = discord.Embed(
+                title="🏆 Crew Battle Result",
+                description=f"**{winner_user.display_name}** defeated **{loser_user.display_name}**",
+                color=discord.Color.green()
+            )
+            if winner_avatar:
+                res.set_thumbnail(url=winner_avatar)
+            res.add_field(name="Rewards", value=f"EXP: **+{int(g.get('exp_win',0))}**\nBeri: **+{int(g.get('beri_win',0)):,}**", inline=False)
+            res.set_footer(text="Crew Battles • Results")
+            await ctx.reply(embed=res)
+
         except Exception as e:
             await ctx.reply(f"❌ Battle error: {e}")
         finally:
-            # Clean up
-            self._active_battles.remove(ctx.channel.id)
-            await ctx.reply("✅ Battle ended.")
+            # always free the channel lock
+            self._active_battles.discard(ctx.channel.id)
