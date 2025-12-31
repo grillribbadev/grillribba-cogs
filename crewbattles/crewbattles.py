@@ -7,12 +7,13 @@ import copy
 import json
 from redbot.core import commands, Config
 
-from .constants import DEFAULT_GUILD, DEFAULT_USER, BASE_HP
+from .constants import DEFAULT_GUILD, DEFAULT_USER, BASE_HP, MAX_LEVEL
 from .player_manager import PlayerManager
 from .fruits import FruitManager
 from .battle_engine import simulate
 from .teams_bridge import TeamsBridge
 from .embeds import battle_embed
+from .utils import exp_to_next
 
 
 # Haki training configuration (cost in Beri per point, cooldown seconds)
@@ -40,6 +41,39 @@ class CrewBattles(commands.Cog):
     # =========================================================
     # INTERNAL HELPERS
     # =========================================================
+    def _apply_exp(self, player: dict, gain: int) -> int:
+        """
+        Add EXP to a player dict, level up while thresholds are met.
+        Returns number of levels gained (0 if none).
+        Mutates player['exp'] and player['level'].
+        """
+        try:
+            gain = int(gain or 0)
+        except Exception:
+            gain = 0
+        cur_level = int(player.get("level", 1) or 1)
+        cur_exp = int(player.get("exp", 0) or 0)
+        cur_exp += gain
+        leveled = 0
+        # loop until we can't level or hit MAX_LEVEL
+        while cur_level < MAX_LEVEL:
+            needed = exp_to_next(cur_level)
+            if cur_exp >= needed:
+                cur_exp -= needed
+                cur_level += 1
+                leveled += 1
+            else:
+                break
+        # If at max level, clamp exp to one below next threshold for display
+        if cur_level >= MAX_LEVEL:
+            # keep some exp but not overflow; set to min(remaining, next-1) for consistency
+            try:
+                cur_exp = min(cur_exp, exp_to_next(cur_level) - 1)
+            except Exception:
+                cur_exp = 0
+        player["level"] = cur_level
+        player["exp"] = cur_exp
+        return leveled
 
     def _beri(self):
         """Safe accessor for BeriCore cog (may be None)."""
@@ -860,6 +894,9 @@ class CrewBattles(commands.Cog):
             battle_log = []
 
             for turn in turns:
+                # ensure defaults exist so 'crit' is always defined
+                attack = "Attack"
+                crit = False
                 # unpack flexible turn shapes
                 if isinstance(turn, (list, tuple)):
                     if len(turn) >= 5:
@@ -872,11 +909,11 @@ class CrewBattles(commands.Cog):
                         side = turn[0] if len(turn) > 0 else "p1"
                         dmg = turn[1] if len(turn) > 1 else 0
                         hp = turn[2] if len(turn) > 2 else 0
-                        attack = str(turn[3]) if len(turn) > 3 else "Attack"
-                        crit = bool(turn[4]) if len(turn) > 4 else False
+                        attack = str(turn[3]) if len(turn) > 3 else attack
+                        crit = bool(turn[4]) if len(turn) > 4 else crit
                 else:
                     side, dmg, hp = "p1", 0, 0
-                    attack, crit = "Attack", False
+                    # attack and crit remain as default
 
                 # apply hp snapshot from engine
                 await asyncio.sleep(max(0.1, float(delay or 1)))
@@ -922,10 +959,17 @@ class CrewBattles(commands.Cog):
             winner_p = p1 if winner == "p1" else p2
             loser_p = p2 if winner == "p1" else p1
 
+            # record wins/losses
             winner_p["wins"] = winner_p.get("wins", 0) + 1
             loser_p["losses"] = loser_p.get("losses", 0) + 1
-            winner_p["exp"] = winner_p.get("exp", 0) + int(g.get("exp_win", 0) or 0)
-            loser_p["exp"] = loser_p.get("exp", 0) + int(g.get("exp_loss", 0) or 0)
+
+            # apply EXP and handle level ups
+            gain_win = int(g.get("exp_win", 0) or 0)
+            gain_loss = int(g.get("exp_loss", 0) or 0)
+            leveled_w = self._apply_exp(winner_p, gain_win)
+            leveled_l = self._apply_exp(loser_p, gain_loss)
+
+            # persist both player records
             await self.players.save(ctx.author, p1)
             await self.players.save(opponent, p2)
 
@@ -957,6 +1001,17 @@ class CrewBattles(commands.Cog):
             if winner_avatar:
                 res.set_thumbnail(url=winner_avatar)
             res.add_field(name="Rewards", value=f"EXP: **+{int(g.get('exp_win',0))}**\nBeri: **+{int(g.get('beri_win',0)):,}**", inline=False)
+            # show any level-ups
+            level_lines = []
+            try:
+                if leveled_w:
+                    level_lines.append(f"🏅 **{winner_user.display_name}** leveled up +{leveled_w} → Level {winner_p.get('level')}")
+                if leveled_l:
+                    level_lines.append(f"🔰 **{loser_user.display_name}** leveled up +{leveled_l} → Level {loser_p.get('level')}")
+                if level_lines:
+                    res.add_field(name="Level Ups", value="\n".join(level_lines), inline=False)
+            except Exception:
+                pass
             res.set_footer(text="Crew Battles • Results")
             await ctx.reply(embed=res)
 
@@ -1050,7 +1105,7 @@ class CrewBattles(commands.Cog):
                 score = exp
                 score_txt = f"{exp} EXP • Level {level}"
 
-            rows.append((score, uid, score_txt))
+            rows.append((score, uid, score_txt, wins, losses, level, exp))
 
         if not rows:
             return await ctx.reply("❌ No valid player entries to show on leaderboard.")
@@ -1058,17 +1113,45 @@ class CrewBattles(commands.Cog):
         rows.sort(key=lambda r: r[0], reverse=True)
         top = rows[:limit]
 
-        embed = discord.Embed(title=f"🏆 Crew Battles Leaderboard — {metric.title()}", color=discord.Color.gold())
-        desc_lines = []
-        for idx, (score, uid, score_txt) in enumerate(top, start=1):
-            member = self.bot.get_user(uid)
-            name = member.display_name if member else f"<@{uid}>"
-            desc_lines.append(f"**{idx}. {name}** — {score_txt}")
+        # Build a flashier embed
+        medal = {1: "🥇", 2: "🥈", 3: "🥉"}
+        colors = {
+            "wins": discord.Color.gold(),
+            "winrate": discord.Color.blurple(),
+            "level": discord.Color.dark_teal(),
+            "exp": discord.Color.green(),
+        }
+        emb = discord.Embed(
+            title=f"🏆 Crew Battles — {metric.title()} Leaderboard",
+            description=f"Top {len(top)} players by {metric}",
+            color=colors.get(metric, discord.Color.gold())
+        )
 
-        embed.description = "\n".join(desc_lines)
-        embed.set_footer(text=f"Showing top {len(top)} — use .cbleaderboard <metric> <limit>")
+        lines = []
+        for idx, (score, uid, score_txt, wins, losses, level, exp) in enumerate(top, start=1):
+            user = self.bot.get_user(uid)
+            display = user.display_name if user else f"<@{uid}>"
+            name_line = f"**{display}**"
+            prefix = medal.get(idx, f"#{idx}")
+            # extra micro-flair: show small summary after name
+            summary = f"• Lv{level} • {wins}W/{losses}L"
+            lines.append(f"{prefix} {name_line} — {score_txt} {summary}")
 
-        await ctx.reply(embed=embed)
+        emb.add_field(name="Leaderboard", value="\n".join(lines), inline=False)
+
+        # thumbnail/avatar of top1 if available
+        try:
+            top1_uid = top[0][1]
+            top1_user = self.bot.get_user(top1_uid)
+            if top1_user:
+                url = getattr(top1_user.display_avatar, "url", None) if hasattr(top1_user, "display_avatar") else getattr(top1_user, "avatar_url", None)
+                if url:
+                    emb.set_thumbnail(url=url)
+        except Exception:
+            pass
+
+        emb.set_footer(text=f"Use .cbleaderboard <metric> <limit> • Metrics: wins, winrate, level, exp")
+        await ctx.reply(embed=emb)
 
     @commands.command()
     async def cbunlockconqueror(self, ctx):
