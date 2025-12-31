@@ -967,3 +967,126 @@ class CrewBattles(commands.Cog):
         finally:
             # always free the channel lock
             self._active_battles.discard(ctx.channel.id)
+
+    @commands.command()
+    async def cbleaderboard(self, ctx, metric: str = "wins", limit: int = 10):
+        """
+        Show a simple leaderboard with better diagnostics when storage is empty.
+        metric: wins | winrate | level | exp
+        """
+        metric = (metric or "wins").lower()
+        if metric not in ("wins", "winrate", "level", "exp"):
+            return await ctx.reply("❌ Metric must be one of: wins, winrate, level, exp")
+
+        try:
+            limit = max(1, min(25, int(limit)))
+        except Exception:
+            limit = 10
+
+        # Fetch raw storage and provide diagnostics when it's empty / unexpected.
+        try:
+            raw = await self.players.all()
+        except Exception as e:
+            print(f"[CrewBattles] cbleaderboard: players.all() raised: {e}")
+            return await ctx.reply("❌ Could not read player storage (exception). Check bot logs.")
+
+        # debug log for maintainer
+        try:
+            info = f"type={type(raw).__name__}"
+            if isinstance(raw, (list, tuple, dict, set)):
+                info += f", len={len(raw)}"
+            print("[CrewBattles] cbleaderboard raw:", info)
+        except Exception:
+            pass
+
+        if not raw:
+            # helpful user message
+            await ctx.reply("⚠️ No player data found. Make sure players have used `.startcb` and the cog has initialized storage.\n"
+                            "If data exists, check bot logs for `CrewBattles cbleaderboard raw` to see the raw storage format.")
+            return
+
+        entries = []
+        # Normalize multiple possible shapes into (uid, pdata) pairs
+        if isinstance(raw, dict):
+            # common shape: {str(uid): pdata}
+            for k, v in raw.items():
+                try:
+                    uid = int(k)
+                except Exception:
+                    # some raw shapes use ints already as keys
+                    try:
+                        uid = int(str(k))
+                    except Exception:
+                        continue
+                entries.append((uid, v or {}))
+        elif isinstance(raw, (list, tuple)):
+            # list of raw items: could be [ { "id": id, ...}, ... ] or [ (id, pdata), ... ]
+            for item in raw:
+                if isinstance(item, dict) and item.get("id"):
+                    try:
+                        uid = int(item["id"])
+                        entries.append((uid, item))
+                        continue
+                    except Exception:
+                        pass
+                if isinstance(item, (list, tuple)) and len(item) >= 2:
+                    try:
+                        uid = int(item[0])
+                        entries.append((uid, item[1] or {}))
+                        continue
+                    except Exception:
+                        pass
+                # fallback: skip unknown shapes
+        else:
+            # Unknown shape
+            print(f"[CrewBattles] cbleaderboard: unrecognized storage shape: {type(raw)}")
+            return await ctx.reply("❌ Unrecognized player storage format. Check bot logs for details.")
+
+        if not entries:
+            await ctx.reply("⚠️ Player storage contained no usable entries. Check bot logs for raw storage details.")
+            return
+
+        # compute scores
+        rows = []
+        for uid, pdata in entries:
+            if not isinstance(pdata, dict):
+                continue
+            wins = int(pdata.get("wins", 0) or 0)
+            losses = int(pdata.get("losses", 0) or 0)
+            total = wins + losses
+            winrate = (wins / total * 100) if total else 0.0
+            level = int(pdata.get("level", 1) or 1)
+            exp = int(pdata.get("exp", 0) or 0)
+
+            if metric == "wins":
+                score = wins
+                score_txt = f"{wins} wins"
+            elif metric == "winrate":
+                score = winrate
+                score_txt = f"{winrate:.1f}% winrate ({wins}/{total})"
+            elif metric == "level":
+                score = level
+                score_txt = f"Level {level} • {exp} EXP"
+            else:  # exp
+                score = exp
+                score_txt = f"{exp} EXP • Level {level}"
+
+            rows.append((score, uid, score_txt))
+
+        if not rows:
+            return await ctx.reply("❌ No valid player entries to show on leaderboard.")
+
+        rows.sort(key=lambda r: r[0], reverse=True)
+        top = rows[:limit]
+
+        embed = discord.Embed(title=f"🏆 Crew Battles Leaderboard — {metric.title()}", color=discord.Color.gold())
+        desc_lines = []
+        for idx, (score, uid, score_txt) in enumerate(top, start=1):
+            member = self.bot.get_user(uid)
+            name = member.display_name if member else f"<@{uid}>"
+            desc_lines.append(f"**{idx}. {name}** — {score_txt}")
+
+        embed.description = "\n".join(desc_lines)
+        embed.set_footer(text=f"Showing top {len(top)} — use .cbleaderboard <metric> <limit>")
+
+        await ctx.reply(embed=embed)
