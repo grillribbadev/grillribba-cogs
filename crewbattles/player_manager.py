@@ -1,6 +1,5 @@
 import copy
 import discord
-from redbot.core import Config
 
 from .constants import DEFAULT_USER
 
@@ -18,9 +17,16 @@ class PlayerManager:
         # If you already have _conf, keep it; otherwise set it like below:
         self._conf = cog.config
 
+    def _uid(self, user) -> int:
+        """Return an int user id from Member/User/int/str safely."""
+        if hasattr(user, "id"):
+            return int(user.id)
+        # allow passing raw ids
+        return int(str(user))
+
     async def get(self, user: discord.abc.User) -> dict:
         """Get a user's data WITHOUT writing defaults back to storage."""
-        uid = getattr(user, "id", int(user))
+        uid = self._uid(user)
         try:
             stored = await self._conf.user_from_id(uid).all()
         except Exception:
@@ -47,7 +53,7 @@ class PlayerManager:
 
     async def save(self, user: discord.abc.User, data: dict):
         """Persist user data (deepcopy to avoid shared references)."""
-        uid = getattr(user, "id", int(user))
+        uid = self._uid(user)
         if not isinstance(data, dict):
             data = copy.deepcopy(DEFAULT_USER)
         await self._conf.user_from_id(uid).set(copy.deepcopy(data))
