@@ -407,42 +407,48 @@ class CrewBattles(commands.Cog):
         if confirm != "confirm":
             return await ctx.reply("❗ This will reset ALL player data. To proceed run: `.cbadmin resetalldata confirm`")
 
+        # Collect candidate user IDs from raw storage (if available) and from bot-known users
+        uids = set()
         try:
             raw = await self.players.all()
-        except Exception as e:
-            return await ctx.reply(f"❌ Could not read player storage: {e}")
+        except Exception:
+            raw = None
 
-        count = 0
-        # handle dict-like raw storage ({uid: pdata})
         if isinstance(raw, dict):
-            for k in list(raw.keys()):
+            for k in raw.keys():
                 try:
-                    uid = int(k)
+                    uids.add(int(k))
                 except Exception:
                     continue
-                try:
-                    await self.players.save(uid, copy.deepcopy(DEFAULT_USER))
-                    count += 1
-                except Exception:
-                    # ignore per-user failures
-                    pass
         elif isinstance(raw, (list, tuple)):
-            # handle list shapes: [ { "id": uid, ... }, ... ] or [ (uid, data), ... ]
             for item in raw:
                 try:
-                    uid = None
                     if isinstance(item, dict) and item.get("id"):
-                        uid = int(item["id"])
+                        uids.add(int(item["id"]))
                     elif isinstance(item, (list, tuple)) and len(item) >= 1:
-                        uid = int(item[0])
-                    if uid is None:
-                        continue
-                    await self.players.save(uid, copy.deepcopy(DEFAULT_USER))
-                    count += 1
+                        uids.add(int(item[0]))
                 except Exception:
-                    pass
-        else:
-            return await ctx.reply("❌ Unrecognized player storage format; manual reset required.")
+                    continue
+
+        # also include all users the bot knows about (covers members seen in guilds)
+        for u in getattr(self.bot, "users", []):
+            try:
+                uids.add(int(u.id))
+            except Exception:
+                continue
+
+        if not uids:
+            return await ctx.reply("⚠️ No user IDs found to reset. Make sure the bot has seen users or storage is populated.")
+
+        count = 0
+        for uid in uids:
+            try:
+                member = self.bot.get_user(uid) or uid
+                await self.players.save(member, copy.deepcopy(DEFAULT_USER))
+                count += 1
+            except Exception:
+                # ignore per-user failures
+                pass
 
         await ctx.reply(f"✅ Reset Crew Battles data for {count} users. Leaderboard cleared accordingly.")
 
