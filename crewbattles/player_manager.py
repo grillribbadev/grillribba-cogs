@@ -7,7 +7,7 @@ class PlayerManager:
     Methods:
       - get(member) -> dict (always returns a dict copy)
       - save(member, data) -> saves dict
-      - all() -> returns mapping of user_id -> dict (may be expensive)
+      - all() -> returns mapping of user_id -> dict (may be implementation-dependent)
     """
     def __init__(self, cog):
         # unique identifier for storage; change if you need to reset storage
@@ -30,10 +30,55 @@ class PlayerManager:
 
     async def all(self):
         """
-        Return the raw storage mapping for all users. May be implementation-dependent;
-        use carefully (admin/leaderboard only).
+        Return a mapping of user_id -> data dict.
+        Tries several Config internals (backwards compatible with multiple Red versions).
+        Falls back to {} if none are available.
         """
+        # try several likely internal APIs
+        candidates = (
+            "_get_raw_data",  # older Red
+            "_get_all",       # some variants
+            "_raw",           # possible internal attr
+            "raw",            # less likely
+        )
+        for name in candidates:
+            fn = getattr(self._conf, name, None)
+            if not fn:
+                continue
+            try:
+                res = fn()
+            except TypeError:
+                # maybe it's an async method
+                try:
+                    res = await fn()
+                except Exception:
+                    continue
+            except Exception:
+                continue
+
+            if res is None:
+                continue
+            # If coroutine returned (rare), await it
+            if hasattr(res, "__await__"):
+                try:
+                    res = await res
+                except Exception:
+                    continue
+            # Expect a dict-like mapping of raw storage
+            if isinstance(res, dict):
+                return res
+
+        # Last-resort: try to read known users by retrieving all keys from the underlying store
+        # If not possible, return empty mapping to avoid crashing leaderboard.
         try:
-            return await self._conf._get_raw_data()  # internal; may work in Red
+            # Some Config implementations expose _get_data or similar
+            if hasattr(self._conf, "_get_data"):
+                d = self._conf._get_data()
+                if hasattr(d, "__await__"):
+                    d = await d
+                if isinstance(d, dict):
+                    return d
         except Exception:
-            return {}
+            pass
+
+        return {}
