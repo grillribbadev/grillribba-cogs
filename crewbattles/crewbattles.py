@@ -69,6 +69,13 @@ class CrewBattles(commands.Cog):
         # loop until we can't level or hit MAX_LEVEL
         while cur_level < MAX_LEVEL:
             needed = exp_to_next(cur_level)
+            # safety: if the exp curve is broken, don't allow stuck/loop states
+            try:
+                needed = int(needed)
+            except Exception:
+                break
+            if needed <= 0:
+                break
             if cur_exp >= needed:
                 cur_exp -= needed
                 cur_level += 1
@@ -515,6 +522,8 @@ class CrewBattles(commands.Cog):
         """Set a user's EXP."""
         p = await self.players.get(member)
         p["exp"] = max(0, int(exp))
+        # normalize/auto-level if exp is above threshold
+        self._apply_exp(p, 0)
         await self.players.save(member, p)
         await ctx.reply(f"✅ Set {member.display_name}'s EXP to {p['exp']}")
 
@@ -1160,7 +1169,7 @@ class CrewBattles(commands.Cog):
                 res.set_thumbnail(url=winner_avatar)
 
             exp_win = int(g.get("exp_win", 0) or 0)
-            rewards_lines = [f"EXP: **+{exp_win}**"]
+            rewards_lines = [f"EXP: **+{win_gain}**"]
 
             if beri_win:
                 rewards_lines.append(f"Beri: **+{beri_win:,}**" if beri_ok_win else f"Beri: **+{beri_win:,}** (FAILED)")
