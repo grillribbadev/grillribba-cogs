@@ -29,7 +29,7 @@ class CrewBattles(commands.Cog):
         # config for guild defaults
         self.config = Config.get_conf(self, identifier=0xC0A55EE, force_registration=True)
         self.config.register_guild(**DEFAULT_GUILD)
-        # global config: maintenance mode (when True, non-admins cannot use commands)
+        # ensure global maintenance key exists
         self.config.register_global(maintenance=False)
 
         # managers
@@ -1253,3 +1253,35 @@ class CrewBattles(commands.Cog):
             return await ctx.reply("✅ Maintenance mode disabled. Crew Battles commands are available again.")
  
         await ctx.reply("❌ Usage: `.cbmaintenance on|off`")
+
+    async def cog_check(self, ctx):
+        """
+        Cog-level check to enforce global maintenance mode.
+        When maintenance is enabled only the bot owner or guild administrators may use commands.
+        """
+        # Read global maintenance flag (safe)
+        try:
+            maintenance = await self.config.maintenance()
+        except Exception:
+            maintenance = False
+
+        if not maintenance:
+            return True
+
+        # Bot owner always allowed
+        try:
+            if await self.bot.is_owner(ctx.author):
+                return True
+        except Exception:
+            pass
+
+        # Guild administrators allowed (when in a guild)
+        if ctx.guild and getattr(ctx.author, "guild_permissions", None) and ctx.author.guild_permissions.administrator:
+            return True
+
+        # Deny for everyone else
+        try:
+            await ctx.reply("⚠️ Crew Battles is currently in maintenance mode. Only server administrators or the bot owner may use these commands.")
+        except Exception:
+            pass
+        return False
