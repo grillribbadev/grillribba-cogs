@@ -396,51 +396,74 @@ class CrewBattles(commands.Cog):
         if ctx.invoked_subcommand is None:
             await ctx.send_help()
 
-    @cbadmin.command(name="resetall", aliases=["wipeall", "wipeusers"])
+    @cbadmin.command(name="resetall", aliases=["resetstarted", "resetplayers"])
     async def cbadmin_resetall(self, ctx: commands.Context, confirm: str = None):
         """
-        HARD WIPE: removes ALL stored CrewBattles user data for every known user id.
+        Reset ONLY users who actually started (started=True).
         Usage: .cbadmin resetall confirm
         """
         if confirm != "confirm":
-            return await ctx.reply("❗ HARD WIPE. Run: `.cbadmin resetall confirm`")
+            return await ctx.reply("❗ This will reset ALL STARTED players. Run: `.cbadmin resetall confirm`")
 
         async with ctx.typing():
-            # 1) Best source: Config knows exactly which users have data
-            uids = set()
             try:
                 all_users = await self.players._conf.all_users()
-                # keys are usually ints; but normalize anyway
-                for k in (all_users or {}).keys():
+            except Exception as e:
+                return await ctx.reply(f"❌ Could not read user storage: {e}")
+
+            started_ids = []
+            for uid, pdata in (all_users or {}).items():
+                if isinstance(pdata, dict) and pdata.get("started"):
                     try:
-                        uids.add(int(k))
+                        started_ids.append(int(uid))
                     except Exception:
                         pass
-            except Exception:
-                pass
 
-            # 2) Fallback: include current guild members (at least wipes this server)
-            if not uids and ctx.guild:
+            if not started_ids:
+                return await ctx.reply("⚠️ No started players found in storage to reset.")
+
+            reset = 0
+            for uid in started_ids:
                 try:
-                    for m in ctx.guild.members:
-                        uids.add(int(m.id))
+                    # set back to DEFAULT_USER rather than clear() so structure is consistent
+                    await self.players._conf.user_from_id(uid).set(copy.deepcopy(DEFAULT_USER))
+                    reset += 1
                 except Exception:
                     pass
 
-            if not uids:
-                return await ctx.reply("⚠️ No user IDs found to wipe. (No stored users and no guild members found.)")
+        await ctx.reply(f"✅ Reset data for **{reset}** started player(s).")
+
+    @cbadmin.command(name="wipeall", aliases=["wipeusers"])
+    async def cbadmin_wipeall(self, ctx: commands.Context, confirm: str = None):
+        """
+        HARD WIPE: delete ALL stored user records for this cog (even non-started).
+        Usage: .cbadmin wipeall confirm
+        """
+        if confirm != "confirm":
+            return await ctx.reply("❗ HARD WIPE. Run: `.cbadmin wipeall confirm`")
+
+        async with ctx.typing():
+            try:
+                all_users = await self.players._conf.all_users()
+            except Exception as e:
+                return await ctx.reply(f"❌ Could not read user storage: {e}")
+
+            uids = []
+            for uid in (all_users or {}).keys():
+                try:
+                    uids.append(int(uid))
+                except Exception:
+                    pass
 
             wiped = 0
             for uid in uids:
                 try:
-                    # clear removes the user entry for THIS cog's Config only
                     await self.players._conf.user_from_id(uid).clear()
                     wiped += 1
                 except Exception:
-                    # continue wiping others
                     pass
 
-        await ctx.reply(f"✅ CrewBattles HARD WIPE complete. Cleared data for **{wiped}** user IDs.")
+        await ctx.reply(f"✅ HARD WIPE complete. Cleared **{wiped}** stored user record(s).")
 
     @cbadmin.command()
     async def setberi(self, ctx, win: int, loss: int = 0):
