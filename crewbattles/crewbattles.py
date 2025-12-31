@@ -69,13 +69,13 @@ class CrewBattles(commands.Cog):
         # loop until we can't level or hit MAX_LEVEL
         while cur_level < MAX_LEVEL:
             needed = exp_to_next(cur_level)
-            # safety: if the exp curve is broken, don't allow stuck/loop states
             try:
                 needed = int(needed)
             except Exception:
                 break
             if needed <= 0:
                 break
+
             if cur_exp >= needed:
                 cur_exp -= needed
                 cur_level += 1
@@ -684,6 +684,38 @@ class CrewBattles(commands.Cog):
             return await ctx.reply(f"❌ Import failed: {e}")
 
         await ctx.reply(f"✅ Imported {count} devil fruits; shop replaced.")
+
+    @cbadmin.command(name="fixlevels", aliases=["recalclevels", "recalcexp"])
+    async def cbadmin_fixlevels(self, ctx: commands.Context):
+        """Recalculate levels for all stored users using the current EXP curve."""
+        async with ctx.typing():
+            try:
+                all_users = await self.players._conf.all_users()
+            except Exception as e:
+                return await ctx.reply(f"❌ Could not read user storage: {e}")
+
+            changed = 0
+            total = 0
+            for uid, pdata in (all_users or {}).items():
+                total += 1
+                if not isinstance(pdata, dict):
+                    continue
+                before_lvl = int(pdata.get("level", 1) or 1)
+                before_exp = int(pdata.get("exp", 0) or 0)
+
+                leveled = self._apply_exp(pdata, 0)
+
+                after_lvl = int(pdata.get("level", 1) or 1)
+                after_exp = int(pdata.get("exp", 0) or 0)
+
+                if leveled or after_lvl != before_lvl or after_exp != before_exp:
+                    try:
+                        await self.players._conf.user_from_id(int(uid)).set(pdata)
+                        changed += 1
+                    except Exception:
+                        pass
+
+        await ctx.reply(f"✅ Recalculated levels for stored users. Updated **{changed}** / **{total}** records.")
 
     # =========================================================
     # PLAYER COMMANDS

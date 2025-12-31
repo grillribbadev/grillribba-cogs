@@ -1,10 +1,13 @@
+from .constants import MAX_LEVEL
+
+EXP_PER_LEVEL = 150
+
 def exp_to_next(level: int) -> int:
-    """
-    Simple EXP curve: next = 100 * level^1.8 (rounded)
-    Keeps leveling reasonable; adapt as needed.
-    """
+    """Flat EXP curve: 150 EXP required per level (until MAX_LEVEL)."""
     try:
-        lvl = max(1, int(level))
+        lvl = int(level)
     except Exception:
         lvl = 1
-    return int(round(100 * (lvl ** 1.8)))
+    if lvl >= MAX_LEVEL:
+        return 0
+    return EXP_PER_LEVEL
