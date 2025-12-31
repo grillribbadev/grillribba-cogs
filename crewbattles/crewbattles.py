@@ -980,41 +980,52 @@ class CrewBattles(commands.Cog):
         embed = discord.Embed(
             title="📘 Crew Battles — Quick Tutorial",
             color=discord.Color.teal(),
-            description="Commands listed are available to non-staff players."
+            description="Commands listed here are available to regular players."
         )
 
         embed.add_field(
-            name="Getting started",
-            value="• `.startcb` — begin your journey and receive a random fruit\n"
-                  "• `.cbprofile` — view your crew profile and fruit",
+            name="Getting Started",
+            value=(
+                "• `.startcb` — begin your journey (gets you a random Devil Fruit)\n"
+                "• `.cbprofile [@member]` — view a crew profile (level/EXP, wins/losses, fruit, haki)\n"
+                "• `.cbcombatstats [@member]` — view derived combat stats (how level + haki affects you)"
+            ),
             inline=False
         )
 
         embed.add_field(
             name="Battling",
-            value="• `.battle @user` — challenge another player to a duel\n"
-                  "• `.cbleaderboard` — view top players\n"
-                  "• During battles: Haki and Devil Fruit abilities may trigger for extra effects",
+            value=(
+                "• `.battle @user` — challenge another player to a duel\n"
+                "• `.cbleaderboard [wins|winrate|level|exp] [limit]` — view top players\n"
+                "Notes:\n"
+                "• Both players must have used `.startcb`\n"
+                "• If Teams is enabled, you can only fight players from other teams"
+            ),
             inline=False
         )
 
         embed.add_field(
             name="Devil Fruit Shop",
-            value="• `.cbshop [page]` — view shop\n"
-                  "• `.cbbuy <fruit name>` — buy a fruit from the shop\n"
-                  "• `.cbremovefruit` — remove your fruit (costs Beri)",
+            value=(
+                "• `.cbshop [page]` — view the Devil Fruit shop\n"
+                "• `.cbbuy <fruit name>` — buy a fruit from the shop (requires economy)\n"
+                "• `.cbremovefruit` — remove your fruit (costs Beri)"
+            ),
             inline=False
         )
 
         embed.add_field(
             name="Haki & Training",
-            value="• `.cbhaki [member]` — view Haki stats\n"
-                  "• `.cbtrainhaki <armament|observation|conqueror> [points]` — train Haki (cost & cooldown apply)\n"
-                  "• `.cbunlockconqueror` — unlock Conqueror's Haki at level 10",
+            value=(
+                "• `.cbhaki [@member]` — view Haki stats\n"
+                "• `.cbtrainhaki <armament|observation|conqueror> [points]` — train Haki (cost & cooldown apply)\n"
+                "• `.cbunlockconqueror` — unlock Conqueror’s Haki at level 10"
+            ),
             inline=False
         )
 
-        embed.set_footer(text="Tip: use .cbprofile and .cbshop to inspect fruits and plan builds")
+        embed.set_footer(text="Tip: use .cbshop to browse fruits and .cbcombatstats to understand your build.")
         await ctx.reply(embed=embed)
 
     @commands.command()
