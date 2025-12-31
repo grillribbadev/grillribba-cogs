@@ -907,31 +907,31 @@ class CrewBattles(commands.Cog):
             delay = await self.config.guild(ctx.guild).turn_delay()
             battle_log = []
 
-            # ensure these exist in outer scope to avoid UnboundLocalError in any error path
-            attack = "Attack"
+            # ensure these exist in outer scope so any error path can't reference an unassigned name
+            attack_default = "Attack"
             crit = False
 
-            for turn in turns:
-                # ensure defaults exist so 'crit' is always defined
-                attack = "Attack"
+             for turn in turns:
+                # start each turn with safe defaults
+                attack = attack_default
                 crit = False
-                # unpack flexible turn shapes
+                # flexible unpack with safe fallbacks to avoid missing local variable errors
                 if isinstance(turn, (list, tuple)):
-                    if len(turn) >= 5:
-                        side, dmg, hp, attack, crit = turn[:5]
-                    elif len(turn) == 3:
-                        side, dmg, hp = turn
-                        attack = "Attack"
-                        crit = False
-                    else:
-                        side = turn[0] if len(turn) > 0 else "p1"
-                        dmg = turn[1] if len(turn) > 1 else 0
-                        hp = turn[2] if len(turn) > 2 else 0
-                        attack = str(turn[3]) if len(turn) > 3 else attack
-                        crit = bool(turn[4]) if len(turn) > 4 else crit
+                    side = str(turn[0]) if len(turn) > 0 else "p1"
+                    try:
+                        dmg = int(turn[1]) if len(turn) > 1 else 0
+                    except Exception:
+                        dmg = 0
+                    try:
+                        hp = int(turn[2]) if len(turn) > 2 else (hp2 if side == "p1" else hp1)
+                    except Exception:
+                        hp = (hp2 if side == "p1" else hp1)
+                    if len(turn) > 3:
+                        attack = str(turn[3]) if turn[3] is not None else attack
+                    if len(turn) > 4:
+                        crit = bool(turn[4])
                 else:
-                    side, dmg, hp = "p1", 0, 0
-                    # attack and crit remain as default
+                    side, dmg, hp = "p1", 0, (hp2 if "hp2" in locals() else 0)
 
                 # apply hp snapshot from engine
                 await asyncio.sleep(max(0.1, float(delay or 1)))
