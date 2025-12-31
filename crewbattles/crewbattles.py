@@ -331,10 +331,9 @@ class CrewBattles(commands.Cog):
     async def cbadmin(self, ctx: commands.Context):
         """Admin commands for CrewBattles."""
         if ctx.invoked_subcommand is None:
-            # shows subcommands reliably instead of doing nothing
             return await ctx.send_help()
 
-    @cbadmin.command(name="resetall", aliases=["resetalldata", "wipeall", "wipeusers"])
+    @cbadmin.command(name="resetall", aliases=["wipeall", "wipeusers"])
     async def cbadmin_resetall(self, ctx: commands.Context, confirm: str = None):
         """
         HARD WIPE: removes ALL stored CrewBattles user data for every known user id.
@@ -446,60 +445,6 @@ class CrewBattles(commands.Cog):
         """View a user's raw Crew Battles data."""
         p = await self.players.get(member)
         await ctx.reply(f"Data for {member.display_name}: ```py\n{p}\n```")
-
-    @cbadmin.command()
-    async def resetalldata(self, ctx, confirm: str = None):
-        """
-        Reset all players' Crew Battles data to defaults (devil fruit, exp, level, haki, wins/losses).
-        Usage: .cbadmin resetalldata confirm
-        """
-        if confirm != "confirm":
-            return await ctx.reply("❗ This will reset ALL player data. To proceed run: `.cbadmin resetalldata confirm`")
-
-        # Collect candidate user IDs from raw storage (if available) and from bot-known users
-        uids = set()
-        try:
-            raw = await self.players.all()
-        except Exception:
-            raw = None
-
-        if isinstance(raw, dict):
-            for k in raw.keys():
-                try:
-                    uids.add(int(k))
-                except Exception:
-                    continue
-        elif isinstance(raw, (list, tuple)):
-            for item in raw:
-                try:
-                    if isinstance(item, dict) and item.get("id"):
-                        uids.add(int(item["id"]))
-                    elif isinstance(item, (list, tuple)) and len(item) >= 1:
-                        uids.add(int(item[0]))
-                except Exception:
-                    continue
-
-        # also include all users the bot knows about (covers members seen in guilds)
-        for u in getattr(self.bot, "users", []):
-            try:
-                uids.add(int(u.id))
-            except Exception:
-                continue
-
-        if not uids:
-            return await ctx.reply("⚠️ No user IDs found to reset. Make sure the bot has seen users or storage is populated.")
-
-        count = 0
-        for uid in uids:
-            try:
-                member = self.bot.get_user(uid) or uid
-                await self.players.save(member, copy.deepcopy(DEFAULT_USER))
-                count += 1
-            except Exception:
-                # ignore per-user failures
-                pass
-
-        await ctx.reply(f"✅ Reset Crew Battles data for {count} users. Leaderboard cleared accordingly.")
 
     @cbadmin.command()
     async def setlevel(self, ctx, member: discord.Member, level: int):
