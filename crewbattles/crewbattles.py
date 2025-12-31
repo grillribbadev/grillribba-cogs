@@ -907,15 +907,16 @@ class CrewBattles(commands.Cog):
             delay = await self.config.guild(ctx.guild).turn_delay()
             battle_log = []
 
-            # ensure these exist in outer scope so any error path can't reference an unassigned name
+            # safe defaults in outer scope
             attack_default = "Attack"
             crit = False
 
-             for turn in turns:
+            for turn in turns:
                 # start each turn with safe defaults
                 attack = attack_default
                 crit = False
-                # flexible unpack with safe fallbacks to avoid missing local variable errors
+
+                # flexible unpack with safe fallbacks
                 if isinstance(turn, (list, tuple)):
                     side = str(turn[0]) if len(turn) > 0 else "p1"
                     try:
@@ -926,14 +927,14 @@ class CrewBattles(commands.Cog):
                         hp = int(turn[2]) if len(turn) > 2 else (hp2 if side == "p1" else hp1)
                     except Exception:
                         hp = (hp2 if side == "p1" else hp1)
-                    if len(turn) > 3:
-                        attack = str(turn[3]) if turn[3] is not None else attack
+                    if len(turn) > 3 and turn[3] is not None:
+                        attack = str(turn[3])
                     if len(turn) > 4:
                         crit = bool(turn[4])
                 else:
                     side, dmg, hp = "p1", 0, (hp2 if "hp2" in locals() else 0)
 
-                # apply hp snapshot from engine
+                # apply hp update from engine's hp value
                 await asyncio.sleep(max(0.1, float(delay or 1)))
                 if side == "p1":
                     hp2 = int(hp)
@@ -949,6 +950,7 @@ class CrewBattles(commands.Cog):
                     defender_p = p1
 
                 attack_str = str(attack or "")
+
                 # nicer human-friendly events
                 if "Frightened" in attack_str:
                     line = f"😨 **{actor_user.display_name}** was frightened and skipped their turn!"
