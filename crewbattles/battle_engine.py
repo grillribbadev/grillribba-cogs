@@ -12,7 +12,7 @@ FLARE = ["🔥","⚡️","💥","✨","🌪️","🔪","🥊"]
 def _flair(name):
     return f"{random.choice(FLARE)} {name} {random.choice(FLARE)}"
 
-def simulate(p1: dict, p2: dict, fruit_manager=None):
+def simulate(p1, p2, fruits):
     """
     Lightweight deterministic-ish simulate used by the cog.
     Returns (winner, turns, final_hp1, final_hp2)
@@ -31,7 +31,7 @@ def simulate(p1: dict, p2: dict, fruit_manager=None):
     consec_named = {"p1": 0, "p2": 0}
 
     current = "p1"
-    while hp1 > 0 and hp2 > 0 and len(turns) < 200:
+    while hp1 > 0 and hp2 > 0:
         attacker = p1 if current == "p1" else p2
         defender = p2 if current == "p1" else p1
 
@@ -56,8 +56,8 @@ def simulate(p1: dict, p2: dict, fruit_manager=None):
         # fruit ability as its own attack (if owned and off-cd)
         fruit_obj = None
         fname = (attacker.get("fruit") or "")
-        if fruit_manager and fname:
-            fruit_obj = fruit_manager.get(fname)
+        if fruits and fname:
+            fruit_obj = fruits.get(fname)
         if fruit_obj and fruit_cd[current] == 0:
             bonus = int(fruit_obj.get("bonus", 0))
             chance = min(0.5, 0.15 + bonus*0.03)
@@ -71,6 +71,10 @@ def simulate(p1: dict, p2: dict, fruit_manager=None):
                 markers = False
         else:
             markers = False
+
+        # IMPORTANT: crit must always be defined each turn
+        crit = False
+        attack_name = "Attack"
 
         # base damage
         if not markers:
@@ -88,8 +92,6 @@ def simulate(p1: dict, p2: dict, fruit_manager=None):
             if random.random() < 0.06:
                 dmg = int(dmg * 1.5)
                 crit = True
-            else:
-                crit = False
 
         # defender observation dodge
         d_obs = int((defender.get("haki") or {}).get("observation", 0) or 0)
