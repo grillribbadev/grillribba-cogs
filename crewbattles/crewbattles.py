@@ -20,6 +20,8 @@ from .battle_engine import simulate
 from .teams_bridge import TeamsBridge
 from .embeds import battle_embed
 from .utils import exp_to_next
+from .admin_commands import AdminCommandsMixin
+from .player_commands import PlayerCommandsMixin
 
 HAKI_TRAIN_COST = 500
 HAKI_TRAIN_COOLDOWN = 60 * 60
@@ -29,7 +31,7 @@ MIN_BATTLE_COOLDOWN = 10
 MAX_BATTLE_COOLDOWN = 3600
 
 
-class CrewBattles(commands.Cog):
+class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=0xC0A55EE, force_registration=True)
@@ -491,6 +493,7 @@ class CrewBattles(commands.Cog):
     # =========================================================
     # Player commands
     # =========================================================
+
     @commands.command(name="startcb")
     async def startcb(self, ctx: commands.Context):
         p = await self.players.get(ctx.author)
@@ -1307,3 +1310,35 @@ class CrewBattles(commands.Cog):
         except Exception as e:
             return await ctx.reply(f"Failed: {e}")
         await ctx.reply(f"✅ Removed from shop: **{name}**")
+
+    @commands.command(name="cbtutorial", aliases=["cbguide", "cbhelp"])
+    async def cbtutorial(self, ctx: commands.Context):
+        """Show the Crew Battles tutorial."""
+        e = discord.Embed(
+            title="📘 Crew Battles Tutorial",
+            description=(
+                "**Start**\n"
+                "• Create your pirate record: **`.startcb`**\n"
+                "• View your profile: **`.cbprofile`**\n\n"
+                "**Battles**\n"
+                "• Duel someone: **`.battle @user`**\n"
+                "• Leaderboard: **`.cbleaderboard`**\n\n"
+                "**Haki**\n"
+                "• View Haki: **`.cbhaki`**\n"
+                "• Train Haki: **`.cbtrain armament|observation|conqueror [points]`**\n"
+                "  - Armament boosts **CRIT chance**\n"
+                "  - Observation boosts **DODGE chance**\n\n"
+                "**Devil Fruits**\n"
+                "• Browse shop: **`.cbshop`**\n"
+                "• Buy: **`.cbbuy <fruit name>`**\n"
+                "• Remove fruit: **`.cbremovefruit`**\n"
+                "• Fruit abilities only trigger if you **own/equip** the fruit."
+            ),
+            color=discord.Color.blurple(),
+        )
+        try:
+            e.set_thumbnail(url=ctx.author.display_avatar.url)
+        except Exception:
+            pass
+        e.set_footer(text="Use .help crewbattles to see all commands.")
+        return await ctx.reply(embed=e)
