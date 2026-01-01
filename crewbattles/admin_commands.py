@@ -86,10 +86,15 @@ class AdminCommandsMixin:
         return max(int(lo), min(int(hi), int(n)))
 
     async def _get_price_rules(self, guild: discord.Guild) -> dict:
-        rules = await self.config.guild(guild).price_rules()
+        # Backward-compatible: if not registered yet, fall back to raw/defaults
+        try:
+            rules = await self.config.guild(guild).price_rules()
+        except AttributeError:
+            rules = await self.config.guild(guild).get_raw("price_rules", default=DEFAULT_PRICE_RULES)
+
         if not isinstance(rules, dict):
             rules = DEFAULT_PRICE_RULES
-        # ensure required keys exist
+
         rules.setdefault("min", DEFAULT_PRICE_RULES["min"])
         rules.setdefault("max", DEFAULT_PRICE_RULES["max"])
         rules.setdefault("base", DEFAULT_PRICE_RULES["base"])

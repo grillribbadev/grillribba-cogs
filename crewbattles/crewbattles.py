@@ -10,10 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import discord
-from redbot.core import commands, Config, bank
-from redbot.core.data_manager import cog_data_path
-
-from .constants import DEFAULT_GUILD, DEFAULT_USER, BASE_HP, MAX_LEVEL, DEFAULT_PRICE_RULES
+from redbot.core import commands, Config
+from .constants import DEFAULT_PRICE_RULES
 from .player_manager import PlayerManager
 from .fruits import FruitManager
 from .battle_engine import simulate
@@ -36,8 +34,20 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=1234567890, force_registration=True)
 
-        self.config.register_global(maintenance=False)
-        self.config.register_guild(**DEFAULT_GUILD)
+        self.config.register_guild(
+            maintenance=False,
+            beri_win=0,
+            beri_loss=0,
+            turn_delay=1.0,
+            haki_cost=HAKI_TRAIN_COST,
+            haki_cooldown=HAKI_TRAIN_COOLDOWN,
+            crew_points_win=1,
+            exp_win_min=0,
+            exp_win_max=0,
+            exp_loss_min=0,
+            exp_loss_max=0,
+            price_rules=DEFAULT_PRICE_RULES,
+        )
         self.config.register_user(**DEFAULT_USER)
 
         self.players = PlayerManager(self)
