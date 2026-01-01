@@ -47,10 +47,10 @@ DEFAULT_PRICE_RULES = {
         "mythical zoan": 1_500_000,
     },
     "per_bonus": {
-        "paramecia": 70_000,
-        "zoan": 85_000,
-        "ancient zoan": 95_000,
-        "logia": 120_000,
-        "mythical zoan": 160_000,
+        "paramecia": 5000,
+        "zoan": 7000,
+        "ancient zoan": 9000,
+        "logia": 11000,
+        "mythical zoan": 11000,
     },
 }
