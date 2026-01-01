@@ -573,37 +573,8 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
 
     # REMOVE / DISABLE THIS LEGACY COMMAND (it overrides the mixin cbshop)
     # @commands.command()
-    async def _cbshop_legacy(self, ctx: commands.Context, page: int = 1):
-        ""
-        # ...existing code...
-        # (keep body if you want, but it is no longer registered as a command)
-        return await ctx.send("Legacy cbshop disabled. Use the mixin cbshop command.")
-
-    @commands.command()
     async def cbshop(self, ctx: commands.Context, page: int = 1):
-        items = self.fruits.all() or []
-        if not items:
-            return await ctx.send("Shop is empty.")
-
-        page = max(1, int(page or 1))
-        per = 8
-        start = (page - 1) * per
-        chunk = items[start : start + per]
-        if not chunk:
-            return await ctx.send("That page is empty.")
-
-        e = discord.Embed(title="Devil Fruit Shop", color=discord.Color.gold())
-        lines = []
-        for f in chunk:
-            name = f.get("name", "Unknown")
-            price = int(f.get("price", 0) or 0)
-            bonus = int(f.get("bonus", 0) or 0)
-            stock = f.get("stock", None)
-            stock_txt = "∞" if stock is None else str(stock)
-            lines.append(f"- {name} | {price:,} Beri | Bonus +{bonus} | Stock: {stock_txt}")
-        e.description = "\n".join(lines)
-        e.set_footer(text=f"Page {page} | Buy: .cbbuy <fruit name>")
-        await ctx.send(embed=e)
+        return await ctx.send("Legacy cbshop disabled; using mixin command.")
 
     @commands.command()
     async def cbbuy(self, ctx: commands.Context, *, fruit_name: str):

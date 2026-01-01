@@ -1,10 +1,10 @@
-import copy
 import io
 import json
+import copy
+import discord
 from datetime import datetime, timezone
 from pathlib import Path
 
-import discord
 from redbot.core import commands
 from redbot.core.data_manager import cog_data_path
 
@@ -361,38 +361,35 @@ class AdminCommandsMixin:
         Modes:
           - rules (default): ignore JSON prices; compute from configured price_rules
           - json: keep the JSON prices as-is
-
-        Usage:
-          .cbadmin fruits import
-          .cbadmin fruits import json
         """
         if not ctx.message.attachments:
-            return await ctx.reply("Attach a JSON file: `.cbadmin fruits import` with `fruits.json` attached.")
+            return await ctx.reply("Attach `fruits.json`: `.cbadmin fruits import [rules|json]`")
 
         mode = (mode or "rules").strip().lower()
         if mode not in ("rules", "json"):
             return await ctx.reply("Mode must be `rules` (default) or `json`.")
 
         att = ctx.message.attachments[0]
-        raw = await att.read()
-        payload = json.loads(raw.decode("utf-8"))
+        try:
+            raw = await att.read()
+            payload = json.loads(raw.decode("utf-8"))
+        except Exception as e:
+            return await ctx.reply(f"Failed to read JSON attachment: {e}")
 
         fruits_list = (payload or {}).get("fruits")
         if not isinstance(fruits_list, list):
-            return await ctx.reply("JSON must look like: `{ \"fruits\": [ ... ] }`")
+            return await ctx.reply('JSON must look like: `{ "fruits": [ ... ] }`')
 
         if mode == "rules":
             rules = await self._get_price_rules(ctx.guild)
-            # rewrite prices before importing
             for f in fruits_list:
                 if not isinstance(f, dict):
                     continue
                 f["price"] = self._compute_price_from_rules(f, rules)
-                # keep auto-reprice behavior consistent
                 f["price_locked"] = False
 
         ok, bad = self.fruits.pool_import(payload)
-        await ctx.reply(f"✅ Imported into pool: {ok} OK, {bad} failed. (mode={mode})")
+        return await ctx.reply(f"✅ Imported into pool: {ok} OK, {bad} failed. (mode={mode})")
 
     @cbadmin_fruits.command(name="export")
     async def cbadmin_fruits_export(self, ctx: commands.Context, which: str = "pool"):
@@ -584,17 +581,11 @@ class AdminCommandsMixin:
     @cbadmin_fruits.command(name="addall")
     async def cbadmin_fruits_addall(self, ctx: commands.Context, stock: str = "1"):
         """
-        Add ALL fruits from an attached fruits.json into the SHOP at once.
-        Also upserts them into the POOL first.
-
-        Usage:
-          .cbadmin fruits addall              (default stock=1)
-          .cbadmin fruits addall 5            (stock=5 for every fruit)
-          .cbadmin fruits addall unlimited    (unlimited stock)
-        (Attach fruits.json)
+        Add ALL fruits from attached fruits.json into the SHOP at once.
+        Default stock=1. Does pool import first.
         """
         if not ctx.message.attachments:
-            return await ctx.reply("Attach `fruits.json`: `.cbadmin fruits addall [stock]` with the file attached.")
+            return await ctx.reply("Attach `fruits.json`: `.cbadmin fruits addall [stock]`")
 
         try:
             st = self._parse_stock_token(stock)  # None = unlimited
@@ -610,9 +601,9 @@ class AdminCommandsMixin:
 
         fruits_list = (payload or {}).get("fruits")
         if not isinstance(fruits_list, list) or not fruits_list:
-            return await ctx.reply("JSON must look like: `{ \"fruits\": [ {..}, {..} ] }`")
+            return await ctx.reply('JSON must look like: `{ "fruits": [ ... ] }`')
 
-        # IMPORTANT: apply pricing rules so JSON prices don't override your configured rules
+        # Apply pricing rules so JSON prices do NOT win
         rules = await self._get_price_rules(ctx.guild)
         for f in fruits_list:
             if not isinstance(f, dict):
@@ -620,13 +611,8 @@ class AdminCommandsMixin:
             f["price"] = self._compute_price_from_rules(f, rules)
             f["price_locked"] = False
 
-        # 1) Upsert into pool (now rule-priced)
-        try:
-            ok_pool, bad_pool = self.fruits.pool_import(payload)
-        except Exception as e:
-            return await ctx.reply(f"Pool import failed: {e}")
+        ok_pool, bad_pool = self.fruits.pool_import(payload)
 
-        # 2) Stock all into shop
         ok_shop = 0
         bad_shop = 0
         for item in fruits_list:
@@ -644,7 +630,7 @@ class AdminCommandsMixin:
                 bad_shop += 1
 
         stock_txt = "∞" if st is None else str(st)
-        await ctx.reply(
+        return await ctx.reply(
             f"✅ addall complete.\n"
             f"POOL: {ok_pool} OK, {bad_pool} failed\n"
             f"SHOP: {ok_shop} stocked (stock={stock_txt}), {bad_shop} failed"

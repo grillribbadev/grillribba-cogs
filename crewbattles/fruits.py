@@ -21,7 +21,8 @@ class Fruit:
     type: str = "paramecia"
     bonus: int = 0
     price: int = 0
-    ability: str = ""  # NEW
+    ability: str = ""
+    price_locked: bool = False  # NEW
 
     def to_dict(self) -> dict:
         return {
@@ -30,6 +31,7 @@ class Fruit:
             "bonus": int(self.bonus),
             "price": int(self.price),
             "ability": self.ability or "",
+            "price_locked": bool(self.price_locked),
         }
 
     @staticmethod
@@ -43,7 +45,8 @@ class Fruit:
         bonus = _as_int(obj.get("bonus", 0), 0)
         price = _as_int(obj.get("price", 0), 0)
         ability = str(obj.get("ability", "") or "").strip()
-        return Fruit(name=name, type=ftype, bonus=bonus, price=price, ability=ability)
+        price_locked = bool(obj.get("price_locked", False))
+        return Fruit(name=name, type=ftype, bonus=bonus, price=price, ability=ability, price_locked=price_locked)
 
 
 class FruitManager:
