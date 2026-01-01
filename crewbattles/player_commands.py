@@ -99,83 +99,125 @@ class PlayerCommandsMixin:
         e.set_footer(text="Tip: Train Haki to improve crit/dodge/counter chances.")
         return await ctx.reply(embed=e)
 
-    @commands.cooldown(1, 10, commands.BucketType.user)  # 1 use per 10s per user
-    @commands.command(name="cbshop")
-    async def cbshop(self, ctx: commands.Context, page: int = 1):
-        items = self.fruits.all() or []
-        if not items:
-            return await ctx.send("Shop is empty. Admins can stock it with `.cbadmin fruits shopadd ...`")
+    _SHOP_TYPES = {
+        "paramecia": "paramecia",
+        "zoan": "zoan",
+        "ancient": "ancient zoan",
+        "ancient zoan": "ancient zoan",
+        "logia": "logia",
+        "mythical": "mythical zoan",
+        "mythic zoan": "mythical zoan",
+        "mythical zoan": "mythical zoan",
+    }
 
-        per = 10  # max 10 fruits per page
+    def _norm_shop_type(self, t: str) -> str | None:
+        key = " ".join((t or "").strip().lower().split())
+        return self._SHOP_TYPES.get(key)
+
+    @commands.cooldown(1, 10, commands.BucketType.user)
+    @commands.command(name="cbshop")
+    async def cbshop(self, ctx: commands.Context, *, fruit_type: str = ""):
+        """
+        Usage:
+          .cbshop paramecia
+          .cbshop zoan
+          .cbshop ancient zoan
+          .cbshop logia
+          .cbshop mythical zoan
+        """
+        t = self._norm_shop_type(fruit_type)
+        if not t:
+            return await ctx.send(
+                "Pick a category:\n"
+                "`paramecia`, `zoan`, `ancient zoan`, `logia`, `mythical zoan`\n"
+                "Example: `.cbshop logia`"
+            )
+
+        items = self.fruits.all() or []  # shop list
+        if not items:
+            return await ctx.send("Shop is empty.")
+
+        def norm_item_type(x: dict) -> str:
+            return self._norm_shop_type(x.get("type", "")) or "paramecia"
+
+        items = [f for f in items if norm_item_type(f) == t]
+        if not items:
+            return await ctx.send(f"No items found for `{t}`.")
+
+        # ascending order by price, then name
+        items.sort(key=lambda f: (int(f.get("price", 0) or 0), (f.get("name") or "").lower()))
+
+        per = 10
         pages = max(1, math.ceil(len(items) / per))
-        page = max(1, min(int(page or 1), pages))
+        page = 1
 
         def build_embed(p: int) -> discord.Embed:
             start = (p - 1) * per
             chunk = items[start : start + per]
 
-            e = discord.Embed(title="🛒 Devil Fruit Shop", color=discord.Color.gold())
+            e = discord.Embed(
+                title=f"🛒 Devil Fruit Shop • {t.title()}",
+                color=discord.Color.gold(),
+            )
+
             lines = []
             for f in chunk:
                 name = f.get("name", "Unknown")
-                ftype = str(f.get("type", "unknown")).title()
                 bonus = int(f.get("bonus", 0) or 0)
                 price = int(f.get("price", 0) or 0)
                 ability = f.get("ability") or "None"
                 stock = f.get("stock", None)
                 stock_txt = "∞" if stock is None else str(stock)
-                lines.append(f"- **{name}** ({ftype}) `+{bonus}` | `{price:,}` | Stock: `{stock_txt}` | *{ability}*")
+
+                lines.append(f"- **{name}** `+{bonus}` | `{price:,}` | Stock: `{stock_txt}` | *{ability}*")
 
             e.description = "\n".join(lines) if lines else "—"
             e.set_footer(text=f"Page {p}/{pages} • Buy: .cbbuy <fruit name>")
             return e
 
         if pages == 1:
-            return await ctx.send(embed=build_embed(page))
+            return await ctx.send(embed=build_embed(1))
 
         class _ShopPager(discord.ui.View):
-            def __init__(self, *, author_id: int, current: int):
+            def __init__(self, *, author_id: int):
                 super().__init__(timeout=60)
                 self.author_id = author_id
-                self.current = current
+                self.current = 1
                 self._msg: discord.Message | None = None
-                self._sync_buttons()
+                self._sync()
 
-            def _sync_buttons(self):
+            def _sync(self):
                 self.prev_btn.disabled = self.current <= 1
                 self.next_btn.disabled = self.current >= pages
 
             async def interaction_check(self, interaction: discord.Interaction) -> bool:
-                # only the command invoker can flip pages
-                return interaction.user and interaction.user.id == self.author_id
+                return interaction.user is not None and interaction.user.id == self.author_id
 
             async def on_timeout(self) -> None:
-                # disable buttons when timed out
                 for child in self.children:
                     if isinstance(child, discord.ui.Button):
                         child.disabled = True
-                try:
-                    if self._msg:
+                if self._msg:
+                    try:
                         await self._msg.edit(view=self)
-                except Exception:
-                    pass
+                    except Exception:
+                        pass
 
             @discord.ui.button(label="◀ Prev", style=discord.ButtonStyle.secondary)
             async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
                 self.current = max(1, self.current - 1)
-                self._sync_buttons()
+                self._sync()
                 await interaction.response.edit_message(embed=build_embed(self.current), view=self)
 
             @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.secondary)
             async def next_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
                 self.current = min(pages, self.current + 1)
-                self._sync_buttons()
+                self._sync()
                 await interaction.response.edit_message(embed=build_embed(self.current), view=self)
 
-        view = _ShopPager(author_id=ctx.author.id, current=page)
-        msg = await ctx.send(embed=build_embed(page), view=view)  # was ctx.reply(...)
+        view = _ShopPager(author_id=ctx.author.id)
+        msg = await ctx.send(embed=build_embed(1), view=view)
         view._msg = msg
-        return
 
     @commands.command(name="cbbuy")
     async def cbbuy(self, ctx: commands.Context, *, fruit_name: str):
