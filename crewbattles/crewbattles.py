@@ -1025,90 +1025,11 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
             except Exception:
                 pass
 
-    @commands.command(name="cbleaderboard", aliases=["cblb", "cbtop"])
+    # DISABLE legacy leaderboard so the PlayerCommandsMixin.cbleaderboard(*args) is used.
+    # @commands.command(name="cbleaderboard", aliases=["cblb", "cbtop"])
     async def cbleaderboard(self, ctx: commands.Context, page: int = 1, sort_by: str = "wins"):
-        """
-        Show Crew Battles leaderboard.
-        Usage: .cbleaderboard [page] [wins|level|winrate]
-        """
-        sort_by = (sort_by or "wins").lower().strip()
-        if sort_by not in ("wins", "level", "winrate"):
-            sort_by = "wins"
-
-        all_users = await self.players.all()
-        entries = []
-        for uid, pdata in (all_users or {}).items():
-            if not isinstance(pdata, dict) or not pdata.get("started"):
-                continue
-            try:
-                uid_int = int(uid)
-            except Exception:
-                continue
-
-            wins = int(pdata.get("wins", 0) or 0)
-            losses = int(pdata.get("losses", 0) or 0)
-            lvl = int(pdata.get("level", 1) or 1)
-            exp = int(pdata.get("exp", 0) or 0)
-            total = wins + losses
-            winrate = (wins / total * 100.0) if total else 0.0
-
-            entries.append(
-                {
-                    "uid": uid_int,
-                    "wins": wins,
-                    "losses": losses,
-                    "level": lvl,
-                    "exp": exp,
-                    "winrate": winrate,
-                }
-            )
-
-        if not entries:
-            return await ctx.reply("No Crew Battles players found yet. Use `.startcb` to begin.")
-
-        if sort_by == "level":
-            entries.sort(key=lambda x: (x["level"], x["exp"], x["wins"]), reverse=True)
-        elif sort_by == "winrate":
-            entries.sort(key=lambda x: (x["winrate"], x["wins"], x["level"]), reverse=True)
-        else:
-            entries.sort(key=lambda x: (x["wins"], x["winrate"], x["level"]), reverse=True)
-
-        per = 10
-        page = max(1, int(page or 1))
-        start = (page - 1) * per
-        chunk = entries[start : start + per]
-        if not chunk:
-            return await ctx.reply("That page is empty.")
-
-        e = discord.Embed(
-            title="🏆 Crew Battles Leaderboard",
-            description=f"Sorted by **{sort_by}** • Page **{page}**",
-            color=discord.Color.gold(),
-            timestamp=discord.utils.utcnow(),
-        )
-
-        lines = []
-        for i, row in enumerate(chunk, start=start + 1):
-            m = ctx.guild.get_member(row["uid"]) if ctx.guild else None
-            name = m.display_name if m else f"User {row['uid']}"
-
-            medal = ""
-            if i == 1:
-                medal = "🥇 "
-            elif i == 2:
-                medal = "🥈 "
-            elif i == 3:
-                medal = "🥉 "
-
-            lines.append(
-                f"{medal}`#{i:>2}` **{name}** — "
-                f"🏅 Wins: `{row['wins']}` | ☠️ Losses: `{row['losses']}` | "
-                f"📈 Lvl: `{row['level']}` | 🎯 WR: `{row['winrate']:.1f}%`"
-            )
-
-        e.add_field(name="Top Pirates", value="\n".join(lines), inline=False)
-        e.set_footer(text="Use: .cbleaderboard <page> <wins|level|winrate>")
-        await ctx.reply(embed=e)
+        # legacy stub (should not be registered)
+        return await ctx.send("Legacy cbleaderboard disabled; using mixin command.")
 
     @commands.is_owner()
     @commands.command(name="cbdebugbattle")

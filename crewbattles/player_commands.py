@@ -426,17 +426,28 @@ class PlayerCommandsMixin:
         return await self.cbtrainhaki(ctx, haki_type, points)
 
     @commands.command(name="cbleaderboard", aliases=["cblb", "cbtop"])
-    async def cbleaderboard(self, ctx: commands.Context, sort_by: str = "wins"):
+    async def cbleaderboard(self, ctx: commands.Context, *args: str):
         """
         Usage:
           .cbleaderboard
-          .cbleaderboard wins
-          .cbleaderboard level
-          .cbleaderboard winrate
+          .cbleaderboard wins|level|winrate
+          (optional legacy) .cbleaderboard <page> [wins|level|winrate]
 
-        Paging is done with buttons (no page args).
+        Paging is primarily done with buttons.
         """
-        sort_by = (sort_by or "wins").lower().strip()
+        # Parse args safely (no int converter errors)
+        sort_by = "wins"
+        start_page = 1
+
+        parts = [a.strip().lower() for a in (args or []) if a and a.strip()]
+        if parts:
+            if parts[0].isdigit():
+                start_page = max(1, int(parts[0]))
+                if len(parts) > 1:
+                    sort_by = parts[1]
+            else:
+                sort_by = parts[0]
+
         if sort_by not in ("wins", "level", "winrate"):
             sort_by = "wins"
 
@@ -476,7 +487,6 @@ class PlayerCommandsMixin:
             if mode == "level":
                 entries.sort(key=lambda x: (x["level"], x["exp"], x["wins"]), reverse=True)
             elif mode == "winrate":
-                # Prefer people who have actually played at least 1 match
                 entries.sort(key=lambda x: (x["total"] > 0, x["winrate"], x["wins"], x["level"]), reverse=True)
             else:
                 entries.sort(key=lambda x: (x["wins"], x["winrate"], x["level"]), reverse=True)
@@ -485,11 +495,11 @@ class PlayerCommandsMixin:
 
         per = 10
         pages = max(1, math.ceil(len(entries) / per))
+        start_page = max(1, min(start_page, pages))
 
         def disp_name(uid: int) -> str:
             m = ctx.guild.get_member(uid) if ctx.guild else None
             name = m.display_name if m else f"User {uid}"
-            # keep the table aligned
             name = name.replace("`", "'")
             return (name[:18] + "…") if len(name) > 19 else name
 
@@ -508,21 +518,22 @@ class PlayerCommandsMixin:
 
             e = discord.Embed(
                 title="🏆 Crew Battles Leaderboard",
-                description=f"```text\n" + "\n".join(lines) + "\n```",
+                description="```text\n" + "\n".join(lines) + "\n```",
                 color=discord.Color.gold(),
                 timestamp=discord.utils.utcnow(),
             )
-            e.set_footer(text="Use: .cbleaderboard <page> <wins|level|winrate>")
+            e.set_footer(text=f"Sorted by {mode} • Page {page}/{pages} • Players: {len(entries)}")
             return e
 
         if pages == 1:
-            return await ctx.send(embed=build_embed(1))
+            return await ctx.send(embed=build_embed(1, sort_by))
 
         class _LeaderboardPager(discord.ui.View):
-            def __init__(self, *, author_id: int):
+            def __init__(self, *, author_id: int, mode: str, page: int):
                 super().__init__(timeout=60)
                 self.author_id = author_id
-                self.current = 1
+                self.mode = mode
+                self.current = page
                 self._msg: discord.Message | None = None
                 self._sync()
 
@@ -535,7 +546,7 @@ class PlayerCommandsMixin:
 
             async def on_timeout(self) -> None:
                 for child in self.children:
-                    if isinstance(child, discord.ui.Button):
+                    if isinstance(child, (discord.ui.Button, discord.ui.Select)):
                         child.disabled = True
                 if self._msg:
                     try:
@@ -543,20 +554,35 @@ class PlayerCommandsMixin:
                     except Exception:
                         pass
 
+            @discord.ui.select(
+                placeholder="Sort by…",
+                options=[
+                    discord.SelectOption(label="Wins", value="wins"),
+                    discord.SelectOption(label="Level", value="level"),
+                    discord.SelectOption(label="Winrate", value="winrate"),
+                ],
+            )
+            async def sort_select(self, interaction: discord.Interaction, select: discord.ui.Select):
+                self.mode = select.values[0]
+                sort_entries(self.mode)
+                self.current = 1
+                self._sync()
+                await interaction.response.edit_message(embed=build_embed(self.current, self.mode), view=self)
+
             @discord.ui.button(label="◀ Prev", style=discord.ButtonStyle.secondary)
             async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
                 self.current = max(1, self.current - 1)
                 self._sync()
-                await interaction.response.edit_message(embed=build_embed(self.current, sort_by), view=self)
+                await interaction.response.edit_message(embed=build_embed(self.current, self.mode), view=self)
 
             @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.secondary)
             async def next_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
                 self.current = min(pages, self.current + 1)
                 self._sync()
-                await interaction.response.edit_message(embed=build_embed(self.current, sort_by), view=self)
+                await interaction.response.edit_message(embed=build_embed(self.current, self.mode), view=self)
 
-        view = _LeaderboardPager(author_id=ctx.author.id)
-        msg = await ctx.send(embed=build_embed(1, sort_by), view=view)
+        view = _LeaderboardPager(author_id=ctx.author.id, mode=sort_by, page=start_page)
+        msg = await ctx.send(embed=build_embed(start_page, sort_by), view=view)
         view._msg = msg
 
     @commands.is_owner()
