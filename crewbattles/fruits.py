@@ -1,178 +1,240 @@
-from pathlib import Path
+from dataclasses import dataclass
 import json
-import random
-import shutil
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
-# cog-local cache (fallback)
-DATA = Path(__file__).parent / "data" / "fruits_cache.json"
-DATA.parent.mkdir(parents=True, exist_ok=True)
 
-# root-level fruits.json (persistent across reloads)
-ROOT = Path(__file__).resolve().parents[1] / "fruits.json"
+def _norm(name: str) -> str:
+    return " ".join((name or "").strip().lower().split())
+
+
+def _as_int(x, default=0) -> int:
+    try:
+        return int(x)
+    except Exception:
+        return int(default)
+
+
+@dataclass
+class Fruit:
+    name: str
+    type: str = "paramecia"
+    bonus: int = 0
+    price: int = 0
+
+    def to_dict(self) -> dict:
+        return {"name": self.name, "type": self.type, "bonus": int(self.bonus), "price": int(self.price)}
+
+    @staticmethod
+    def from_any(obj: Any) -> "Fruit":
+        if not isinstance(obj, dict):
+            raise ValueError("Fruit must be an object/dict")
+        name = str(obj.get("name", "")).strip()
+        if not name:
+            raise ValueError("Fruit missing name")
+        ftype = str(obj.get("type", "paramecia") or "paramecia").strip().lower()
+        bonus = _as_int(obj.get("bonus", 0), 0)
+        price = _as_int(obj.get("price", 0), 0)
+        return Fruit(name=name, type=ftype, bonus=bonus, price=price)
+
 
 class FruitManager:
-    def __init__(self):
-        # make sure ROOT exists (prefer it). If not, try to populate it from DATA or create empty.
-        self._ensure_root_exists()
-        self._data = []
+    """
+    Two stores:
+      - Pool (catalog): fruits you *can* stock in the shop
+      - Shop (inventory): fruit names with per-item stock
+
+    Back-compat:
+      - all() / get() / update() operate on SHOP items (so cbshop/cbbuy keep working)
+    """
+
+    def __init__(self, data_dir: Path):
+        self.data_dir = Path(data_dir)
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+
+        self._pool_path = self.data_dir / "fruits_pool.json"
+        self._shop_path = self.data_dir / "fruits_shop.json"
+
+        self._pool: Dict[str, Fruit] = {}
+        self._shop: Dict[str, Optional[int]] = {}  # key -> stock (None = unlimited)
         self._load()
 
-    def _ensure_root_exists(self):
-        try:
-            if not ROOT.exists():
-                # prefer cog-local DATA if present
-                if DATA.exists():
-                    try:
-                        shutil.copy2(DATA, ROOT)
-                        print(f"[CrewBattles] fruits: copied {DATA} -> {ROOT}")
-                    except Exception as e:
-                        print(f"[CrewBattles] fruits: failed to copy DATA to ROOT: {e}")
-                        try:
-                            ROOT.write_text("[]", encoding="utf-8")
-                            print(f"[CrewBattles] fruits: created empty {ROOT}")
-                        except Exception as e2:
-                            print(f"[CrewBattles] fruits: failed to create ROOT file: {e2}")
-                else:
-                    try:
-                        ROOT.write_text("[]", encoding="utf-8")
-                        print(f"[CrewBattles] fruits: created empty {ROOT}")
-                    except Exception as e:
-                        print(f"[CrewBattles] fruits: failed to create ROOT file: {e}")
-            # ensure DATA exists too so cog-local fallback remains
-            if not DATA.exists():
-                try:
-                    DATA.write_text("[]", encoding="utf-8")
-                    print(f"[CrewBattles] fruits: created empty {DATA}")
-                except Exception as e:
-                    print(f"[CrewBattles] fruits: failed to create DATA file: {e}")
-        except Exception as e:
-            print(f"[CrewBattles] fruits: unexpected _ensure_root_exists error: {e}")
-
+    # -------------------------
+    # Persistence
+    # -------------------------
     def _load(self):
-        # Prefer ROOT (persistent); fallback to DATA
-        try:
-            if ROOT.exists():
-                with ROOT.open("r", encoding="utf-8") as fh:
-                    self._data = json.load(fh) or []
-                    return
-        except Exception as e:
-            print(f"[CrewBattles] fruits: failed to load ROOT {ROOT}: {e}")
+        self._pool = {}
+        self._shop = {}
 
-        try:
-            if DATA.exists():
-                with DATA.open("r", encoding="utf-8") as fh:
-                    self._data = json.load(fh) or []
-                    return
-        except Exception as e:
-            print(f"[CrewBattles] fruits: failed to load DATA {DATA}: {e}")
+        if self._pool_path.exists():
+            data = json.loads(self._pool_path.read_text(encoding="utf-8"))
+            # accept list[fruit] or {"fruits":[...]} or dict keyed by name
+            fruits_raw = data.get("fruits") if isinstance(data, dict) else data
+            if isinstance(fruits_raw, dict):
+                fruits_raw = list(fruits_raw.values())
+            if isinstance(fruits_raw, list):
+                for item in fruits_raw:
+                    try:
+                        f = Fruit.from_any(item)
+                        self._pool[_norm(f.name)] = f
+                    except Exception:
+                        continue
 
-        self._data = []
+        if self._shop_path.exists():
+            data = json.loads(self._shop_path.read_text(encoding="utf-8"))
+            # accept dict name->stock OR {"shop":{...}}
+            shop_raw = data.get("shop") if isinstance(data, dict) and "shop" in data else data
+            if isinstance(shop_raw, dict):
+                for name, stock in shop_raw.items():
+                    key = _norm(name)
+                    if stock is None:
+                        self._shop[key] = None
+                    else:
+                        self._shop[key] = max(0, _as_int(stock, 0))
 
-    def _save(self):
-        # persist to both DATA and ROOT; print diagnostics on error
-        try:
-            with DATA.open("w", encoding="utf-8") as fh:
-                json.dump(self._data, fh, ensure_ascii=False, indent=2)
-        except Exception as e:
-            print(f"[CrewBattles] fruits: failed to write DATA {DATA}: {e}")
+    def _save_pool(self):
+        payload = {"fruits": [f.to_dict() for f in sorted(self._pool.values(), key=lambda x: _norm(x.name))]}
+        self._pool_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
-        try:
-            with ROOT.open("w", encoding="utf-8") as fh:
-                json.dump(self._data, fh, ensure_ascii=False, indent=2)
-        except Exception as e:
-            print(f"[CrewBattles] fruits: failed to write ROOT {ROOT}: {e}")
-            # try an atomic fallback via temp file
+    def _save_shop(self):
+        # store original names? we only store normalized keys; that’s fine because we join with pool for display
+        payload = {"shop": {k: v for k, v in sorted(self._shop.items(), key=lambda kv: kv[0])}}
+        self._shop_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    # -------------------------
+    # Pool (catalog)
+    # -------------------------
+    def pool_all(self) -> List[dict]:
+        return [f.to_dict() for f in sorted(self._pool.values(), key=lambda x: _norm(x.name))]
+
+    def pool_get(self, name: str) -> Optional[dict]:
+        f = self._pool.get(_norm(name))
+        return f.to_dict() if f else None
+
+    def pool_upsert(self, fruit_dict: dict) -> dict:
+        f = Fruit.from_any(fruit_dict)
+        self._pool[_norm(f.name)] = f
+        self._save_pool()
+        return f.to_dict()
+
+    def pool_import(self, payload: Any) -> Tuple[int, int]:
+        """
+        Import into pool ONLY. Returns (added_or_updated, skipped).
+        Accepts list[fruit] OR {"fruits":[...]} OR dict keyed by name.
+        """
+        fruits_raw = payload.get("fruits") if isinstance(payload, dict) else payload
+        if isinstance(fruits_raw, dict):
+            fruits_raw = list(fruits_raw.values())
+        if not isinstance(fruits_raw, list):
+            raise ValueError("Invalid format. Expected a list of fruits or {'fruits':[...]}")
+
+        ok = 0
+        bad = 0
+        for item in fruits_raw:
             try:
-                tmp = ROOT.with_suffix(".tmp")
-                with tmp.open("w", encoding="utf-8") as fh:
-                    json.dump(self._data, fh, ensure_ascii=False, indent=2)
-                tmp.replace(ROOT)
-                print(f"[CrewBattles] fruits: wrote ROOT via tmp {tmp}")
-            except Exception as e2:
-                print(f"[CrewBattles] fruits: atomic write fallback failed: {e2}")
+                self.pool_upsert(item)
+                ok += 1
+            except Exception:
+                bad += 1
+        return ok, bad
 
-    def all(self):
-        return list(self._data)
+    # -------------------------
+    # Shop (inventory)
+    # -------------------------
+    def shop_list(self) -> List[dict]:
+        """
+        Returns list of fruit dicts (merged from pool) with 'stock' included.
+        Only fruits present in shop are listed.
+        """
+        out = []
+        for key, stock in self._shop.items():
+            f = self._pool.get(key)
+            if not f:
+                # allow “dangling” shop entries, but show minimal
+                out.append({"name": key, "type": "unknown", "bonus": 0, "price": 0, "stock": stock})
+            else:
+                d = f.to_dict()
+                d["stock"] = stock
+                out.append(d)
+        out.sort(key=lambda x: _norm(x.get("name", "")))
+        return out
 
-    def get(self, name: str):
+    def shop_get(self, name: str) -> Optional[dict]:
+        key = _norm(name)
+        if key not in self._shop:
+            return None
+        f = self._pool.get(key)
+        if not f:
+            return {"name": name, "type": "unknown", "bonus": 0, "price": 0, "stock": self._shop.get(key)}
+        d = f.to_dict()
+        d["stock"] = self._shop.get(key)
+        return d
+
+    def shop_add(self, name: str, stock: Optional[int] = 1):
+        key = _norm(name)
+        if key not in self._pool:
+            raise ValueError("Fruit not found in pool")
+        if stock is None:
+            self._shop[key] = None
+        else:
+            stock_i = max(0, _as_int(stock, 0))
+            self._shop[key] = stock_i
+        self._save_shop()
+
+    def shop_add_many(self, names: List[str], stock_each: Optional[int] = 1) -> Tuple[int, int]:
+        ok = 0
+        bad = 0
+        for n in names:
+            try:
+                self.shop_add(n, stock_each)
+                ok += 1
+            except Exception:
+                bad += 1
+        return ok, bad
+
+    def shop_set_stock(self, name: str, stock: Optional[int]):
+        key = _norm(name)
+        if key not in self._shop:
+            raise ValueError("Fruit not in shop")
+        if stock is None:
+            self._shop[key] = None
+        else:
+            self._shop[key] = max(0, _as_int(stock, 0))
+        self._save_shop()
+
+    def shop_remove(self, name: str):
+        key = _norm(name)
+        if key in self._shop:
+            del self._shop[key]
+            self._save_shop()
+
+    # -------------------------
+    # Back-compat API used by your cog
+    # -------------------------
+    def all(self) -> List[dict]:
+        # used by cbshop; return shop items
+        return self.shop_list()
+
+    def get(self, name: str) -> Optional[dict]:
+        # used by cbbuy/battle bonus lookup; return shop entry (must exist in shop)
+        return self.shop_get(name)
+
+    def update(self, fruit_dict: dict):
+        """
+        Used by cbbuy to decrement stock.
+        Expects dict containing at least: name + stock
+        """
+        if not isinstance(fruit_dict, dict):
+            raise ValueError("fruit_dict must be dict")
+        name = fruit_dict.get("name")
         if not name:
-            return None
-        nl = str(name).strip().lower()
-        for f in self._data:
-            if str(f.get("name", "")).strip().lower() == nl:
-                return dict(f)
-        return None
-
-    def random(self):
-        if not self._data:
-            return None
-        return dict(random.choice(self._data))
-
-    def add(self, name: str, ftype: str, bonus: int, price: int, stock=None, ability: str = ""):
-        fruit = {
-            "name": str(name),
-            "type": str(ftype),
-            "bonus": int(bonus),
-            "price": int(price),
-            "stock": None if stock is None else int(stock),
-            "ability": str(ability or ""),
-        }
-        existing = self.get(name)
-        if existing:
-            for idx, it in enumerate(self._data):
-                if str(it.get("name","")).strip().lower() == str(name).strip().lower():
-                    self._data[idx] = fruit
-                    break
+            raise ValueError("fruit_dict missing name")
+        key = _norm(str(name))
+        if key not in self._shop:
+            raise ValueError("fruit not in shop")
+        stock = fruit_dict.get("stock", None)
+        if stock is None:
+            self._shop[key] = None
         else:
-            self._data.append(fruit)
-        self._save()
-        return fruit
-
-    def update(self, fruit: dict):
-        if not fruit or "name" not in fruit:
-            return
-        name = str(fruit["name"]).strip().lower()
-        for idx, it in enumerate(self._data):
-            if str(it.get("name","")).strip().lower() == name:
-                self._data[idx] = fruit
-                self._save()
-                return
-        self._data.append(fruit)
-        self._save()
-        return
-
-    def import_json(self, json_obj):
-        if isinstance(json_obj, str):
-            parsed = json.loads(json_obj)
-        else:
-            parsed = json_obj
-        if not isinstance(parsed, list):
-            raise ValueError("Import must be a list of fruit objects")
-        new = []
-        for item in parsed:
-            if not isinstance(item, dict):
-                continue
-            name = item.get("name")
-            typ = item.get("type") or item.get("ftype")
-            if not name or not typ:
-                raise ValueError("Each fruit must include 'name' and 'type'")
-            bonus = int(item.get("bonus", 0))
-            price = int(item.get("price", 0))
-            stock = item.get("stock", None)
-            if stock is not None:
-                try:
-                    stock = int(stock)
-                except Exception:
-                    stock = None
-            ability = str(item.get("ability", "") or "")
-            new.append({
-                "name": str(name),
-                "type": str(typ),
-                "bonus": bonus,
-                "price": price,
-                "stock": stock,
-                "ability": ability,
-            })
-        self._data = new
-        self._save()
-        return len(new)
+            self._shop[key] = max(0, _as_int(stock, 0))
+        self._save_shop()
