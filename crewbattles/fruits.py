@@ -21,9 +21,16 @@ class Fruit:
     type: str = "paramecia"
     bonus: int = 0
     price: int = 0
+    ability: str = ""  # NEW
 
     def to_dict(self) -> dict:
-        return {"name": self.name, "type": self.type, "bonus": int(self.bonus), "price": int(self.price)}
+        return {
+            "name": self.name,
+            "type": self.type,
+            "bonus": int(self.bonus),
+            "price": int(self.price),
+            "ability": self.ability or "",
+        }
 
     @staticmethod
     def from_any(obj: Any) -> "Fruit":
@@ -35,7 +42,8 @@ class Fruit:
         ftype = str(obj.get("type", "paramecia") or "paramecia").strip().lower()
         bonus = _as_int(obj.get("bonus", 0), 0)
         price = _as_int(obj.get("price", 0), 0)
-        return Fruit(name=name, type=ftype, bonus=bonus, price=price)
+        ability = str(obj.get("ability", "") or "").strip()
+        return Fruit(name=name, type=ftype, bonus=bonus, price=price, ability=ability)
 
 
 class FruitManager:
@@ -151,7 +159,7 @@ class FruitManager:
             f = self._pool.get(key)
             if not f:
                 # allow “dangling” shop entries, but show minimal
-                out.append({"name": key, "type": "unknown", "bonus": 0, "price": 0, "stock": stock})
+                out.append({"name": key, "type": "unknown", "bonus": 0, "price": 0, "ability": "", "stock": stock})
             else:
                 d = f.to_dict()
                 d["stock"] = stock
@@ -165,7 +173,7 @@ class FruitManager:
             return None
         f = self._pool.get(key)
         if not f:
-            return {"name": name, "type": "unknown", "bonus": 0, "price": 0, "stock": self._shop.get(key)}
+            return {"name": name, "type": "unknown", "bonus": 0, "price": 0, "ability": "", "stock": self._shop.get(key)}
         d = f.to_dict()
         d["stock"] = self._shop.get(key)
         return d
@@ -180,17 +188,6 @@ class FruitManager:
             stock_i = max(0, _as_int(stock, 0))
             self._shop[key] = stock_i
         self._save_shop()
-
-    def shop_add_many(self, names: List[str], stock_each: Optional[int] = 1) -> Tuple[int, int]:
-        ok = 0
-        bad = 0
-        for n in names:
-            try:
-                self.shop_add(n, stock_each)
-                ok += 1
-            except Exception:
-                bad += 1
-        return ok, bad
 
     def shop_set_stock(self, name: str, stock: Optional[int]):
         key = _norm(name)
