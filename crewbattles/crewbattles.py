@@ -562,8 +562,8 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
     async def _cbshop_legacy(self, ctx: commands.Context, page: int = 1):
         ""
         # ...existing code...
-        # (keep body if you want, but it's no longer a command)
-        pass
+        # (keep body if you want, but it is no longer registered as a command)
+        return await ctx.send("Legacy cbshop disabled. Use the mixin cbshop command.")
 
     @commands.command()
     async def cbshop(self, ctx: commands.Context, page: int = 1):

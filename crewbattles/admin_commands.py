@@ -469,3 +469,27 @@ class AdminCommandsMixin:
             f"POOL: {ok_pool} OK, {bad_pool} failed\n"
             f"SHOP: {ok_shop} stocked (stock={stock_txt}), {bad_shop} failed"
         )
+
+    @cbadmin.command(name="removefruit")
+    async def cbadmin_removefruit(self, ctx: commands.Context, member: discord.Member, confirm: str = None):
+        """Remove a user's equipped fruit. Usage: .cbadmin removefruit @user confirm"""
+        if confirm != "confirm":
+            return await ctx.reply("Run: `.cbadmin removefruit @user confirm`")
+
+        # Prefer PlayerManager if available
+        if hasattr(self, "players") and getattr(self.players, "get", None) and getattr(self.players, "save", None):
+            pdata = await self.players.get(member)
+            old = pdata.get("fruit")
+            if not old:
+                return await ctx.reply("That user has no fruit equipped.")
+            pdata["fruit"] = None
+            await self.players.save(member, pdata)
+        else:
+            pdata = await self.config.user(member).all()
+            old = pdata.get("fruit")
+            if not old:
+                return await ctx.reply("That user has no fruit equipped.")
+            pdata["fruit"] = None
+            await self.config.user(member).set(pdata)
+
+        await ctx.reply(f"✅ Removed **{member.display_name}**'s fruit: **{old}**")
