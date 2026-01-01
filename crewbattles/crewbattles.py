@@ -557,6 +557,14 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
         e.set_footer(text="Tip: Use .cbhaki to see your Haki bonuses (crit/dodge/counter).")
         return await ctx.reply(embed=e)
 
+    # REMOVE / DISABLE THIS LEGACY COMMAND (it overrides the mixin cbshop)
+    # @commands.command()
+    async def _cbshop_legacy(self, ctx: commands.Context, page: int = 1):
+        """
+        # ...existing code...
+        # (keep body if you want, but it's no longer a command)
+        pass
+
     @commands.command()
     async def cbshop(self, ctx: commands.Context, page: int = 1):
         items = self.fruits.all() or []
