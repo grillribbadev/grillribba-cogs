@@ -25,7 +25,7 @@ class PlayerManager:
         return int(str(user))
 
     async def get(self, user: discord.abc.User) -> dict:
-        """Get a user's data WITHOUT writing defaults back to storage."""
+        """Read-only get. Never writes defaults on read."""
         uid = self._uid(user)
         try:
             stored = await self._conf.user_from_id(uid).all()
@@ -40,14 +40,11 @@ class PlayerManager:
         merged = copy.deepcopy(DEFAULT_USER)
         merged.update(stored)
 
-        # Merge nested haki dict safely
-        merged_haki = copy.deepcopy(DEFAULT_USER.get("haki", {}))
-        try:
-            if isinstance(stored.get("haki"), dict):
-                merged_haki.update(stored["haki"])
-        except Exception:
-            pass
-        merged["haki"] = merged_haki
+        # merge nested haki safely
+        base_haki = copy.deepcopy(DEFAULT_USER.get("haki", {}))
+        if isinstance(stored.get("haki"), dict):
+            base_haki.update(stored["haki"])
+        merged["haki"] = base_haki
 
         return merged
 

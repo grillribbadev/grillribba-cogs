@@ -1,41 +1,36 @@
 MAX_LEVEL = 100
-BASE_HP = 100
+BASE_HP = 150
 
-# guild defaults (used by Config in the cog)
-DEFAULT_GUILD = {
-    "turn_delay": 1.5,
-    "beri_win": 0,
-    "beri_loss": 0,
-
-    # EXP rewards (ranges)
-    "exp_win_min": 40,
-    "exp_win_max": 60,
-    "exp_loss_min": 15,
-    "exp_loss_max": 30,
-
-    # (optional) keep older keys if your code still uses them elsewhere
-    "exp_win": 50,
-    "exp_loss": 20,
-
-    "crew_points_win": 1,  # points awarded to winner's team per win (set to 0 to disable)
-    "haki_cost": 500,
-    "haki_cooldown": 3600,
-}
-
-# default user record (keeps shape used throughout the cog)
 DEFAULT_USER = {
     "started": False,
-    "fruit": None,
     "level": 1,
     "exp": 0,
     "wins": 0,
     "losses": 0,
-    "team": None,
-    "haki": {
-        "armament": 0,
-        "observation": 0,
-        "conquerors": False,
-        "conqueror": 0,
-    },
+    "fruit": None,
+    "haki": {"armament": 0, "observation": 0, "conquerors": False, "conqueror": 0},
     "last_haki_train": 0,
+    "battle_cd": 60,
+    "last_battle": 0,
+}
+
+DEFAULT_GUILD = {
+    "turn_delay": 1.0,
+    "beri_win": 0,
+    "beri_loss": 0,
+    "crew_points_win": 1,
+
+    # EXP ranges (you can configure with admin commands)
+    "exp_win_min": 0,
+    "exp_win_max": 0,
+    "exp_loss_min": 0,
+    "exp_loss_max": 0,
+
+    # Haki training
+    "haki_cost": 500,
+    "haki_cooldown": 60 * 60,
+    "conqueror_unlock_cost": 5000,
+
+    # Fruit removal cost (0 = free)
+    "remove_fruit_cost": 0,
 }
