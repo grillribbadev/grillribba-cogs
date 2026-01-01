@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import io
 import json
 import random
 import re
@@ -1098,3 +1099,197 @@ class CrewBattles(commands.Cog):
         e.add_field(name="Top Pirates", value="\n".join(lines), inline=False)
         e.set_footer(text="Use: .cbleaderboard <page> <wins|level|winrate>")
         await ctx.reply(embed=e)
+
+    @commands.is_owner()
+    @commands.command(name="cbdebugbattle")
+    async def cbdebugbattle(self, ctx: commands.Context, other: discord.Member):
+        """Owner-only: dump battle-relevant stats for two users."""
+        p1 = await self.players.get(ctx.author)
+        p2 = await self.players.get(other)
+
+        def fruit_info(p):
+            fname = p.get("fruit")
+            if not fname:
+                return ("None", 0, "")
+            f = None
+            try:
+                f = self.fruits.get(fname) or self.fruits.pool_get(fname)
+            except Exception:
+                f = None
+            if not isinstance(f, dict):
+                return (str(fname), 0, "")
+            return (f.get("name", fname), int(f.get("bonus", 0) or 0), str(f.get("ability", "") or ""))
+
+        def haki_info(p):
+            h = p.get("haki", {}) or {}
+            return (
+                int(h.get("armament", 0) or 0),
+                int(h.get("observation", 0) or 0),
+                bool(h.get("conquerors")),
+                int(h.get("conqueror", 0) or 0),
+            )
+
+        f1 = fruit_info(p1)
+        f2 = fruit_info(p2)
+        h1 = haki_info(p1)
+        h2 = haki_info(p2)
+
+        await ctx.reply(
+            "**Battle inputs:**\n"
+            f"**You:** fruit=`{f1[0]}` bonus=`{f1[1]}` ability=`{f1[2] or 'None'}` "
+            f"haki(A/O/Cunlock/Clvl)=`{h1}`\n"
+            f"**Other:** fruit=`{f2[0]}` bonus=`{f2[1]}` ability=`{f2[2] or 'None'}` "
+            f"haki(A/O/Cunlock/Clvl)=`{h2}`"
+        )
+
+    # =========================================================
+    # Admin: Fruits (pool + shop)
+    # =========================================================
+    @cbadmin.group(name="fruits", invoke_without_command=True)
+    async def cbadmin_fruits(self, ctx: commands.Context):
+        """Manage fruit pool/shop."""
+        await ctx.send_help()
+
+    @cbadmin_fruits.command(name="import")
+    async def cbadmin_fruits_import(self, ctx: commands.Context):
+        """Import fruits JSON into the POOL (catalog). Attach a JSON file."""
+        if not ctx.message.attachments:
+            return await ctx.reply("Attach a JSON file: `.cbadmin fruits import` with `fruits.json` attached.")
+
+        att = ctx.message.attachments[0]
+        try:
+            raw = await att.read()
+            payload = json.loads(raw.decode("utf-8"))
+        except Exception as e:
+            return await ctx.reply(f"Failed to read JSON: {e}")
+
+        try:
+            ok, bad = self.fruits.pool_import(payload)
+        except Exception as e:
+            return await ctx.reply(f"Import failed: {e}")
+
+        await ctx.reply(f"✅ Imported into pool: {ok} OK, {bad} failed.")
+
+    @cbadmin_fruits.command(name="export")
+    async def cbadmin_fruits_export(self, ctx: commands.Context, which: str = "pool"):
+        """Export fruits JSON. `pool` or `shop`."""
+        which = (which or "pool").lower().strip()
+        if which not in ("pool", "shop"):
+            return await ctx.reply("Use: `.cbadmin fruits export pool` or `.cbadmin fruits export shop`")
+
+        if which == "pool":
+            data = {"fruits": self.fruits.pool_all()}
+            fname = "fruits_pool.json"
+        else:
+            data = {"shop": self.fruits.shop_list()}
+            fname = "fruits_shop.json"
+
+        b = json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8")
+        await ctx.reply(file=discord.File(fp=io.BytesIO(b), filename=fname))
+
+    @cbadmin_fruits.command(name="pool")
+    async def cbadmin_fruits_pool(self, ctx: commands.Context, page: int = 1):
+        items = self.fruits.pool_all() or []
+        if not items:
+            return await ctx.reply("Pool is empty.")
+
+        page = max(1, int(page or 1))
+        per = 10
+        start = (page - 1) * per
+        chunk = items[start : start + per]
+        if not chunk:
+            return await ctx.reply("That page is empty.")
+
+        lines = []
+        for f in chunk:
+            name = f.get("name", "Unknown")
+            ftype = str(f.get("type", "unknown")).title()
+            bonus = int(f.get("bonus", 0) or 0)
+            price = int(f.get("price", 0) or 0)
+            ability = f.get("ability") or "None"
+            lines.append(f"- **{name}** ({ftype}) `+{bonus}` | `{price:,}` | *{ability}*")
+
+        e = discord.Embed(title="🍈 Fruit Pool (Catalog)", description="\n".join(lines), color=discord.Color.blurple())
+        e.set_footer(text=f"Page {page} | Add: .cbadmin fruits pooladd <name> <type> <bonus> <price> <ability...>")
+        await ctx.reply(embed=e)
+
+    @cbadmin_fruits.command(name="shop")
+    async def cbadmin_fruits_shop(self, ctx: commands.Context, page: int = 1):
+        items = self.fruits.shop_list() or []
+        if not items:
+            return await ctx.reply("Shop is empty.")
+
+        page = max(1, int(page or 1))
+        per = 10
+        start = (page - 1) * per
+        chunk = items[start : start + per]
+        if not chunk:
+            return await ctx.reply("That page is empty.")
+
+        lines = []
+        for f in chunk:
+            name = f.get("name", "Unknown")
+            price = int(f.get("price", 0) or 0)
+            bonus = int(f.get("bonus", 0) or 0)
+            ability = f.get("ability") or "None"
+            stock = f.get("stock", None)
+            stock_txt = "∞" if stock is None else str(stock)
+            lines.append(f"- **{name}** | `{price:,}` | `+{bonus}` | Stock: `{stock_txt}` | *{ability}*")
+
+        e = discord.Embed(title="🛒 Fruit Shop (Stocked)", description="\n".join(lines), color=discord.Color.gold())
+        e.set_footer(text=f"Page {page} | Stock: .cbadmin fruits shopadd <stock|unlimited> <fruit name...>")
+        await ctx.reply(embed=e)
+
+    @cbadmin_fruits.command(name="pooladd")
+    async def cbadmin_fruits_pooladd(self, ctx: commands.Context, name: str, ftype: str, bonus: int, price: int, *, ability: str = ""):
+        """Add/update a fruit in the POOL."""
+        fruit = {"name": name, "type": ftype, "bonus": int(bonus), "price": int(price), "ability": (ability or "").strip()}
+        try:
+            saved = self.fruits.pool_upsert(fruit)
+        except Exception as e:
+            return await ctx.reply(f"Failed: {e}")
+
+        await ctx.reply(
+            f"✅ Pool updated: **{saved['name']}** ({str(saved.get('type','?')).title()}) "
+            f"`+{int(saved.get('bonus',0) or 0)}` | `{int(saved.get('price',0) or 0):,}` | "
+            f"Ability: **{saved.get('ability') or 'None'}**"
+        )
+
+    @cbadmin_fruits.command(name="shopadd")
+    async def cbadmin_fruits_shopadd(self, ctx: commands.Context, stock: str, *, name: str):
+        """Stock a fruit (must exist in pool)."""
+        try:
+            st = self._parse_stock_token(stock)
+        except Exception:
+            return await ctx.reply("Invalid stock. Use a number or `unlimited`.")
+
+        try:
+            self.fruits.shop_add(name, st)
+        except Exception as e:
+            return await ctx.reply(f"Failed: {e}")
+
+        await ctx.reply(f"✅ Stocked: **{name}** (stock: {'∞' if st is None else st})")
+
+    @cbadmin_fruits.command(name="setstock")
+    async def cbadmin_fruits_setstock(self, ctx: commands.Context, stock: str, *, name: str):
+        """Set stock for an existing shop item."""
+        try:
+            st = self._parse_stock_token(stock)
+        except Exception:
+            return await ctx.reply("Invalid stock. Use a number or `unlimited`.")
+
+        try:
+            self.fruits.shop_set_stock(name, st)
+        except Exception as e:
+            return await ctx.reply(f"Failed: {e}")
+
+        await ctx.reply(f"✅ Stock updated: **{name}** => {'∞' if st is None else st}")
+
+    @cbadmin_fruits.command(name="shopremove")
+    async def cbadmin_fruits_shopremove(self, ctx: commands.Context, *, name: str):
+        """Remove a fruit from the shop (does not delete it from pool)."""
+        try:
+            self.fruits.shop_remove(name)
+        except Exception as e:
+            return await ctx.reply(f"Failed: {e}")
+        await ctx.reply(f"✅ Removed from shop: **{name}**")
