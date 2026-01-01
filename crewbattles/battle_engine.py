@@ -269,7 +269,7 @@ def simulate(p1: dict, p2: dict, fruits_mgr):
         return ("NONE", 0, suffix)
 
     turns = []
-    attacker = "p1"
+    attacker = random.choice(("p1", "p2"))  # was: attacker = "p1"
 
     for _ in range(250):
         if hp1 <= 0 or hp2 <= 0:
