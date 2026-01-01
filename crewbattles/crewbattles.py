@@ -697,7 +697,468 @@ class CrewBattles(commands.Cog):
         embed.set_footer(text="Train: .cbtrain armament|observation|conqueror [points]")
         await ctx.reply(embed=embed)
 
-    @commands.command(name="cbtrain", aliases=["cbtrainhaki"])
+    # -----------------------------
+    # Small helpers
+    # -----------------------------
+    def _now(self) -> int:
+        return int(time.time())
+
+    def _parse_duration_seconds(self, s: str) -> int:
+        """
+        Accepts:
+          - "3600"
+          - "10m", "2h", "3d"
+          - "1h30m", "2d6h"
+        """
+        s = (s or "").strip().lower()
+        if not s:
+            raise ValueError("duration required")
+        if s.isdigit():
+            return int(s)
+
+        parts = re.findall(r"(\d+)\s*([smhd])", s.replace(" ", ""))
+        if not parts:
+            raise ValueError("invalid duration")
+
+        mult = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+        total = 0
+        for n, u in parts:
+            total += int(n) * mult[u]
+        return total
+
+    def _parse_stock_token(self, token: str):
+        t = (token or "").strip().lower()
+        if t in ("unlimited", "inf", "infinite", "∞", "none"):
+            return None
+        return int(token)
+
+    # =========================================================
+    # Admin commands
+    # =========================================================
+    @commands.group(name="cbadmin", invoke_without_command=True)
+    @commands.admin_or_permissions(administrator=True)
+    async def cbadmin(self, ctx: commands.Context):
+        if ctx.invoked_subcommand is None:
+            await ctx.send_help()
+
+    @cbadmin.command(name="backup")
+    async def cbadmin_backup(self, ctx: commands.Context):
+        async with ctx.typing():
+            path = await self._write_backup(note=f"manual by {ctx.author.id}")
+        await ctx.reply(f"Backup written: `{path.name}`")
+
+    @cbadmin.command(name="restore")
+    async def cbadmin_restore(self, ctx: commands.Context, filename: str = None, confirm: str = None):
+        if not filename:
+            files = sorted([p.name for p in self._backup_dir().glob("users_*.json")])[-10:]
+            if not files:
+                return await ctx.reply("No backup files found.")
+            return await ctx.reply("Available backups (latest 10):\n" + "\n".join(f"- `{n}`" for n in files))
+
+        if confirm != "confirm":
+            return await ctx.reply("Run: `.cbadmin restore <filename> confirm`")
+
+        bp = self._backup_dir() / filename
+        if not bp.exists():
+            return await ctx.reply("Backup file not found.")
+
+        async with ctx.typing():
+            restored = await self._restore_backup(bp)
+        await ctx.reply(f"Restored {restored} user record(s) from `{bp.name}`")
+
+    @cbadmin.command(name="storedcounts")
+    async def cbadmin_storedcounts(self, ctx: commands.Context):
+        try:
+            all_users = await self.config.all_users()
+        except Exception as e:
+            return await ctx.reply(f"Could not read storage: {e}")
+        total = len(all_users or {})
+        started = sum(1 for _, v in (all_users or {}).items() if isinstance(v, dict) and v.get("started"))
+        await ctx.reply(f"Stored user records: {total} | started=True: {started}")
+
+    @cbadmin.command(name="resetall", aliases=["resetstarted", "resetplayers"])
+    async def cbadmin_resetall(self, ctx: commands.Context, confirm: str = None):
+        if confirm != "confirm":
+            return await ctx.reply("Run: `.cbadmin resetall confirm`")
+
+        async with ctx.typing():
+            try:
+                await self._write_backup(note=f"pre-resetall by {ctx.author.id}")
+            except Exception as e:
+                return await ctx.reply(f"Backup failed; aborting reset: {e}")
+
+            all_users = await self.players.all()
+            started_ids = []
+            for uid, pdata in (all_users or {}).items():
+                if isinstance(pdata, dict) and pdata.get("started"):
+                    try:
+                        started_ids.append(int(uid))
+                    except Exception:
+                        pass
+
+            reset = 0
+            for uid in started_ids:
+                try:
+                    await self.config.user_from_id(uid).set(copy.deepcopy(DEFAULT_USER))
+                    reset += 1
+                except Exception:
+                    pass
+
+        await ctx.reply(f"Reset data for {reset} started player(s).")
+
+    @cbadmin.command(name="wipeall", aliases=["wipeusers"])
+    async def cbadmin_wipeall(self, ctx: commands.Context, confirm: str = None):
+        if confirm != "confirm":
+            return await ctx.reply("Run: `.cbadmin wipeall confirm`")
+
+        async with ctx.typing():
+            try:
+                await self._write_backup(note=f"pre-wipeall by {ctx.author.id}")
+            except Exception as e:
+                return await ctx.reply(f"Backup failed; aborting wipe: {e}")
+
+            all_users = await self.players.all()
+            uids = []
+            for uid in (all_users or {}).keys():
+                try:
+                    uids.append(int(uid))
+                except Exception:
+                    pass
+
+            wiped = 0
+            for uid in uids:
+                try:
+                    await self.config.user_from_id(uid).clear()
+                    wiped += 1
+                except Exception:
+                    pass
+
+        await ctx.reply(f"HARD WIPE complete. Cleared {wiped} stored user record(s).")
+
+    @cbadmin.command()
+    async def setberi(self, ctx, win: int, loss: int = 0):
+        await self.config.guild(ctx.guild).beri_win.set(int(win))
+        await self.config.guild(ctx.guild).beri_loss.set(int(loss))
+        await ctx.reply(f"Beri rewards updated. Win={int(win)} Loss={int(loss)}")
+
+    @cbadmin.command()
+    async def setturn_delay(self, ctx, delay: float):
+        await self.config.guild(ctx.guild).turn_delay.set(float(delay))
+        await ctx.reply(f"Turn delay set to {delay}s")
+
+    @cbadmin.command()
+    async def sethakicost(self, ctx, cost: int):
+        await self.config.guild(ctx.guild).haki_cost.set(int(cost))
+        await ctx.reply(f"Haki training cost set to {int(cost)} per point")
+
+    @cbadmin.command()
+    async def sethakicooldown(self, ctx, seconds: int):
+        await self.config.guild(ctx.guild).haki_cooldown.set(int(seconds))
+        await ctx.reply(f"Haki training cooldown set to {int(seconds)} seconds")
+
+    @cbadmin.command(name="setcrewpointswin", aliases=["setcrewwinpoints", "setcrewpoints"])
+    async def setcrewpointswin(self, ctx, points: int):
+        points = int(points)
+        if points < 0:
+            return await ctx.reply("Points cannot be negative.")
+        await self.config.guild(ctx.guild).crew_points_win.set(points)
+        await ctx.reply(f"Crew points per win set to {points} (0 disables).")
+
+    @cbadmin.command(name="setexpwin")
+    async def cbadmin_setexpwin(self, ctx, min_exp: int, max_exp: int = None):
+        if max_exp is None:
+            max_exp = min_exp
+        if min_exp < 0 or max_exp < 0 or max_exp < min_exp:
+            return await ctx.reply("Invalid range.")
+        await self.config.guild(ctx.guild).exp_win_min.set(int(min_exp))
+        await self.config.guild(ctx.guild).exp_win_max.set(int(max_exp))
+        await ctx.reply(f"Winner EXP set to {min_exp}–{max_exp} per win.")
+
+    @cbadmin.command(name="setexploss")
+    async def cbadmin_setexploss(self, ctx, min_exp: int, max_exp: int = None):
+        if max_exp is None:
+            max_exp = min_exp
+        if min_exp < 0 or max_exp < 0 or max_exp < min_exp:
+            return await ctx.reply("Invalid range.")
+        await self.config.guild(ctx.guild).exp_loss_min.set(int(min_exp))
+        await self.config.guild(ctx.guild).exp_loss_max.set(int(max_exp))
+        await ctx.reply(f"Loser EXP set to {min_exp}–{max_exp} per loss.")
+
+    @cbadmin.command(name="fixlevels", aliases=["recalclevels", "recalcexp"])
+    async def cbadmin_fixlevels(self, ctx: commands.Context):
+        async with ctx.typing():
+            all_users = await self.players.all()
+            changed = 0
+            total = 0
+            for uid, pdata in (all_users or {}).items():
+                total += 1
+                if not isinstance(pdata, dict):
+                    continue
+                before_lvl = int(pdata.get("level", 1) or 1)
+                before_exp = int(pdata.get("exp", 0) or 0)
+
+                self._apply_exp(pdata, 0)
+
+                after_lvl = int(pdata.get("level", 1) or 1)
+                after_exp = int(pdata.get("exp", 0) or 0)
+
+                if after_lvl != before_lvl or after_exp != before_exp:
+                    try:
+                        await self.config.user_from_id(int(uid)).set(pdata)
+                        changed += 1
+                    except Exception:
+                        pass
+        await ctx.reply(f"Recalculated levels. Updated {changed} / {total} records.")
+
+    @cbadmin.command(name="setconquerorcost", aliases=["setconqcost", "setconquerorscost"])
+    async def cbadmin_setconquerorcost(self, ctx, cost: int):
+        """Set the Beri cost to unlock Conqueror's Haki."""
+        cost = int(cost)
+        if cost < 0:
+            return await ctx.reply("Cost cannot be negative.")
+        await self.config.guild(ctx.guild).conqueror_unlock_cost.set(cost)
+        await ctx.reply(f"Conqueror unlock cost set to {cost:,} Beri.")
+
+    # =========================================================
+    # Player commands
+    # =========================================================
+    @commands.command(name="startcb")
+    async def startcb(self, ctx: commands.Context):
+        p = await self.players.get(ctx.author)
+        if p.get("started"):
+            return await ctx.reply("Already started. Use `.cbprofile`.")
+
+        p = copy.deepcopy(DEFAULT_USER)
+        p["started"] = True
+
+        # starter fruit (does not consume stock)
+        fruit_name = None
+        try:
+            items = self.fruits.pool_all() or []
+            if items:
+                pick = random.choice(items)
+                if isinstance(pick, dict):
+                    fruit_name = pick.get("name")
+        except Exception:
+            fruit_name = None
+
+        p["fruit"] = fruit_name
+        await self.players.save(ctx.author, p)
+
+        if fruit_name:
+            return await ctx.reply(f"Started Crew Battles. Starter fruit: {fruit_name}")
+        return await ctx.reply("Started Crew Battles.")
+
+    @commands.command()
+    async def cbshop(self, ctx: commands.Context, page: int = 1):
+        items = self.fruits.all() or []
+        if not items:
+            return await ctx.send("Shop is empty.")
+
+        page = max(1, int(page or 1))
+        per = 8
+        start = (page - 1) * per
+        chunk = items[start : start + per]
+        if not chunk:
+            return await ctx.send("That page is empty.")
+
+        e = discord.Embed(title="Devil Fruit Shop", color=discord.Color.gold())
+        lines = []
+        for f in chunk:
+            name = f.get("name", "Unknown")
+            price = int(f.get("price", 0) or 0)
+            bonus = int(f.get("bonus", 0) or 0)
+            stock = f.get("stock", None)
+            stock_txt = "∞" if stock is None else str(stock)
+            lines.append(f"- {name} | {price:,} Beri | Bonus +{bonus} | Stock: {stock_txt}")
+        e.description = "\n".join(lines)
+        e.set_footer(text=f"Page {page} | Buy: .cbbuy <fruit name>")
+        await ctx.send(embed=e)
+
+    @commands.command()
+    async def cbbuy(self, ctx: commands.Context, *, fruit_name: str):
+        p = await self.players.get(ctx.author)
+        if not p.get("started"):
+            return await ctx.send("You must `.startcb` first.")
+        if p.get("fruit"):
+            return await ctx.send("You already have a fruit. Use `.cbremovefruit` first.")
+
+        fruit = self.fruits.get(fruit_name)
+        if not fruit:
+            return await ctx.send("That fruit does not exist.")
+
+        stock = fruit.get("stock", None)
+        if stock is not None and int(stock) <= 0:
+            return await ctx.send("That fruit is out of stock.")
+
+        price = int(fruit.get("price", 0) or 0)
+        ok = await self._spend_money(ctx.author, price, reason="crew_battles:buy_fruit")
+        if not ok:
+            bal = await self._get_money(ctx.author)
+            return await ctx.send(f"Not enough Beri. Price {price:,}, you have {bal:,}.")
+
+        p["fruit"] = fruit["name"]
+        await self.players.save(ctx.author, p)
+
+        if stock is not None:
+            try:
+                fruit["stock"] = max(0, int(stock) - 1)
+                self.fruits.update(fruit)
+            except Exception:
+                pass
+
+        await ctx.send(f"Bought {fruit['name']} for {price:,} Beri.")
+
+    @commands.command()
+    async def cbremovefruit(self, ctx: commands.Context):
+        p = await self.players.get(ctx.author)
+        if not p.get("started"):
+            return await ctx.send("You must `.startcb` first.")
+        if not p.get("fruit"):
+            return await ctx.send("You do not have a fruit equipped.")
+
+        g = await self.config.guild(ctx.guild).all()
+        cost = int(g.get("remove_fruit_cost", 0) or 0)
+        if cost > 0:
+            ok = await self._spend_money(ctx.author, cost, reason="crew_battles:remove_fruit")
+            if not ok:
+                bal = await self._get_money(ctx.author)
+                return await ctx.send(f"Not enough Beri to remove fruit. Cost {cost:,}, you have {bal:,}.")
+
+        old = p.get("fruit")
+        p["fruit"] = None
+        await self.players.save(ctx.author, p)
+        await ctx.send(f"Removed fruit ({old}).")
+
+    @commands.command()
+    async def cbprofile(self, ctx, member: discord.Member = None):
+        member = member or ctx.author
+        p = await self.players.get(member)
+        if not p.get("started"):
+            return await ctx.reply("This player has not started Crew Battles.")
+
+        wins = int(p.get("wins", 0) or 0)
+        losses = int(p.get("losses", 0) or 0)
+        total = wins + losses
+        winrate = (wins / total * 100) if total else 0.0
+
+        haki = p.get("haki", {}) or {}
+        arm = int(haki.get("armament", 0) or 0)
+        obs = int(haki.get("observation", 0) or 0)
+        conq = bool(haki.get("conquerors"))
+        conq_lvl = int(haki.get("conqueror", 0) or 0)
+
+        fruit_name = p.get("fruit") or "None"
+
+        # show fruit even if it's not currently stocked in the shop
+        fruit_detail = None
+        if p.get("fruit"):
+            try:
+                fruit_detail = self.fruits.get(fruit_name)  # shop lookup
+            except Exception:
+                fruit_detail = None
+            if not fruit_detail:
+                try:
+                    fruit_detail = self.fruits.pool_get(fruit_name)  # pool lookup fallback
+                except Exception:
+                    fruit_detail = None
+
+        fruit_txt = fruit_name
+        if isinstance(fruit_detail, dict):
+            fruit_txt = f"{fruit_name} | {str(fruit_detail.get('type','')).title()} | +{int(fruit_detail.get('bonus',0) or 0)}"
+
+        embed = discord.Embed(
+            title=f"{member.display_name}'s Crew Profile",
+            color=discord.Color.gold(),
+            timestamp=discord.utils.utcnow(),
+        )
+        try:
+            embed.set_thumbnail(url=member.display_avatar.url)
+        except Exception:
+            pass
+
+        embed.add_field(
+            name="Progress",
+            value=(
+                f"Level: {int(p.get('level', 1) or 1)} | EXP: {int(p.get('exp', 0) or 0)}\n"
+                f"Wins: {wins} | Losses: {losses} | Win Rate: {winrate:.1f}%"
+            ),
+            inline=False,
+        )
+        embed.add_field(name="Devil Fruit", value=fruit_txt, inline=False)
+
+        conq_line = "Locked"
+        if conq:
+            conq_line = f"Unlocked | {conq_lvl}/100 (counter crit)"
+
+        embed.add_field(
+            name="Haki",
+            value=(
+                f"Armament: {arm}/100 (crit chance)\n"
+                f"Observation: {obs}/100 (dodge chance)\n"
+                f"Conqueror: {conq_line}"
+            ),
+            inline=False,
+        )
+        embed.set_footer(text=f"Battle HP is flat: {int(BASE_HP)}")
+        await ctx.reply(embed=embed)
+
+    @commands.command()
+    async def cbhaki(self, ctx, member: discord.Member = None):
+        member = member or ctx.author
+        p = await self.players.get(member)
+        if not p.get("started"):
+            return await ctx.reply("This player has not started Crew Battles.")
+
+        haki = p.get("haki", {}) or {}
+        arm = int(haki.get("armament", 0) or 0)
+        obs = int(haki.get("observation", 0) or 0)
+
+        # FIX: conqueror unlocked flag is 'conquerors'
+        conq = bool(haki.get("conquerors"))
+        conq_lvl = int(haki.get("conqueror", 0) or 0)
+
+        def bar(val: int, maxv: int = 100, width: int = 12) -> str:
+            val = max(0, min(maxv, int(val)))
+            filled = int(round((val / maxv) * width))
+            return "🟦" * filled + "⬛" * (width - filled)
+
+        title = f"🌊 Haki Awakening — {member.display_name}"
+        embed = discord.Embed(title=title, color=discord.Color.purple())
+
+        try:
+            embed.set_thumbnail(url=member.display_avatar.url)
+        except Exception:
+            pass
+
+        embed.add_field(
+            name="🛡️ Armament (CRIT)",
+            value=f"`{arm}/100`\n{bar(arm)}\n🎯 Boosts **critical hit chance**",
+            inline=False,
+        )
+        embed.add_field(
+            name="👁️ Observation (DODGE)",
+            value=f"`{obs}/100`\n{bar(obs)}\n💨 Boosts **dodge chance**",
+            inline=False,
+        )
+
+        if conq:
+            embed.add_field(
+                name="👑 Conqueror (COUNTER CRIT)",
+                value=f"`Unlocked` • `{conq_lvl}/100`\n{bar(conq_lvl)}\n⚡ Chance to **counter-attack** with **critical damage**",
+                inline=False,
+            )
+        else:
+            embed.add_field(
+                name="👑 Conqueror (COUNTER CRIT)",
+                value="`Locked`\n🔓 Unlock at **Level 10** with `.cbunlockconqueror`",
+                inline=False,
+            )
+
+        embed.set_footer(text="Train: .cbtrain armament|observation|conqueror [points]")
+        await ctx.reply(embed=embed)
+
+    @commands.command(name="cbtrain")
     async def cbtrain(self, ctx, haki_type: str, points: int = 1):
         return await self.cbtrainhaki(ctx, haki_type, points)
 
@@ -1279,99 +1740,6 @@ class CrewBattles(commands.Cog):
         await self.config.user(member).set(copy.deepcopy(DEFAULT_USER))
         await ctx.reply(f"✅ Reset CrewBattles data for **{member.display_name}**.")
 
-    @cbadmin.command(name="tempban")
-    async def cbadmin_tempban(self, ctx: commands.Context, member: discord.Member, duration: str, *, reason: str = ""):
-        """Tempban a user from CrewBattles commands."""
-        try:
-            seconds = self._parse_duration_seconds(duration)
-        except Exception:
-            return await ctx.reply("Invalid duration. Examples: `3600`, `10m`, `2h`, `1h30m`, `2d`")
-
-        until = self._now() + max(1, int(seconds))
-        p = await self.players.get(member)
-        p["tempban_until"] = int(until)
-        await self.players.save(member, p)
-
-        await ctx.reply(f"⛔ Tempbanned **{member.display_name}** for {seconds}s." + (f" Reason: {reason}" if reason else ""))
-
-    @cbadmin.command(name="untimeban", aliases=["untempban"])
-    async def cbadmin_untimeban(self, ctx: commands.Context, member: discord.Member):
-        p = await self.players.get(member)
-        p["tempban_until"] = 0
-        await self.players.save(member, p)
-        await ctx.reply(f"✅ Removed CrewBattles tempban for **{member.display_name}**.")
-
-    @cbadmin.command(name="removefruit")
-    async def cbadmin_removefruit(self, ctx: commands.Context, member: discord.Member):
-        """Remove a user's equipped fruit."""
-        p = await self.players.get(member)
-        if not p.get("started"):
-            return await ctx.reply("That user has not started Crew Battles.")
-        old = p.get("fruit")
-        p["fruit"] = None
-        await self.players.save(member, p)
-        await ctx.reply(f"✅ Removed fruit from **{member.display_name}** (was: `{old or 'None'}`).")
-
-    @cbadmin.command(name="givefruit")
-    async def cbadmin_givefruit(self, ctx: commands.Context, member: discord.Member, *, fruit_name: str):
-        """
-        Give a fruit from the POOL to a user (does not consume shop stock).
-        Use `force` at the end to overwrite existing fruit:
-          .cbadmin givefruit @user Quake Quake force
-        """
-        if not fruit_name:
-            return await ctx.reply("Provide a fruit name from the pool.")
-
-        force = False
-        if fruit_name.lower().endswith(" force"):
-            force = True
-            fruit_name = fruit_name[:-6].strip()
-
-        pool = None
-        try:
-            pool = self.fruits.pool_get(fruit_name)
-        except Exception:
-            pool = None
-        if not pool:
-            return await ctx.reply("That fruit is not in the pool. Import/add it first (`.cbadmin fruits import` / `pooladd`).")
-
-        p = await self.players.get(member)
-        if not p.get("started"):
-            return await ctx.reply("That user has not started Crew Battles.")
-
-        if p.get("fruit") and not force:
-            return await ctx.reply("User already has a fruit. Use `force` to overwrite.")
-
-        p["fruit"] = pool["name"]
-        await self.players.save(member, p)
-        await ctx.reply(f"✅ Gave **{member.display_name}** the fruit **{pool['name']}**.")
-
-    @cbadmin.command(name="sethaki")
-    async def cbadmin_sethaki(self, ctx: commands.Context, member: discord.Member, haki_type: str, value: int):
-        """Set a user's Haki value (0-100)."""
-        haki_type = (haki_type or "").lower().strip()
-        if haki_type in ("conquerors", "conq"):
-            haki_type = "conqueror"
-        if haki_type not in ("armament", "observation", "conqueror"):
-            return await ctx.reply("Haki type must be: armament, observation, conqueror")
-
-        p = await self.players.get(member)
-        if not p.get("started"):
-            return await ctx.reply("That user has not started Crew Battles.")
-
-        haki = p.get("haki", {}) or {}
-
-        if haki_type == "conqueror":
-            # require unlock; allow admin to unlock automatically
-            haki["conquerors"] = True
-
-        key = "conqueror" if haki_type == "conqueror" else haki_type
-        haki[key] = max(0, min(100, int(value)))
-        p["haki"] = haki
-        await self.players.save(member, p)
-
-        await ctx.reply(f"✅ Set **{member.display_name}** {haki_type} to `{haki[key]}/100`.")
-
     @cbadmin.command(name="addhaki")
     async def cbadmin_addhaki(self, ctx: commands.Context, member: discord.Member, haki_type: str, delta: int):
         """Add/remove Haki points (delta can be negative)."""
@@ -1386,5 +1754,16 @@ class CrewBattles(commands.Cog):
             return await ctx.reply("That user has not started Crew Battles.")
 
         haki = p.get("haki", {}) or {}
+
+        # If admin is modifying conqueror, ensure it is unlocked
         if haki_type == "conqueror":
-            haki["conqueror
+            haki["conquerors"] = True
+
+        key = "conqueror" if haki_type == "conqueror" else haki_type
+        cur = int(haki.get(key, 0) or 0)
+        haki[key] = max(0, min(100, cur + int(delta)))
+
+        p["haki"] = haki
+        await self.players.save(member, p)
+
+        await ctx.reply(f"✅ Updated **{member.display_name}** {haki_type}: `{cur}` → `{haki[key]}`.")
