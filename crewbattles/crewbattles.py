@@ -21,7 +21,7 @@ from .teams_bridge import TeamsBridge
 from .embeds import battle_embed
 from .utils import exp_to_next
 from .admin_commands import AdminCommandsMixin
-from .player_commands import PlayerCommandsMixin
+from .player_commands import PlayerCommandsMixin  # already present in your file
 
 HAKI_TRAIN_COST = 500
 HAKI_TRAIN_COOLDOWN = 60 * 60
@@ -1033,9 +1033,9 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
 
     # DISABLE legacy leaderboard so the PlayerCommandsMixin.cbleaderboard(*args) is used.
     # @commands.command(name="cbleaderboard", aliases=["cblb", "cbtop"])
-    async def cbleaderboard(self, ctx: commands.Context, page: int = 1, sort_by: str = "wins"):
-        # legacy stub (should not be registered)
-        return await ctx.send("Legacy cbleaderboard disabled; using mixin command.")
+    async def cbleaderboard(self, ctx: commands.Context, *args: str):
+        # Delegate to the mixin implementation (the one you pasted that builds the table/buttons)
+        return await PlayerCommandsMixin.cbleaderboard(self, ctx, *args)
 
     @commands.is_owner()
     @commands.command(name="cbdebugbattle")
