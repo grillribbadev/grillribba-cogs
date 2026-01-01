@@ -560,7 +560,7 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
     # REMOVE / DISABLE THIS LEGACY COMMAND (it overrides the mixin cbshop)
     # @commands.command()
     async def _cbshop_legacy(self, ctx: commands.Context, page: int = 1):
-        """
+        ""
         # ...existing code...
         # (keep body if you want, but it's no longer a command)
         pass
@@ -1321,32 +1321,4 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
 
     @commands.command(name="cbtutorial", aliases=["cbguide", "cbhelp"])
     async def cbtutorial(self, ctx: commands.Context):
-        """Show the Crew Battles tutorial."""
-        e = discord.Embed(
-            title="📘 Crew Battles Tutorial",
-            description=(
-                "**Start**\n"
-                "• Create your pirate record: **`.startcb`**\n"
-                "• View your profile: **`.cbprofile`**\n\n"
-                "**Battles**\n"
-                "• Duel someone: **`.battle @user`**\n"
-                "• Leaderboard: **`.cbleaderboard`**\n\n"
-                "**Haki**\n"
-                "• View Haki: **`.cbhaki`**\n"
-                "• Train Haki: **`.cbtrain armament|observation|conqueror [points]`**\n"
-                "  - Armament boosts **CRIT chance**\n"
-                "  - Observation boosts **DODGE chance**\n\n"
-                "**Devil Fruits**\n"
-                "• Browse shop: **`.cbshop`**\n"
-                "• Buy: **`.cbbuy <fruit name>`**\n"
-                "• Remove fruit: **`.cbremovefruit`**\n"
-                "• Fruit abilities only trigger if you **own/equip** the fruit."
-            ),
-            color=discord.Color.blurple(),
-        )
-        try:
-            e.set_thumbnail(url=ctx.author.display_avatar.url)
-        except Exception:
-            pass
-        e.set_footer(text="Use .help crewbattles to see all commands.")
-        return await ctx.reply(embed=e)
+        return await ctx.send("`cbtutorial` moved to `player_commands.py`. Reload the cog.")
