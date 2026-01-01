@@ -12,6 +12,7 @@ DEFAULT_USER = {
     "last_haki_train": 0,
     "battle_cd": 60,
     "last_battle": 0,
+    "tempban_until": 0,
 }
 
 DEFAULT_GUILD = {

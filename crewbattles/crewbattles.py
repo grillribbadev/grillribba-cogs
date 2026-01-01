@@ -2,6 +2,7 @@ import asyncio
 import copy
 import json
 import random
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -175,28 +176,55 @@ class CrewBattles(commands.Cog):
     # Maintenance check
     # -----------------------------
     async def cog_check(self, ctx: commands.Context) -> bool:
+        # existing maintenance logic first
+        ok = await super().cog_check(ctx) if hasattr(super(), "cog_check") else True
+
         try:
             maintenance = bool(await self.config.maintenance())
         except Exception:
             maintenance = False
 
-        if not maintenance:
-            return True
+        if maintenance:
+            try:
+                if await self.bot.is_owner(ctx.author):
+                    return True
+            except Exception:
+                pass
+            if ctx.guild and getattr(ctx.author, "guild_permissions", None) and ctx.author.guild_permissions.administrator:
+                return True
+            try:
+                await ctx.reply("Crew Battles is in maintenance mode (admins/owner only).")
+            except Exception:
+                pass
+            return False
+
+        # tempban enforcement (admins/owner bypass; cbadmin bypass)
+        try:
+            if ctx.command and ctx.command.qualified_name.startswith("cbadmin"):
+                return True
+        except Exception:
+            pass
 
         try:
             if await self.bot.is_owner(ctx.author):
                 return True
         except Exception:
             pass
-
         if ctx.guild and getattr(ctx.author, "guild_permissions", None) and ctx.author.guild_permissions.administrator:
             return True
 
         try:
-            await ctx.reply("Crew Battles is in maintenance mode (admins/owner only).")
+            pdata = await self.players.get(ctx.author)
+            until = int(pdata.get("tempban_until", 0) or 0)
+            now = self._now()
+            if until > now:
+                remaining = until - now
+                await ctx.reply(f"⛔ You are temporarily banned from Crew Battles for {remaining}s.")
+                return False
         except Exception:
             pass
-        return False
+
+        return True
 
     # -----------------------------
     # EXP logic
@@ -1102,38 +1130,82 @@ class CrewBattles(commands.Cog):
         await ctx.reply(f"Saved to pool: **{out['name']}** | {out['price']:,} Beri | +{out['bonus']} | {out.get('type','paramecia')}")
 
     @cbadmin_fruits.command(name="shopadd")
-    async def cbadmin_fruits_shopadd(self, ctx: commands.Context, name: str, stock: str = "1"):
-        """Add a fruit from the pool into the shop with stock."""
-        st = None if str(stock).lower() in ("unlimited", "inf", "infinite", "∞") else int(stock)
+    async def cbadmin_fruits_shopadd(self, ctx: commands.Context, stock: str, *, name: str):
+        """
+        Add a fruit from the pool into the shop with stock.
+
+        Works with:
+          - .cbadmin fruits shopadd 5 Quake Quake
+          - .cbadmin fruits shopadd unlimited Quake Quake
+          - .cbadmin fruits shopadd Quake Quake 5   (auto-detects)
+        """
+        # Allow old order: "name ... <stock>" even without quotes
+        actual_stock = stock
+        actual_name = name
+
         try:
-            self.fruits.shop_add(name, st)
+            st = self._parse_stock_token(actual_stock)
+        except Exception:
+            # try: last token of name is stock
+            parts = (name or "").split()
+            if not parts:
+                return await ctx.reply("Usage: `.cbadmin fruits shopadd <stock|unlimited> <fruit name>`")
+            maybe_stock = parts[-1]
+            maybe_name = " ".join([stock] + parts[:-1])
+            try:
+                st = self._parse_stock_token(maybe_stock)
+                actual_stock = maybe_stock
+                actual_name = maybe_name
+            except Exception:
+                return await ctx.reply(
+                    "Invalid stock. Use a number or `unlimited`.\n"
+                    "Example: `.cbadmin fruits shopadd 5 Quake Quake`"
+                )
+
+        try:
+            self.fruits.shop_add(actual_name, st)
         except Exception as e:
             return await ctx.reply(f"Failed: {e}")
-        await ctx.reply(f"Stocked in shop: **{name}** (stock: {'∞' if st is None else st})")
 
-    @cbadmin_fruits.command(name="shopaddmany")
-    async def cbadmin_fruits_shopaddmany(self, ctx: commands.Context, stock: str, *, names: str):
-        """
-        Add many fruits from pool into shop, same stock each.
-        Names can be separated by commas.
-        Example: .cbadmin fruits shopaddmany 5 Gomu Gomu, Mera Mera
-        """
-        st = None if str(stock).lower() in ("unlimited", "inf", "infinite", "∞") else int(stock)
-        parts = [p.strip() for p in (names or "").split(",") if p.strip()]
-        if not parts:
-            return await ctx.reply("Provide fruit names separated by commas.")
-        ok, bad = self.fruits.shop_add_many(parts, st)
-        await ctx.reply(f"Shop add many done. Added: {ok}, Failed: {bad}")
+        await ctx.reply(f"Stocked in shop: **{actual_name}** (stock: {'∞' if st is None else st})")
 
     @cbadmin_fruits.command(name="setstock")
-    async def cbadmin_fruits_setstock(self, ctx: commands.Context, name: str, stock: str):
-        """Set stock for a shop item."""
-        st = None if str(stock).lower() in ("unlimited", "inf", "infinite", "∞") else int(stock)
+    async def cbadmin_fruits_setstock(self, ctx: commands.Context, stock: str, *, name: str):
+        """
+        Set stock for a shop item.
+
+        Works with:
+          - .cbadmin fruits setstock 3 Quake Quake
+          - .cbadmin fruits setstock unlimited Quake Quake
+          - .cbadmin fruits setstock Quake Quake 3   (auto-detects)
+        """
+        actual_stock = stock
+        actual_name = name
+
         try:
-            self.fruits.shop_set_stock(name, st)
+            st = self._parse_stock_token(actual_stock)
+        except Exception:
+            parts = (name or "").split()
+            if not parts:
+                return await ctx.reply("Usage: `.cbadmin fruits setstock <stock|unlimited> <fruit name>`")
+            maybe_stock = parts[-1]
+            maybe_name = " ".join([stock] + parts[:-1])
+            try:
+                st = self._parse_stock_token(maybe_stock)
+                actual_stock = maybe_stock
+                actual_name = maybe_name
+            except Exception:
+                return await ctx.reply(
+                    "Invalid stock. Use a number or `unlimited`.\n"
+                    "Example: `.cbadmin fruits setstock 3 Quake Quake`"
+                )
+
+        try:
+            self.fruits.shop_set_stock(actual_name, st)
         except Exception as e:
             return await ctx.reply(f"Failed: {e}")
-        await ctx.reply(f"Stock updated: **{name}** => {'∞' if st is None else st}")
+
+        await ctx.reply(f"Stock updated: **{actual_name}** => {'∞' if st is None else st}")
 
     @cbadmin_fruits.command(name="shopremove")
     async def cbadmin_fruits_shopremove(self, ctx: commands.Context, *, name: str):
@@ -1189,3 +1261,130 @@ class CrewBattles(commands.Cog):
             return await ctx.reply(f"Import failed: {e}")
 
         await ctx.reply(f"Imported into pool. Added/updated: **{ok}**, Skipped: **{bad}**")
+
+    # =========================================================
+    # Admin test commands (players/haki/fruit/tempban)
+    # =========================================================
+    @cbadmin.command(name="resetuser")
+    async def cbadmin_resetuser(self, ctx: commands.Context, member: discord.Member, confirm: str = None):
+        """Completely reset a user's CrewBattles data."""
+        if confirm != "confirm":
+            return await ctx.reply("Run: `.cbadmin resetuser @member confirm`")
+
+        try:
+            await self._write_backup(note=f"pre-resetuser {member.id} by {ctx.author.id}")
+        except Exception:
+            pass
+
+        await self.config.user(member).set(copy.deepcopy(DEFAULT_USER))
+        await ctx.reply(f"✅ Reset CrewBattles data for **{member.display_name}**.")
+
+    @cbadmin.command(name="tempban")
+    async def cbadmin_tempban(self, ctx: commands.Context, member: discord.Member, duration: str, *, reason: str = ""):
+        """Tempban a user from CrewBattles commands."""
+        try:
+            seconds = self._parse_duration_seconds(duration)
+        except Exception:
+            return await ctx.reply("Invalid duration. Examples: `3600`, `10m`, `2h`, `1h30m`, `2d`")
+
+        until = self._now() + max(1, int(seconds))
+        p = await self.players.get(member)
+        p["tempban_until"] = int(until)
+        await self.players.save(member, p)
+
+        await ctx.reply(f"⛔ Tempbanned **{member.display_name}** for {seconds}s." + (f" Reason: {reason}" if reason else ""))
+
+    @cbadmin.command(name="untimeban", aliases=["untempban"])
+    async def cbadmin_untimeban(self, ctx: commands.Context, member: discord.Member):
+        p = await self.players.get(member)
+        p["tempban_until"] = 0
+        await self.players.save(member, p)
+        await ctx.reply(f"✅ Removed CrewBattles tempban for **{member.display_name}**.")
+
+    @cbadmin.command(name="removefruit")
+    async def cbadmin_removefruit(self, ctx: commands.Context, member: discord.Member):
+        """Remove a user's equipped fruit."""
+        p = await self.players.get(member)
+        if not p.get("started"):
+            return await ctx.reply("That user has not started Crew Battles.")
+        old = p.get("fruit")
+        p["fruit"] = None
+        await self.players.save(member, p)
+        await ctx.reply(f"✅ Removed fruit from **{member.display_name}** (was: `{old or 'None'}`).")
+
+    @cbadmin.command(name="givefruit")
+    async def cbadmin_givefruit(self, ctx: commands.Context, member: discord.Member, *, fruit_name: str):
+        """
+        Give a fruit from the POOL to a user (does not consume shop stock).
+        Use `force` at the end to overwrite existing fruit:
+          .cbadmin givefruit @user Quake Quake force
+        """
+        if not fruit_name:
+            return await ctx.reply("Provide a fruit name from the pool.")
+
+        force = False
+        if fruit_name.lower().endswith(" force"):
+            force = True
+            fruit_name = fruit_name[:-6].strip()
+
+        pool = None
+        try:
+            pool = self.fruits.pool_get(fruit_name)
+        except Exception:
+            pool = None
+        if not pool:
+            return await ctx.reply("That fruit is not in the pool. Import/add it first (`.cbadmin fruits import` / `pooladd`).")
+
+        p = await self.players.get(member)
+        if not p.get("started"):
+            return await ctx.reply("That user has not started Crew Battles.")
+
+        if p.get("fruit") and not force:
+            return await ctx.reply("User already has a fruit. Use `force` to overwrite.")
+
+        p["fruit"] = pool["name"]
+        await self.players.save(member, p)
+        await ctx.reply(f"✅ Gave **{member.display_name}** the fruit **{pool['name']}**.")
+
+    @cbadmin.command(name="sethaki")
+    async def cbadmin_sethaki(self, ctx: commands.Context, member: discord.Member, haki_type: str, value: int):
+        """Set a user's Haki value (0-100)."""
+        haki_type = (haki_type or "").lower().strip()
+        if haki_type in ("conquerors", "conq"):
+            haki_type = "conqueror"
+        if haki_type not in ("armament", "observation", "conqueror"):
+            return await ctx.reply("Haki type must be: armament, observation, conqueror")
+
+        p = await self.players.get(member)
+        if not p.get("started"):
+            return await ctx.reply("That user has not started Crew Battles.")
+
+        haki = p.get("haki", {}) or {}
+
+        if haki_type == "conqueror":
+            # require unlock; allow admin to unlock automatically
+            haki["conquerors"] = True
+
+        key = "conqueror" if haki_type == "conqueror" else haki_type
+        haki[key] = max(0, min(100, int(value)))
+        p["haki"] = haki
+        await self.players.save(member, p)
+
+        await ctx.reply(f"✅ Set **{member.display_name}** {haki_type} to `{haki[key]}/100`.")
+
+    @cbadmin.command(name="addhaki")
+    async def cbadmin_addhaki(self, ctx: commands.Context, member: discord.Member, haki_type: str, delta: int):
+        """Add/remove Haki points (delta can be negative)."""
+        haki_type = (haki_type or "").lower().strip()
+        if haki_type in ("conquerors", "conq"):
+            haki_type = "conqueror"
+        if haki_type not in ("armament", "observation", "conqueror"):
+            return await ctx.reply("Haki type must be: armament, observation, conqueror")
+
+        p = await self.players.get(member)
+        if not p.get("started"):
+            return await ctx.reply("That user has not started Crew Battles.")
+
+        haki = p.get("haki", {}) or {}
+        if haki_type == "conqueror":
+            haki["conqueror
