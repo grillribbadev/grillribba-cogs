@@ -99,6 +99,7 @@ class PlayerCommandsMixin:
         e.set_footer(text="Tip: Train Haki to improve crit/dodge/counter chances.")
         return await ctx.reply(embed=e)
 
+    @commands.cooldown(1, 10, commands.BucketType.user)  # 1 use per 10s per user
     @commands.command(name="cbshop")
     async def cbshop(self, ctx: commands.Context, page: int = 1):
         items = self.fruits.all() or []
