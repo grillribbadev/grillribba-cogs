@@ -671,10 +671,9 @@ class CrewBattles(commands.Cog):
 
     @commands.command(name="cbtrain", aliases=["cbtrainhaki"])
     async def cbtrain(self, ctx, haki_type: str, points: int = 1):
-        # forward to the existing training logic (single source of truth)
         return await self.cbtrainhaki(ctx, haki_type, points)
 
-    @commands.command(name="pbprofile", aliases=["cbprofile"])
+    @commands.command(name="pbprofile")
     async def pbprofile(self, ctx, member: discord.Member = None):
         # alias requested: .pbprofile -> .cbprofile
         return await self.cbprofile(ctx, member)
