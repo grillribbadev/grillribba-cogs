@@ -104,7 +104,7 @@ class PlayerCommandsMixin:
     async def cbshop(self, ctx: commands.Context, page: int = 1):
         items = self.fruits.all() or []
         if not items:
-            return await ctx.reply("Shop is empty. Admins can stock it with `.cbadmin fruits shopadd ...`")
+            return await ctx.send("Shop is empty. Admins can stock it with `.cbadmin fruits shopadd ...`")
 
         per = 10  # max 10 fruits per page
         pages = max(1, math.ceil(len(items) / per))
@@ -131,7 +131,7 @@ class PlayerCommandsMixin:
             return e
 
         if pages == 1:
-            return await ctx.reply(embed=build_embed(page))
+            return await ctx.send(embed=build_embed(page))
 
         class _ShopPager(discord.ui.View):
             def __init__(self, *, author_id: int, current: int):
@@ -173,7 +173,7 @@ class PlayerCommandsMixin:
                 await interaction.response.edit_message(embed=build_embed(self.current), view=self)
 
         view = _ShopPager(author_id=ctx.author.id, current=page)
-        msg = await ctx.reply(embed=build_embed(page), view=view)
+        msg = await ctx.send(embed=build_embed(page), view=view)  # was ctx.reply(...)
         view._msg = msg
         return
 
