@@ -119,19 +119,15 @@ class PlayerCommandsMixin:
     async def cbshop(self, ctx: commands.Context, *, fruit_type: str = ""):
         """
         Usage:
-          .cbshop paramecia
+          .cbshop                    -> all fruits (paged)
+          .cbshop paramecia          -> filtered (paged)
           .cbshop zoan
           .cbshop ancient zoan
           .cbshop logia
           .cbshop mythical zoan
         """
-        t = self._norm_shop_type(fruit_type)
-        if not t:
-            return await ctx.send(
-                "Pick a category:\n"
-                "`paramecia`, `zoan`, `ancient zoan`, `logia`, `mythical zoan`\n"
-                "Example: `.cbshop logia`"
-            )
+        raw = (fruit_type or "").strip()
+        t = self._norm_shop_type(raw) if raw else None  # None => show all
 
         items = self.fruits.all() or []  # shop list
         if not items:
@@ -140,9 +136,13 @@ class PlayerCommandsMixin:
         def norm_item_type(x: dict) -> str:
             return self._norm_shop_type(x.get("type", "")) or "paramecia"
 
-        items = [f for f in items if norm_item_type(f) == t]
-        if not items:
-            return await ctx.send(f"No items found for `{t}`.")
+        if t is not None:
+            items = [f for f in items if norm_item_type(f) == t]
+            if not items:
+                return await ctx.send(f"No items found for `{t}`.")
+        else:
+            # no arg given => show all, but still guide users about filters
+            pass
 
         # ascending order by price, then name
         items.sort(key=lambda f: (int(f.get("price", 0) or 0), (f.get("name") or "").lower()))
@@ -155,10 +155,11 @@ class PlayerCommandsMixin:
             start = (p - 1) * per
             chunk = items[start : start + per]
 
-            e = discord.Embed(
-                title=f"🛒 Devil Fruit Shop • {t.title()}",
-                color=discord.Color.gold(),
-            )
+            title = "🛒 Devil Fruit Shop"
+            if t is not None:
+                title += f" • {t.title()}"
+
+            e = discord.Embed(title=title, color=discord.Color.gold())
 
             lines = []
             for f in chunk:
@@ -172,7 +173,12 @@ class PlayerCommandsMixin:
                 lines.append(f"- **{name}** `+{bonus}` | `{price:,}` | Stock: `{stock_txt}` | *{ability}*")
 
             e.description = "\n".join(lines) if lines else "—"
-            e.set_footer(text=f"Page {p}/{pages} • Buy: .cbbuy <fruit name>")
+            if t is None:
+                e.set_footer(
+                    text=f"Page {p}/{pages} • Filter: .cbshop paramecia|zoan|ancient zoan|logia|mythical zoan"
+                )
+            else:
+                e.set_footer(text=f"Page {p}/{pages} • Buy: .cbbuy <fruit name>")
             return e
 
         if pages == 1:
