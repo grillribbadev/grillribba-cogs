@@ -11,7 +11,8 @@ from pathlib import Path
 
 import discord
 from redbot.core import commands, Config
-from .constants import DEFAULT_PRICE_RULES
+
+from .constants import DEFAULT_USER, DEFAULT_PRICE_RULES
 from .player_manager import PlayerManager
 from .fruits import FruitManager
 from .battle_engine import simulate
@@ -34,6 +35,8 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=1234567890, force_registration=True)
 
+        self.config.register_user(**DEFAULT_USER)
+
         self.config.register_guild(
             maintenance=False,
             beri_win=0,
@@ -48,7 +51,7 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
             exp_loss_max=0,
             price_rules=DEFAULT_PRICE_RULES,
         )
-        self.config.register_user(**DEFAULT_USER)
+        # ...existing code...
 
         self.players = PlayerManager(self)
         data_dir = cog_data_path(self) / "data"
