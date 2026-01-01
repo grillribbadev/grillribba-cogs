@@ -174,14 +174,14 @@ def simulate(p1: dict, p2: dict, fruits_mgr):
     arm1, obs1, conq1, conq_lvl1 = _haki(p1)
     arm2, obs2, conq2, conq_lvl2 = _haki(p2)
 
-    # tuning
-    base_dodge = 0.08
-    dodge_per_obs = 0.002
-    max_dodge = 0.35
+    # tuning (UPDATED)
+    base_dodge = 0.06
+    dodge_per_obs = 0.003   # was 0.002
+    max_dodge = 0.45        # was 0.35
 
-    base_crit = 0.10
-    crit_per_arm = 0.002
-    max_crit = 0.40
+    base_crit = 0.08
+    crit_per_arm = 0.003    # was 0.002
+    max_crit = 0.50         # was 0.40
     crit_mult = 1.5
 
     counter_base = 0.05
@@ -207,10 +207,20 @@ def simulate(p1: dict, p2: dict, fruits_mgr):
             return 0.0
         return min(max_counter, counter_base + (lvl * counter_per_lvl))
 
-    def base_damage(fruit_bonus: int) -> int:
-        return max(1, random.randint(12, 20) + int(fruit_bonus or 0))
+    def base_damage(fruit_bonus: int, arm: int) -> int:
+        # small deterministic edge: +0..10 damage at arm 0..100
+        arm_flat = max(0, min(10, int(arm or 0) // 10))
+        return max(1, random.randint(12, 20) + int(fruit_bonus or 0) + arm_flat)
 
-    def apply_defense_soak(def_side: str, dmg: int, ability_profile: dict) -> int:
+    def apply_armament_reduction(dmg: int, arm: int) -> int:
+        # up to 20% reduction at 100 armament (small but very noticeable over many turns)
+        pct = min(0.20, max(0.0, (int(arm or 0) * 0.002)))
+        return int(dmg * (1.0 - pct))
+
+    def apply_defense_soak(def_side: str, dmg: int, ability_profile: dict, def_arm: int) -> int:
+        # NEW: armament always reduces incoming damage a bit
+        dmg = apply_armament_reduction(dmg, def_arm)
+
         soak = ability_profile.get("soak")
         if soak and isinstance(soak, tuple) and len(soak) == 2:
             chance, pct = float(soak[0]), float(soak[1])
@@ -294,7 +304,8 @@ def simulate(p1: dict, p2: dict, fruits_mgr):
                 attacker = "p2"
                 continue
 
-            dmg = base_damage(bonus1)
+            dmg = base_damage(bonus1, arm1)  # was base_damage(bonus1)
+
             dmg = int(dmg * float(state["p1"]["weaken_mult"] or 1.0))
             state["p1"]["weaken_mult"] = 1.0
 
@@ -311,7 +322,7 @@ def simulate(p1: dict, p2: dict, fruits_mgr):
                     dmg = int(dmg * crit_mult)
 
             # defender fruit defense effects
-            dmg = apply_defense_soak("p2", dmg, a2)
+            dmg = apply_defense_soak("p2", dmg, a2, arm2)  # was apply_defense_soak("p2", dmg, a2)
             dmg = apply_shield("p2", dmg)
 
             # attacker fruit on-hit effects
@@ -328,7 +339,7 @@ def simulate(p1: dict, p2: dict, fruits_mgr):
             ds = a1.get("double_strike")
             if ds and isinstance(ds, tuple) and len(ds) == 2 and roll(float(ds[0])):
                 extra_hit = int(max(1, dmg) * float(ds[1]))
-                extra_hit = apply_defense_soak("p2", extra_hit, a2)
+                extra_hit = apply_defense_soak("p2", extra_hit, a2, arm2)  # FIX: pass defender armament
                 extra_hit = apply_shield("p2", extra_hit)
                 hp2 = max(0, hp2 - extra_hit)
                 turns.append(("p1", extra_hit, hp2, "⚡ Double Strike", False))
@@ -337,8 +348,8 @@ def simulate(p1: dict, p2: dict, fruits_mgr):
 
             # conqueror counter from defender (p2)
             if roll(counter_chance("p2", conq2, conq_lvl2)):
-                cdmg = int(base_damage(bonus2) * crit_mult)
-                cdmg = apply_defense_soak("p1", cdmg, a1)
+                cdmg = int(base_damage(bonus2, arm2) * crit_mult)  # was base_damage(bonus2)
+                cdmg = apply_defense_soak("p1", cdmg, a1, arm1)
                 cdmg = apply_shield("p1", cdmg)
                 hp1 = max(0, hp1 - cdmg)
                 turns.append(("p2", cdmg, hp1, CONQUEROR_COUNTER, True))
@@ -358,7 +369,8 @@ def simulate(p1: dict, p2: dict, fruits_mgr):
             attacker = "p1"
             continue
 
-        dmg = base_damage(bonus2)
+        dmg = base_damage(bonus2, arm2)  # was base_damage(bonus2)
+
         dmg = int(dmg * float(state["p2"]["weaken_mult"] or 1.0))
         state["p2"]["weaken_mult"] = 1.0
 
@@ -374,7 +386,7 @@ def simulate(p1: dict, p2: dict, fruits_mgr):
             if crit:
                 dmg = int(dmg * crit_mult)
 
-        dmg = apply_defense_soak("p1", dmg, a1)
+        dmg = apply_defense_soak("p1", dmg, a1, arm1)  # was apply_defense_soak("p1", dmg, a1)
         dmg = apply_shield("p1", dmg)
 
         kind, extra, suffix = maybe_on_hit(a2, "p1")
@@ -389,7 +401,7 @@ def simulate(p1: dict, p2: dict, fruits_mgr):
         ds = a2.get("double_strike")
         if ds and isinstance(ds, tuple) and len(ds) == 2 and roll(float(ds[0])):
             extra_hit = int(max(1, dmg) * float(ds[1]))
-            extra_hit = apply_defense_soak("p1", extra_hit, a1)
+            extra_hit = apply_defense_soak("p1", extra_hit, a1, arm1)  # FIX: pass defender armament
             extra_hit = apply_shield("p1", extra_hit)
             hp1 = max(0, hp1 - extra_hit)
             turns.append(("p2", extra_hit, hp1, "⚡ Double Strike", False))
@@ -398,8 +410,8 @@ def simulate(p1: dict, p2: dict, fruits_mgr):
 
         # conqueror counter from defender (p1)
         if roll(counter_chance("p1", conq1, conq_lvl1)):
-            cdmg = int(base_damage(bonus1) * crit_mult)
-            cdmg = apply_defense_soak("p2", cdmg, a2)
+            cdmg = int(base_damage(bonus1, arm1) * crit_mult)  # was base_damage(bonus1)
+            cdmg = apply_defense_soak("p2", cdmg, a2, arm2)
             cdmg = apply_shield("p2", cdmg)
             hp2 = max(0, hp2 - cdmg)
             turns.append(("p1", cdmg, hp2, CONQUEROR_COUNTER, True))
