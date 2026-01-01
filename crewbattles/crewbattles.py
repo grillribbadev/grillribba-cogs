@@ -494,9 +494,40 @@ class CrewBattles(commands.Cog):
         p["fruit"] = fruit_name
         await self.players.save(ctx.author, p)
 
-        if fruit_name:
-            return await ctx.reply(f"Started Crew Battles. Starter fruit: {fruit_name}")
-        return await ctx.reply("Started Crew Battles.")
+        # NEW: starter embed (replaces plain text)
+        fruit_name = p.get("fruit") or "None"
+        lvl = int(p.get("level", 1) or 1)
+        exp = int(p.get("exp", 0) or 0)
+
+        e = discord.Embed(
+            title="🏴‍☠️ Crew Battles Activated!",
+            description=(
+                "Welcome aboard. Your pirate record has been created.\n\n"
+                "**Next steps:**\n"
+                "• 📘 Run **`.cbtutorial`** to learn the basics\n"
+                "• 👤 View your profile with **`.cbprofile`**\n"
+                "• 🛒 Browse fruits with **`.cbshop`**\n"
+                "• ⚔️ Challenge someone with **`.battle @user`**"
+            ),
+            color=discord.Color.blurple(),
+        )
+        try:
+            e.set_thumbnail(url=ctx.author.display_avatar.url)
+        except Exception:
+            pass
+
+        e.add_field(
+            name="🎒 Starting Loadout",
+            value=f"🍈 **Fruit:** `{fruit_name}`\n❤️ **Battle HP:** `{int(BASE_HP)}`",
+            inline=False,
+        )
+        e.add_field(
+            name="📈 Progress",
+            value=f"Level: `{lvl}` • EXP: `{exp}`\nTrain Haki: **`.cbtrain armament|observation|conqueror <points>`**",
+            inline=False,
+        )
+        e.set_footer(text="Tip: Use .cbhaki to see your Haki bonuses (crit/dodge/counter).")
+        return await ctx.reply(embed=e)
 
     @commands.command()
     async def cbshop(self, ctx: commands.Context, page: int = 1):
@@ -955,9 +986,40 @@ class CrewBattles(commands.Cog):
         p["fruit"] = fruit_name
         await self.players.save(ctx.author, p)
 
-        if fruit_name:
-            return await ctx.reply(f"Started Crew Battles. Starter fruit: {fruit_name}")
-        return await ctx.reply("Started Crew Battles.")
+        # NEW: starter embed (replaces plain text)
+        fruit_name = p.get("fruit") or "None"
+        lvl = int(p.get("level", 1) or 1)
+        exp = int(p.get("exp", 0) or 0)
+
+        e = discord.Embed(
+            title="🏴‍☠️ Crew Battles Activated!",
+            description=(
+                "Welcome aboard. Your pirate record has been created.\n\n"
+                "**Next steps:**\n"
+                "• 📘 Run **`.cbtutorial`** to learn the basics\n"
+                "• 👤 View your profile with **`.cbprofile`**\n"
+                "• 🛒 Browse fruits with **`.cbshop`**\n"
+                "• ⚔️ Challenge someone with **`.battle @user`**"
+            ),
+            color=discord.Color.blurple(),
+        )
+        try:
+            e.set_thumbnail(url=ctx.author.display_avatar.url)
+        except Exception:
+            pass
+
+        e.add_field(
+            name="🎒 Starting Loadout",
+            value=f"🍈 **Fruit:** `{fruit_name}`\n❤️ **Battle HP:** `{int(BASE_HP)}`",
+            inline=False,
+        )
+        e.add_field(
+            name="📈 Progress",
+            value=f"Level: `{lvl}` • EXP: `{exp}`\nTrain Haki: **`.cbtrain armament|observation|conqueror <points>`**",
+            inline=False,
+        )
+        e.set_footer(text="Tip: Use .cbhaki to see your Haki bonuses (crit/dodge/counter).")
+        return await ctx.reply(embed=e)
 
     @commands.command()
     async def cbshop(self, ctx: commands.Context, page: int = 1):
@@ -1682,6 +1744,7 @@ class CrewBattles(commands.Cog):
     async def cbadmin_fruits_shopremove(self, ctx: commands.Context, *, name: str):
         """Remove a fruit from the shop (does not delete it from pool)."""
         try:
+
             self.fruits.shop_remove(name)
         except Exception as e:
             return await ctx.reply(f"Failed: {e}")
