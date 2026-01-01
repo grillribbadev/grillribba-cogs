@@ -1227,4 +1227,4 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
 
     @commands.command(name="cbtutorial", aliases=["cbguide", "cbhelp"])
     async def cbtutorial(self, ctx: commands.Context):
-        return await ctx.send("`cbtutorial` moved to `player_commands.py`. Reload the cog.")
+        return await ctx.send("Legacy cbtutorial disabled; using mixin command.")
