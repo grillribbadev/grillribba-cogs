@@ -13,7 +13,7 @@ import discord
 from redbot.core import commands, Config, bank
 from redbot.core.data_manager import cog_data_path
 
-from .constants import DEFAULT_GUILD, DEFAULT_USER, BASE_HP, MAX_LEVEL
+from .constants import DEFAULT_GUILD, DEFAULT_USER, BASE_HP, MAX_LEVEL, DEFAULT_PRICE_RULES
 from .player_manager import PlayerManager
 from .fruits import FruitManager
 from .battle_engine import simulate
@@ -34,7 +34,7 @@ MAX_BATTLE_COOLDOWN = 3600
 class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.config = Config.get_conf(self, identifier=0xC0A55EE, force_registration=True)
+        self.config = Config.get_conf(self, identifier=1234567890, force_registration=True)
 
         self.config.register_global(maintenance=False)
         self.config.register_guild(**DEFAULT_GUILD)

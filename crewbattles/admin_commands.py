@@ -1,14 +1,14 @@
 import copy
 import io
 import json
+import discord
 from datetime import datetime, timezone
 from pathlib import Path
 
-import discord
 from redbot.core import commands
 from redbot.core.data_manager import cog_data_path
 
-from .constants import DEFAULT_USER, MAX_LEVEL
+from .constants import DEFAULT_PRICE_RULES, DEFAULT_USER, MAX_LEVEL
 from .utils import exp_to_next
 
 
@@ -72,6 +72,29 @@ class AdminCommandsMixin:
         if t in ("unlimited", "inf", "infinite", "∞", "none"):
             return None
         return int(token)
+
+    def _norm_fruit_type(self, t: str) -> str:
+        t = " ".join((t or "").strip().lower().split())
+        aliases = {
+            "mythical": "mythical zoan",
+            "mythic zoan": "mythical zoan",
+            "conquerors": "conqueror",
+        }
+        return aliases.get(t, t)
+
+    def _clamp(self, n: int, lo: int, hi: int) -> int:
+        return max(int(lo), min(int(hi), int(n)))
+
+    async def _get_price_rules(self, guild: discord.Guild) -> dict:
+        rules = await self.config.guild(guild).price_rules()
+        if not isinstance(rules, dict):
+            rules = DEFAULT_PRICE_RULES
+        # ensure required keys exist
+        rules.setdefault("min", DEFAULT_PRICE_RULES["min"])
+        rules.setdefault("max", DEFAULT_PRICE_RULES["max"])
+        rules.setdefault("base", DEFAULT_PRICE_RULES["base"])
+        rules.setdefault("per_bonus", DEFAULT_PRICE_RULES["per_bonus"])
+        return rules
 
     # =========================================================
     # Admin commands
@@ -385,6 +408,107 @@ class AdminCommandsMixin:
         """Remove a fruit from the shop (does not delete it from pool)."""
         self.fruits.shop_remove(name)
         await ctx.reply(f"✅ Removed from shop: **{name}**")
+
+    @cbadmin_fruits.command(name="setbase")
+    async def cbadmin_fruits_pricing_setbase(self, ctx: commands.Context, fruit_type: str, amount: int):
+        rules = await self._get_price_rules(ctx.guild)
+        t = self._norm_fruit_type(fruit_type)
+        rules["base"][t] = int(amount)
+        await self.config.guild(ctx.guild).price_rules.set(rules)
+        await ctx.reply(f"✅ Base price for `{t}` set to `{int(amount):,}`")
+
+    @cbadmin_fruits.command(name="setperbonus", aliases=["setper"])
+    async def cbadmin_fruits_pricing_setperbonus(self, ctx: commands.Context, fruit_type: str, amount: int):
+        rules = await self._get_price_rules(ctx.guild)
+        t = self._norm_fruit_type(fruit_type)
+        rules["per_bonus"][t] = int(amount)
+        await self.config.guild(ctx.guild).price_rules.set(rules)
+        await ctx.reply(f"✅ Per-bonus price for `{t}` set to `{int(amount):,}` per +1 bonus")
+
+    @cbadmin_fruits.command(name="setbounds")
+    async def cbadmin_fruits_pricing_setbounds(self, ctx: commands.Context, min_price: int, max_price: int):
+        if max_price < min_price:
+            return await ctx.reply("Max must be >= min.")
+        rules = await self._get_price_rules(ctx.guild)
+        rules["min"] = int(min_price)
+        rules["max"] = int(max_price)
+        await self.config.guild(ctx.guild).price_rules.set(rules)
+        await ctx.reply(f"✅ Bounds set: min=`{int(min_price):,}` max=`{int(max_price):,}`")
+
+    @cbadmin_fruits.command(name="reprice")
+    async def cbadmin_fruits_reprice(self, ctx: commands.Context, force: str = None):
+        """
+        Recompute prices for ALL pool fruits using current pricing rules.
+        Skips fruits with price_locked=True unless `force` is provided.
+
+        Usage:
+          .cbadmin fruits reprice
+          .cbadmin fruits reprice force
+        """
+        rules = await self._get_price_rules(ctx.guild)
+        lo = int(rules["min"])
+        hi = int(rules["max"])
+        base = rules.get("base", {}) or {}
+        perb = rules.get("per_bonus", {}) or {}
+        do_force = (force or "").strip().lower() == "force"
+
+        pool = self.fruits.pool_all() or []
+        if not pool:
+            return await ctx.reply("Pool is empty.")
+
+        changed = 0
+        skipped_locked = 0
+        async with ctx.typing():
+            for f in pool:
+                if not isinstance(f, dict):
+                    continue
+                if not do_force and bool(f.get("price_locked")):
+                    skipped_locked += 1
+                    continue
+
+                t = self._norm_fruit_type(f.get("type", "paramecia"))
+                b = int(base.get(t, base.get("paramecia", DEFAULT_PRICE_RULES["base"]["paramecia"])))
+                p = int(perb.get(t, perb.get("paramecia", DEFAULT_PRICE_RULES["per_bonus"]["paramecia"])))
+                bonus = int(f.get("bonus", 0) or 0)
+                new_price = self._clamp(b + (bonus * p), lo, hi)
+
+                old_price = int(f.get("price", 0) or 0)
+                if old_price != new_price:
+                    f["price"] = new_price
+                    # repriced values are not "manual"
+                    if "price_locked" in f:
+                        f["price_locked"] = False
+                    self.fruits.pool_upsert(f)
+                    changed += 1
+
+        await ctx.reply(f"✅ Repriced pool. Updated `{changed}` fruit(s). Skipped locked: `{skipped_locked}`.")
+
+    @cbadmin_fruits.command(name="setprice", aliases=["price"])
+    async def cbadmin_fruits_setprice(self, ctx: commands.Context, price: int, *, name: str):
+        """Set a single fruit price and lock it against automatic repricing."""
+        price = int(price)
+        if price < 0:
+            return await ctx.reply("Price must be >= 0.")
+
+        f = self.fruits.pool_get(name)
+        if not isinstance(f, dict):
+            return await ctx.reply("That fruit is not in the pool. Add/import it first.")
+
+        old = int(f.get("price", 0) or 0)
+        f["price"] = price
+        f["price_locked"] = True
+        saved = self.fruits.pool_upsert(f)
+        await ctx.reply(f"✅ Price updated (locked): **{saved['name']}** `{old:,}` → `{price:,}`")
+
+    @cbadmin_fruits.command(name="unlockprice", aliases=["pricereset"])
+    async def cbadmin_fruits_unlockprice(self, ctx: commands.Context, *, name: str):
+        """Allow a fruit to be affected by `.cbadmin fruits reprice` again."""
+        f = self.fruits.pool_get(name)
+        if not isinstance(f, dict):
+            return await ctx.reply("That fruit is not in the pool.")
+        f["price_locked"] = False
+        self.fruits.pool_upsert(f)
+        await ctx.reply(f"✅ Unlocked price for **{f.get('name', name)}**")
 
     @cbadmin.command(name="maintenance")
     async def cbadmin_maintenance(self, ctx: commands.Context, mode: str):

@@ -35,3 +35,22 @@ DEFAULT_GUILD = {
     # Fruit removal cost (0 = free)
     "remove_fruit_cost": 0,
 }
+
+DEFAULT_PRICE_RULES = {
+    "min": 100_000,
+    "max": 25_000_000,
+    "base": {
+        "paramecia": 200_000,
+        "zoan": 450_000,
+        "ancient zoan": 600_000,
+        "logia": 900_000,
+        "mythical zoan": 1_500_000,
+    },
+    "per_bonus": {
+        "paramecia": 70_000,
+        "zoan": 85_000,
+        "ancient zoan": 95_000,
+        "logia": 120_000,
+        "mythical zoan": 160_000,
+    },
+}
