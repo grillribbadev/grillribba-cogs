@@ -1228,3 +1228,13 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
     @commands.command(name="cbtutorial", aliases=["cbguide", "cbhelp"])
     async def cbtutorial(self, ctx: commands.Context):
         return await ctx.send("Legacy cbtutorial disabled; using mixin command.")
+
+    # IMPORTANT:
+    # These legacy methods MUST NOT be named the same as mixin commands,
+    # otherwise they shadow PlayerCommandsMixin and the commands won't register.
+
+    async def _legacy_cbleaderboard(self, ctx: commands.Context, page: int = 1, sort_by: str = "wins"):
+        return await ctx.send("Legacy leaderboard is disabled; use the mixin `.cbleaderboard`.")
+
+    async def _legacy_cbtutorial(self, ctx: commands.Context):
+        return await ctx.send("Legacy tutorial is disabled; use the mixin `.cbtutorial`.")
