@@ -11,6 +11,7 @@ from pathlib import Path
 
 import discord
 from redbot.core import commands, Config
+from redbot.core.data_manager import cog_data_path
 
 from .constants import DEFAULT_USER, DEFAULT_PRICE_RULES
 from .player_manager import PlayerManager
