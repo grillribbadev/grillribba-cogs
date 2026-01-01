@@ -1,10 +1,10 @@
 import copy
 import io
 import json
-import discord
 from datetime import datetime, timezone
 from pathlib import Path
 
+import discord
 from redbot.core import commands
 from redbot.core.data_manager import cog_data_path
 
@@ -95,6 +95,21 @@ class AdminCommandsMixin:
         rules.setdefault("base", DEFAULT_PRICE_RULES["base"])
         rules.setdefault("per_bonus", DEFAULT_PRICE_RULES["per_bonus"])
         return rules
+
+    def _compute_price_from_rules(self, fruit: dict, rules: dict) -> int:
+        t = self._norm_fruit_type(fruit.get("type", "paramecia"))
+        bonus = int(fruit.get("bonus", 0) or 0)
+
+        lo = int(rules.get("min", DEFAULT_PRICE_RULES["min"]))
+        hi = int(rules.get("max", DEFAULT_PRICE_RULES["max"]))
+
+        base_map = (rules.get("base") or DEFAULT_PRICE_RULES["base"])
+        per_map = (rules.get("per_bonus") or DEFAULT_PRICE_RULES["per_bonus"])
+
+        base = int(base_map.get(t, base_map.get("paramecia", DEFAULT_PRICE_RULES["base"]["paramecia"])))
+        perb = int(per_map.get(t, per_map.get("paramecia", DEFAULT_PRICE_RULES["per_bonus"]["paramecia"])))
+
+        return self._clamp(base + (bonus * perb), lo, hi)
 
     # =========================================================
     # Admin commands
@@ -334,17 +349,45 @@ class AdminCommandsMixin:
         await ctx.send_help()
 
     @cbadmin_fruits.command(name="import")
-    async def cbadmin_fruits_import(self, ctx: commands.Context):
-        """Import fruits JSON into the POOL (catalog). Attach a JSON file."""
+    async def cbadmin_fruits_import(self, ctx: commands.Context, mode: str = "rules"):
+        """
+        Import fruits JSON into the POOL (catalog). Attach a JSON file.
+
+        Modes:
+          - rules (default): ignore JSON prices; compute from configured price_rules
+          - json: keep the JSON prices as-is
+
+        Usage:
+          .cbadmin fruits import
+          .cbadmin fruits import json
+        """
         if not ctx.message.attachments:
             return await ctx.reply("Attach a JSON file: `.cbadmin fruits import` with `fruits.json` attached.")
+
+        mode = (mode or "rules").strip().lower()
+        if mode not in ("rules", "json"):
+            return await ctx.reply("Mode must be `rules` (default) or `json`.")
 
         att = ctx.message.attachments[0]
         raw = await att.read()
         payload = json.loads(raw.decode("utf-8"))
 
+        fruits_list = (payload or {}).get("fruits")
+        if not isinstance(fruits_list, list):
+            return await ctx.reply("JSON must look like: `{ \"fruits\": [ ... ] }`")
+
+        if mode == "rules":
+            rules = await self._get_price_rules(ctx.guild)
+            # rewrite prices before importing
+            for f in fruits_list:
+                if not isinstance(f, dict):
+                    continue
+                f["price"] = self._compute_price_from_rules(f, rules)
+                # keep auto-reprice behavior consistent
+                f["price_locked"] = False
+
         ok, bad = self.fruits.pool_import(payload)
-        await ctx.reply(f"✅ Imported into pool: {ok} OK, {bad} failed.")
+        await ctx.reply(f"✅ Imported into pool: {ok} OK, {bad} failed. (mode={mode})")
 
     @cbadmin_fruits.command(name="export")
     async def cbadmin_fruits_export(self, ctx: commands.Context, which: str = "pool"):
@@ -564,7 +607,15 @@ class AdminCommandsMixin:
         if not isinstance(fruits_list, list) or not fruits_list:
             return await ctx.reply("JSON must look like: `{ \"fruits\": [ {..}, {..} ] }`")
 
-        # 1) Upsert into pool
+        # IMPORTANT: apply pricing rules so JSON prices don't override your configured rules
+        rules = await self._get_price_rules(ctx.guild)
+        for f in fruits_list:
+            if not isinstance(f, dict):
+                continue
+            f["price"] = self._compute_price_from_rules(f, rules)
+            f["price_locked"] = False
+
+        # 1) Upsert into pool (now rule-priced)
         try:
             ok_pool, bad_pool = self.fruits.pool_import(payload)
         except Exception as e:
@@ -617,3 +668,62 @@ class AdminCommandsMixin:
             await self.config.user(member).set(pdata)
 
         await ctx.reply(f"✅ Removed **{member.display_name}**'s fruit: **{old}**")
+
+    @cbadmin.command(name="givefruit")
+    async def cbadmin_givefruit(self, ctx: commands.Context, member: discord.Member, *, fruit_name_and_confirm: str):
+        """
+        Give a user a fruit directly from the POOL (catalog). Does NOT change shop stock.
+
+        Usage:
+          .cbadmin givefruit @user <fruit name>
+          .cbadmin givefruit @user <fruit name> confirm   (overwrites existing fruit)
+        """
+        raw = (fruit_name_and_confirm or "").strip()
+        if not raw:
+            return await ctx.reply("Usage: `.cbadmin givefruit @user <fruit name>`")
+
+        # Allow optional trailing "confirm" to overwrite an existing equipped fruit
+        parts = raw.rsplit(" ", 1)
+        confirm = None
+        fruit_name = raw
+        if len(parts) == 2 and parts[1].lower() == "confirm":
+            fruit_name = parts[0].strip()
+            confirm = "confirm"
+
+        fruit = self.fruits.pool_get(fruit_name)
+        if not isinstance(fruit, dict):
+            return await ctx.reply("That fruit is not in the pool. Import/add it first.")
+
+        canonical_name = fruit.get("name") or fruit_name
+
+        # Prefer PlayerManager if available
+        if hasattr(self, "players") and getattr(self.players, "get", None) and getattr(self.players, "save", None):
+            pdata = await self.players.get(member)
+            if not pdata.get("started"):
+                return await ctx.reply("That user has not started. They must run `.startcb` first.")
+
+            existing = pdata.get("fruit")
+            if existing and confirm != "confirm":
+                return await ctx.reply(
+                    f"That user already has **{existing}**. To overwrite: "
+                    f"`.cbadmin givefruit {member.mention} {canonical_name} confirm`"
+                )
+
+            pdata["fruit"] = canonical_name
+            await self.players.save(member, pdata)
+        else:
+            pdata = await self.config.user(member).all()
+            if not pdata.get("started"):
+                return await ctx.reply("That user has not started. They must run `.startcb` first.")
+
+            existing = pdata.get("fruit")
+            if existing and confirm != "confirm":
+                return await ctx.reply(
+                    f"That user already has **{existing}**. To overwrite: "
+                    f"`.cbadmin givefruit {member.mention} {canonical_name} confirm`"
+                )
+
+            pdata["fruit"] = canonical_name
+            await self.config.user(member).set(pdata)
+
+        await ctx.reply(f"✅ Gave **{member.display_name}** the fruit: **{canonical_name}** (stock unchanged).")
