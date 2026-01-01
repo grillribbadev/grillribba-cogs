@@ -13,7 +13,7 @@ import discord
 from redbot.core import commands, Config
 from redbot.core.data_manager import cog_data_path
 
-from .constants import DEFAULT_USER, DEFAULT_PRICE_RULES
+from .constants import BASE_HP, DEFAULT_USER, DEFAULT_PRICE_RULES, MAX_LEVEL
 from .player_manager import PlayerManager
 from .fruits import FruitManager
 from .battle_engine import simulate
