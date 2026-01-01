@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import math
 import random
 import time
 
@@ -104,28 +105,76 @@ class PlayerCommandsMixin:
         if not items:
             return await ctx.reply("Shop is empty. Admins can stock it with `.cbadmin fruits shopadd ...`")
 
-        page = max(1, int(page or 1))
-        per = 8
-        start = (page - 1) * per
-        chunk = items[start : start + per]
-        if not chunk:
-            return await ctx.reply("That page is empty.")
+        per = 10  # max 10 fruits per page
+        pages = max(1, math.ceil(len(items) / per))
+        page = max(1, min(int(page or 1), pages))
 
-        e = discord.Embed(title="🛒 Devil Fruit Shop", color=discord.Color.gold())
-        lines = []
-        for f in chunk:
-            name = f.get("name", "Unknown")
-            ftype = str(f.get("type", "unknown")).title()
-            bonus = int(f.get("bonus", 0) or 0)
-            price = int(f.get("price", 0) or 0)
-            ability = f.get("ability") or "None"
-            stock = f.get("stock", None)
-            stock_txt = "∞" if stock is None else str(stock)
-            lines.append(f"- **{name}** ({ftype}) `+{bonus}` | `{price:,}` | Stock: `{stock_txt}` | *{ability}*")
+        def build_embed(p: int) -> discord.Embed:
+            start = (p - 1) * per
+            chunk = items[start : start + per]
 
-        e.description = "\n".join(lines)
-        e.set_footer(text=f"Page {page} | Buy: .cbbuy <fruit name>")
-        return await ctx.reply(embed=e)
+            e = discord.Embed(title="🛒 Devil Fruit Shop", color=discord.Color.gold())
+            lines = []
+            for f in chunk:
+                name = f.get("name", "Unknown")
+                ftype = str(f.get("type", "unknown")).title()
+                bonus = int(f.get("bonus", 0) or 0)
+                price = int(f.get("price", 0) or 0)
+                ability = f.get("ability") or "None"
+                stock = f.get("stock", None)
+                stock_txt = "∞" if stock is None else str(stock)
+                lines.append(f"- **{name}** ({ftype}) `+{bonus}` | `{price:,}` | Stock: `{stock_txt}` | *{ability}*")
+
+            e.description = "\n".join(lines) if lines else "—"
+            e.set_footer(text=f"Page {p}/{pages} • Buy: .cbbuy <fruit name>")
+            return e
+
+        if pages == 1:
+            return await ctx.reply(embed=build_embed(page))
+
+        class _ShopPager(discord.ui.View):
+            def __init__(self, *, author_id: int, current: int):
+                super().__init__(timeout=60)
+                self.author_id = author_id
+                self.current = current
+                self._msg: discord.Message | None = None
+                self._sync_buttons()
+
+            def _sync_buttons(self):
+                self.prev_btn.disabled = self.current <= 1
+                self.next_btn.disabled = self.current >= pages
+
+            async def interaction_check(self, interaction: discord.Interaction) -> bool:
+                # only the command invoker can flip pages
+                return interaction.user and interaction.user.id == self.author_id
+
+            async def on_timeout(self) -> None:
+                # disable buttons when timed out
+                for child in self.children:
+                    if isinstance(child, discord.ui.Button):
+                        child.disabled = True
+                try:
+                    if self._msg:
+                        await self._msg.edit(view=self)
+                except Exception:
+                    pass
+
+            @discord.ui.button(label="◀ Prev", style=discord.ButtonStyle.secondary)
+            async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+                self.current = max(1, self.current - 1)
+                self._sync_buttons()
+                await interaction.response.edit_message(embed=build_embed(self.current), view=self)
+
+            @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.secondary)
+            async def next_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+                self.current = min(pages, self.current + 1)
+                self._sync_buttons()
+                await interaction.response.edit_message(embed=build_embed(self.current), view=self)
+
+        view = _ShopPager(author_id=ctx.author.id, current=page)
+        msg = await ctx.reply(embed=build_embed(page), view=view)
+        view._msg = msg
+        return
 
     @commands.command(name="cbbuy")
     async def cbbuy(self, ctx: commands.Context, *, fruit_name: str):
