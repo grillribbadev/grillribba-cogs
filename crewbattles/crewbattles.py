@@ -474,6 +474,20 @@ class CrewBattles(commands.Cog):
         await self.config.guild(ctx.guild).conqueror_unlock_cost.set(cost)
         await ctx.reply(f"Conqueror unlock cost set to {cost:,} Beri.")
 
+    @cbadmin.command(name="resetuser")
+    async def cbadmin_resetuser(self, ctx: commands.Context, member: discord.Member, confirm: str = None):
+        """Reset a single user's CrewBattles data."""
+        if confirm != "confirm":
+            return await ctx.reply("Run: `.cbadmin resetuser @member confirm`")
+
+        async with ctx.typing():
+            try:
+                await self.config.user(member).set(copy.deepcopy(DEFAULT_USER))
+            except Exception as e:
+                return await ctx.reply(f"Reset failed: {e}")
+
+        await ctx.reply(f"✅ Reset Crew Battles data for **{member.display_name}**.")
+
     # =========================================================
     # Player commands
     # =========================================================
