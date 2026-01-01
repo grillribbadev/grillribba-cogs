@@ -176,8 +176,18 @@ class CrewBattles(commands.Cog):
     # Maintenance check
     # -----------------------------
     async def cog_check(self, ctx: commands.Context) -> bool:
-        # existing maintenance logic first
-        ok = await super().cog_check(ctx) if hasattr(super(), "cog_check") else True
+        # DO NOT await a bool. Only await if the base returns an awaitable.
+        base_check = getattr(super(), "cog_check", None)
+        if callable(base_check):
+            try:
+                res = base_check(ctx)
+                if inspect.isawaitable(res):
+                    res = await res
+                if res is False:
+                    return False
+            except Exception:
+                # don't let base check crash help/commands
+                pass
 
         try:
             maintenance = bool(await self.config.maintenance())
