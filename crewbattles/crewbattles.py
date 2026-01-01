@@ -883,9 +883,11 @@ class CrewBattles(commands.Cog):
                 if side == "p1":
                     hp2 = int(defender_hp_after)
                     actor = ctx.author.display_name
+                    defender = opponent.display_name
                 else:
                     hp1 = int(defender_hp_after)
                     actor = opponent.display_name
+                    defender = ctx.author.display_name
 
                 tag = ""
                 if isinstance(atk_name, str) and atk_name.startswith("🍈 "):
@@ -894,7 +896,7 @@ class CrewBattles(commands.Cog):
                     tag = " **CRIT**"
 
                 if int(dmg) <= 0 and str(atk_name).lower() == "dodged":
-                    line = f"💨 **{actor}** attack was **dodged**!"
+                    line = f"💨 **{defender}** dodged **{actor}**'s attack!"
                 else:
                     line = f"🗡️ **{actor}** used **{atk_name}** for `{int(dmg)}` damage.{tag}"
 
