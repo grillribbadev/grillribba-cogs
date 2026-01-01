@@ -111,6 +111,19 @@ def _ability_profile(ability: str) -> dict:
     return profiles.get(a, {})
 
 
+def _fruit_tech_chance(ability: str, fruit_bonus: int) -> float:
+    """
+    Devil Fruit technique proc chance.
+    - ONLY if user has a fruit ability
+    - Intentionally low frequency (roughly crit-tier but not spammy)
+    """
+    if not (ability or "").strip():
+        return 0.0
+    b = int(fruit_bonus or 0)
+    # 6% base + up to +2% from bonus, capped at 8%
+    return min(0.08, 0.06 + (max(0, min(10, b)) * 0.002))
+
+
 def simulate(p1: dict, p2: dict, fruits_mgr):
     """
     Flat HP: BASE_HP for both players.
@@ -285,10 +298,17 @@ def simulate(p1: dict, p2: dict, fruits_mgr):
             dmg = int(dmg * float(state["p1"]["weaken_mult"] or 1.0))
             state["p1"]["weaken_mult"] = 1.0
 
-            crit = roll(crit_chance(arm1, a1))
-            atk_name = random.choice(ARMAMENT_ATTACKS) if arm1 > 0 else random.choice(ATTACKS)
-            if crit:
-                dmg = int(dmg * crit_mult)
+            # NEW: Devil Fruit Technique (does NOT stack with crit)
+            fruit_tech = roll(_fruit_tech_chance(ability1, bonus1))
+            if fruit_tech:
+                crit = False
+                atk_name = f"🍈 {ability1}"
+                dmg = int(dmg * crit_mult)  # crit-tier damage
+            else:
+                crit = roll(crit_chance(arm1, a1))
+                atk_name = random.choice(ARMAMENT_ATTACKS) if arm1 > 0 else random.choice(ATTACKS)
+                if crit:
+                    dmg = int(dmg * crit_mult)
 
             # defender fruit defense effects
             dmg = apply_defense_soak("p2", dmg, a2)
@@ -342,10 +362,17 @@ def simulate(p1: dict, p2: dict, fruits_mgr):
         dmg = int(dmg * float(state["p2"]["weaken_mult"] or 1.0))
         state["p2"]["weaken_mult"] = 1.0
 
-        crit = roll(crit_chance(arm2, a2))
-        atk_name = random.choice(ARMAMENT_ATTACKS) if arm2 > 0 else random.choice(ATTACKS)
-        if crit:
+        # NEW: Devil Fruit Technique (does NOT stack with crit)
+        fruit_tech = roll(_fruit_tech_chance(ability2, bonus2))
+        if fruit_tech:
+            crit = False
+            atk_name = f"🍈 {ability2}"
             dmg = int(dmg * crit_mult)
+        else:
+            crit = roll(crit_chance(arm2, a2))
+            atk_name = random.choice(ARMAMENT_ATTACKS) if arm2 > 0 else random.choice(ATTACKS)
+            if crit:
+                dmg = int(dmg * crit_mult)
 
         dmg = apply_defense_soak("p1", dmg, a1)
         dmg = apply_shield("p1", dmg)
