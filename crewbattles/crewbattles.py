@@ -1777,3 +1777,47 @@ class CrewBattles(commands.Cog):
         await self.players.save(member, p)
 
         await ctx.reply(f"✅ Updated **{member.display_name}** {haki_type}: `{cur}` → `{haki[key]}`.")
+
+    @cbadmin.command(name="removefruit")
+    async def cbadmin_removefruit(self, ctx: commands.Context, member: discord.Member):
+        """Remove a user's equipped fruit."""
+        p = await self.players.get(member)
+        if not p.get("started"):
+            return await ctx.reply("That user has not started Crew Battles.")
+
+        old = p.get("fruit")
+        p["fruit"] = None
+        await self.players.save(member, p)
+        await ctx.reply(f"✅ Removed fruit from **{member.display_name}** (was: `{old or 'None'}`).")
+
+    @cbadmin.command(name="givefruit")
+    async def cbadmin_givefruit(self, ctx: commands.Context, member: discord.Member, *, fruit_name: str):
+        """
+        Give a fruit from the POOL to a user (does not consume shop stock).
+
+        Use `force` at the end to overwrite:
+          .cbadmin givefruit @user Quake Quake force
+        """
+        fruit_name = (fruit_name or "").strip()
+        if not fruit_name:
+            return await ctx.reply("Provide a fruit name from the pool.")
+
+        force = False
+        if fruit_name.lower().endswith(" force"):
+            force = True
+            fruit_name = fruit_name[:-6].strip()
+
+        pool_fruit = self.fruits.pool_get(fruit_name)
+        if not pool_fruit:
+            return await ctx.reply("That fruit is not in the pool. Import/add it first (`.cbadmin fruits import` / `pooladd`).")
+
+        p = await self.players.get(member)
+        if not p.get("started"):
+            return await ctx.reply("That user has not started Crew Battles.")
+
+        if p.get("fruit") and not force:
+            return await ctx.reply("User already has a fruit. Use `force` to overwrite.")
+
+        p["fruit"] = pool_fruit["name"]
+        await self.players.save(member, p)
+        await ctx.reply(f"✅ Gave **{member.display_name}** the fruit **{pool_fruit['name']}**.")
