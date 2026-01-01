@@ -865,34 +865,63 @@ class CrewBattles(commands.Cog):
             await self.players.save(winner_user, winner_p)
             await self.players.save(loser_user, loser_p)
 
+            # Rewards
             beri_win = int(g.get("beri_win", 0) or 0)
             beri_loss = int(g.get("beri_loss", 0) or 0)
+
             if beri_win:
                 await self._add_beri(winner_user, beri_win, reason="crew_battle:win")
             if beri_loss:
                 await self._add_beri(loser_user, beri_loss, reason="crew_battle:loss")
 
-            points = int(g.get("crew_points_win", 1) or 1)
-            if points > 0:
+            crew_points = int(g.get("crew_points_win", 1) or 1)
+            points_added = 0
+            if crew_points > 0:
                 try:
-                    await self.teams.award_win(ctx, winner_user, points)
+                    ok = await self.teams.award_win(ctx, winner_user, crew_points)
+                    if ok:
+                        points_added = crew_points
                 except Exception:
-                    pass
+                    points_added = 0
 
+            # ---------- Updated Result Embed ----------
             res = discord.Embed(
-                title="Crew Battle Result",
-                description=f"{winner_user.display_name} defeated {loser_user.display_name}",
+                title="🏁 Crew Battle Results",
+                description=f"⚔️ **{winner_user.display_name}** defeated **{loser_user.display_name}**",
                 color=discord.Color.green(),
             )
-            res.add_field(name="Winner EXP", value=f"+{win_gain}", inline=True)
-            res.add_field(name="Loser EXP", value=f"+{loss_gain}", inline=True)
-            if leveled_w or leveled_l:
-                lines = []
-                if leveled_w:
-                    lines.append(f"{winner_user.display_name} leveled +{leveled_w} -> {winner_p.get('level')}")
-                if leveled_l:
-                    lines.append(f"{loser_user.display_name} leveled +{leveled_l} -> {loser_p.get('level')}")
-                res.add_field(name="Level Ups", value="\n".join(lines), inline=False)
+
+            try:
+                res.set_thumbnail(url=winner_user.display_avatar.url)
+            except Exception:
+                pass
+
+            # Winner summary
+            winner_level = int(winner_p.get("level", 1) or 1)
+            winner_exp = int(winner_p.get("exp", 0) or 0)
+
+            winner_lines = [
+                f"💰 **Beri:** `+{beri_win:,}`" if beri_win else "💰 **Beri:** `+0`",
+                f"⭐ **EXP Gained:** `+{win_gain}`",
+                f"📈 **Level:** `{winner_level}`" + (f" *(+{leveled_w})*" if leveled_w else ""),
+                f"✨ **Current EXP:** `{winner_exp}`",
+                f"🏴‍☠️ **Crew Points:** `+{points_added}`" if points_added else "🏴‍☠️ **Crew Points:** `+0`",
+            ]
+            res.add_field(name="🏆 Winner Rewards", value="\n".join(winner_lines), inline=False)
+
+            # Loser rewards at bottom (as requested)
+            loser_level = int(loser_p.get("level", 1) or 1)
+            loser_exp = int(loser_p.get("exp", 0) or 0)
+
+            loser_lines = [
+                f"💰 **Beri:** `+{beri_loss:,}`" if beri_loss else "💰 **Beri:** `+0`",
+                f"⭐ **EXP Gained:** `+{loss_gain}`",
+                f"📉 **Level:** `{loser_level}`" + (f" *(+{leveled_l})*" if leveled_l else ""),
+                f"✨ **Current EXP:** `{loser_exp}`",
+            ]
+            res.add_field(name="☠️ Loser Rewards", value="\n".join(loser_lines), inline=False)
+
+            res.set_footer(text="⚡ Armament=CRIT • 👁️ Observation=DODGE • 👑 Conqueror=COUNTER CRIT")
             await ctx.reply(embed=res)
 
         finally:
