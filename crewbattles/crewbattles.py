@@ -573,8 +573,8 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
 
     # REMOVE / DISABLE THIS LEGACY COMMAND (it overrides the mixin cbshop)
     # @commands.command()
-    async def cbshop(self, ctx: commands.Context, page: int = 1):
-        return await ctx.send("Legacy cbshop disabled; using mixin command.")
+    #async def cbshop(self, ctx: commands.Context, page: int = 1):
+     #   return await ctx.send("Legacy cbshop disabled; using mixin command.")
 
     @commands.command()
     async def cbbuy(self, ctx: commands.Context, *, fruit_name: str):
