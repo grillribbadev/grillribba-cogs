@@ -480,19 +480,25 @@ class CrewBattles(commands.Cog):
         p = copy.deepcopy(DEFAULT_USER)
         p["started"] = True
 
-        # starter fruit (does not consume stock)
+        # starter fruit (5% chance, does not consume shop stock)
         fruit_name = None
         try:
-            items = self.fruits.pool_all() or []
-            if items:
-                pick = random.choice(items)
-                if isinstance(pick, dict):
-                    fruit_name = pick.get("name")
+            if random.random() < 0.05:  # 5% chance
+                pool = self.fruits.pool_all() or []
+                if pool:
+                    pick = random.choice(pool)
+                    if isinstance(pick, dict):
+                        fruit_name = pick.get("name")
         except Exception:
             fruit_name = None
 
         p["fruit"] = fruit_name
+
         await self.players.save(ctx.author, p)
+
+        # If you have the new startcb embed:
+        # make sure it displays "None" if fruit_name is None
+        # ...existing code...
 
         # NEW: starter embed (replaces plain text)
         fruit_name = p.get("fruit") or "None"
@@ -972,19 +978,24 @@ class CrewBattles(commands.Cog):
         p = copy.deepcopy(DEFAULT_USER)
         p["started"] = True
 
-        # starter fruit (does not consume stock)
+        # starter fruit (5% chance, does not consume shop stock)
         fruit_name = None
         try:
-            items = self.fruits.pool_all() or []
-            if items:
-                pick = random.choice(items)
-                if isinstance(pick, dict):
-                    fruit_name = pick.get("name")
+            if random.random() < 0.05:  # 5% chance
+                pool = self.fruits.pool_all() or []
+                if pool:
+                    pick = random.choice(pool)
+                    if isinstance(pick, dict):
+                        fruit_name = pick.get("name")
         except Exception:
             fruit_name = None
 
         p["fruit"] = fruit_name
+
         await self.players.save(ctx.author, p)
+
+        # If you have the new startcb embed:
+        # make sure it displays "None" if fruit_name is None
 
         # NEW: starter embed (replaces plain text)
         fruit_name = p.get("fruit") or "None"
