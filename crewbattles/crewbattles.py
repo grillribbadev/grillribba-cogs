@@ -885,9 +885,21 @@ class CrewBattles(commands.Cog):
                     points_added = 0
 
             # ---------- Updated Result Embed ----------
+            def _who(m: discord.Member) -> str:
+                # "nickname (username)" style
+                try:
+                    if m.display_name and m.display_name != m.name:
+                        return f"{m.display_name} ({m.name})"
+                except Exception:
+                    pass
+                return getattr(m, "display_name", getattr(m, "name", "Unknown"))
+
+            winner_who = _who(winner_user)
+            loser_who = _who(loser_user)
+
             res = discord.Embed(
                 title="🏁 Crew Battle Results",
-                description=f"⚔️ **{winner_user.display_name}** defeated **{loser_user.display_name}**",
+                description=f"⚔️ **{winner_who}** defeated **{loser_who}**",
                 color=discord.Color.green(),
             )
 
@@ -907,19 +919,20 @@ class CrewBattles(commands.Cog):
                 f"✨ **Current EXP:** `{winner_exp}`",
                 f"🏴‍☠️ **Crew Points:** `+{points_added}`" if points_added else "🏴‍☠️ **Crew Points:** `+0`",
             ]
-            res.add_field(name="🏆 Winner Rewards", value="\n".join(winner_lines), inline=False)
+            res.add_field(name=f"🏆 Winner — {winner_who}", value="\n".join(winner_lines), inline=False)
 
-            # Loser rewards at bottom (as requested)
+            # Loser rewards (visually smaller/secondary via blockquote + italics)
             loser_level = int(loser_p.get("level", 1) or 1)
             loser_exp = int(loser_p.get("exp", 0) or 0)
 
             loser_lines = [
-                f"💰 **Beri:** `+{beri_loss:,}`" if beri_loss else "💰 **Beri:** `+0`",
-                f"⭐ **EXP Gained:** `+{loss_gain}`",
-                f"📉 **Level:** `{loser_level}`" + (f" *(+{leveled_l})*" if leveled_l else ""),
-                f"✨ **Current EXP:** `{loser_exp}`",
+                f"💰 Beri: `+{beri_loss:,}`" if beri_loss else "💰 Beri: `+0`",
+                f"⭐ EXP Gained: `+{loss_gain}`",
+                f"📉 Level: `{loser_level}`" + (f" *(+{leveled_l})*" if leveled_l else ""),
+                f"✨ Current EXP: `{loser_exp}`",
             ]
-            res.add_field(name="☠️ Loser Rewards", value="\n".join(loser_lines), inline=False)
+            loser_value = "\n".join(f"> *{line}*" for line in loser_lines)
+            res.add_field(name=f"☠️ Loser — {loser_who}", value=loser_value, inline=False)
 
             res.set_footer(text="⚡ Armament=CRIT • 👁️ Observation=DODGE • 👑 Conqueror=COUNTER CRIT")
             await ctx.reply(embed=res)
