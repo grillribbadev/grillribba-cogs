@@ -511,8 +511,8 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
     # --- REMOVE/disable legacy leaderboard stub (it shadows the mixin even without a decorator)
     # DISABLE legacy leaderboard so the PlayerCommandsMixin.cbleaderboard(*args) is used.
     # @commands.command(name="cbleaderboard", aliases=["cblb", "cbtop"])
-    async def _legacy_cbleaderboard(self, ctx: commands.Context, page: int = 1, sort_by: str = "wins"):
-        return await ctx.send("Legacy cbleaderboard disabled; using mixin command.")
+    #async def _legacy_cbleaderboard(self, ctx: commands.Context, page: int = 1, sort_by: str = "wins"):
+     #   return await ctx.send("Legacy cbleaderboard disabled; using mixin command.")
 
     @commands.command(name="startcb")
     async def startcb(self, ctx: commands.Context):
