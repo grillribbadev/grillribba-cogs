@@ -408,3 +408,64 @@ class AdminCommandsMixin:
             await self.config.set_raw("maintenance", value=state)
 
         await ctx.reply(f"✅ Maintenance mode is now **{'ON' if state else 'OFF'}**.")
+
+    @cbadmin_fruits.command(name="addall")
+    async def cbadmin_fruits_addall(self, ctx: commands.Context, stock: str = "1"):
+        """
+        Add ALL fruits from an attached fruits.json into the SHOP at once.
+        Also upserts them into the POOL first.
+
+        Usage:
+          .cbadmin fruits addall              (default stock=1)
+          .cbadmin fruits addall 5            (stock=5 for every fruit)
+          .cbadmin fruits addall unlimited    (unlimited stock)
+        (Attach fruits.json)
+        """
+        if not ctx.message.attachments:
+            return await ctx.reply("Attach `fruits.json`: `.cbadmin fruits addall [stock]` with the file attached.")
+
+        try:
+            st = self._parse_stock_token(stock)  # None = unlimited
+        except Exception:
+            return await ctx.reply("Invalid stock. Use a number or `unlimited`.")
+
+        att = ctx.message.attachments[0]
+        try:
+            raw = await att.read()
+            payload = json.loads(raw.decode("utf-8"))
+        except Exception as e:
+            return await ctx.reply(f"Failed to read JSON attachment: {e}")
+
+        fruits_list = (payload or {}).get("fruits")
+        if not isinstance(fruits_list, list) or not fruits_list:
+            return await ctx.reply("JSON must look like: `{ \"fruits\": [ {..}, {..} ] }`")
+
+        # 1) Upsert into pool
+        try:
+            ok_pool, bad_pool = self.fruits.pool_import(payload)
+        except Exception as e:
+            return await ctx.reply(f"Pool import failed: {e}")
+
+        # 2) Stock all into shop
+        ok_shop = 0
+        bad_shop = 0
+        for item in fruits_list:
+            if not isinstance(item, dict):
+                bad_shop += 1
+                continue
+            name = (item.get("name") or "").strip()
+            if not name:
+                bad_shop += 1
+                continue
+            try:
+                self.fruits.shop_add(name, st)
+                ok_shop += 1
+            except Exception:
+                bad_shop += 1
+
+        stock_txt = "∞" if st is None else str(st)
+        await ctx.reply(
+            f"✅ addall complete.\n"
+            f"POOL: {ok_pool} OK, {bad_pool} failed\n"
+            f"SHOP: {ok_shop} stocked (stock={stock_txt}), {bad_shop} failed"
+        )
