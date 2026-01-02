@@ -127,81 +127,155 @@ class PlayerCommandsMixin:
           .cbshop mythical zoan
         """
         raw = (fruit_type or "").strip()
-        t = self._norm_shop_type(raw) if raw else None  # None => show all
+        initial_type = self._norm_shop_type(raw) if raw else "all"
 
-        items = self.fruits.all() or []  # shop list
-        if not items:
-            return await ctx.send("Shop is empty.")
+        TYPE_OPTIONS: list[tuple[str, str]] = [
+            ("all", "All"),
+            ("paramecia", "Paramecia"),
+            ("zoan", "Zoan"),
+            ("ancient zoan", "Ancient Zoan"),
+            ("logia", "Logia"),
+            ("mythical zoan", "Mythical Zoan"),
+        ]
 
         def norm_item_type(x: dict) -> str:
             return self._norm_shop_type(x.get("type", "")) or "paramecia"
 
-        if t is not None:
-            items = [f for f in items if norm_item_type(f) == t]
-            if not items:
-                return await ctx.send(f"No items found for `{t}`.")
-        else:
-            # no arg given => show all, but still guide users about filters
-            pass
+        def get_items(type_key: str) -> list[dict]:
+            items = self.fruits.all() or []
+            if type_key and type_key != "all":
+                items = [f for f in items if norm_item_type(f) == type_key]
+            # ascending order by price, then name
+            items.sort(key=lambda f: (int(f.get("price", 0) or 0), (f.get("name") or "").lower()))
+            return items
 
-        # ascending order by price, then name
-        items.sort(key=lambda f: (int(f.get("price", 0) or 0), (f.get("name") or "").lower()))
+        # If the user passed an invalid type string, fall back to all.
+        valid_type_keys = {k for k, _ in TYPE_OPTIONS}
+        if initial_type not in valid_type_keys:
+            initial_type = "all"
+
+        # Empty shop guard
+        if not (self.fruits.all() or []):
+            return await ctx.send("Shop is empty.")
 
         per = 10
-        pages = max(1, math.ceil(len(items) / per))
-        page = 1
 
-        def build_embed(p: int) -> discord.Embed:
-            start = (p - 1) * per
+        def build_embed(*, type_key: str, page: int) -> discord.Embed:
+            items = get_items(type_key)
+            pages = max(1, math.ceil(len(items) / per))
+            page = max(1, min(int(page), pages))
+            start = (page - 1) * per
             chunk = items[start : start + per]
 
             title = "🛒 Devil Fruit Shop"
-            if t is not None:
-                title += f" • {t.title()}"
-
+            if type_key != "all":
+                title += f" • {type_key.title()}"
             e = discord.Embed(title=title, color=discord.Color.gold())
 
-            lines = []
+            lines: list[str] = []
             for f in chunk:
-                name = f.get("name", "Unknown")
+                name = str(f.get("name", "Unknown") or "Unknown")
                 bonus = int(f.get("bonus", 0) or 0)
                 price = int(f.get("price", 0) or 0)
                 ability = f.get("ability") or "None"
                 stock = f.get("stock", None)
                 stock_txt = "∞" if stock is None else str(stock)
 
-                lines.append(f"- **{name}** `+{bonus}` | `{price:,}` | Stock: `{stock_txt}` | *{ability}*")
+                # compact + phone-friendly
+                lines.append(f"**{name}** `+{bonus}` • `{price:,}` • Stock `{stock_txt}`\n*{ability}*")
 
-            e.description = "\n".join(lines) if lines else "—"
-            if t is None:
-                e.set_footer(
-                    text=f"Page {p}/{pages} • Filter: .cbshop paramecia|zoan|ancient zoan|logia|mythical zoan"
-                )
+            if not lines:
+                e.description = "—"
             else:
-                e.set_footer(text=f"Page {p}/{pages} • Buy: .cbbuy <fruit name>")
+                e.description = "\n\n".join(lines)
+
+            e.set_footer(text=f"Page {page}/{pages} • Select a type, pick a fruit, then press Buy")
             return e
 
-        if pages == 1:
-            return await ctx.send(embed=build_embed(1))
+        async def do_buy(*, buyer: discord.Member, fruit_name: str) -> tuple[bool, str]:
+            p = await self.players.get(buyer)
+            if not p.get("started"):
+                return False, "You must `.startcb` first."
+            if p.get("fruit"):
+                return False, "You already have a fruit. Remove it first with `.cbremovefruit`."
 
-        class _ShopPager(discord.ui.View):
-            def __init__(self, *, author_id: int):
-                super().__init__(timeout=60)
+            fruit = self.fruits.get(fruit_name)
+            if not fruit:
+                return False, "That fruit is not stocked in the shop."
+
+            stock = fruit.get("stock", None)
+            if stock is not None and int(stock) <= 0:
+                return False, "That fruit is out of stock."
+
+            price = int(fruit.get("price", 0) or 0)
+            ok = await self._spend_money(buyer, price, reason="crew_battles:buy_fruit")
+            if not ok:
+                bal = await self._get_money(buyer)
+                return False, f"Not enough Beri. Cost `{price:,}`, you have `{bal:,}`."
+
+            p["fruit"] = fruit.get("name")
+            await self.players.save(buyer, p)
+
+            if stock is not None:
+                fruit["stock"] = max(0, int(stock) - 1)
+                self.fruits.update(fruit)
+
+            return True, f"✅ Bought **{fruit['name']}** for `{price:,}` Beri."
+
+        class _ShopView(discord.ui.View):
+            def __init__(self, *, author_id: int, type_key: str, page: int):
+                super().__init__(timeout=90)
                 self.author_id = author_id
-                self.current = 1
+                self.type_key = type_key
+                self.page = page
+                self.selected_name: str | None = None
                 self._msg: discord.Message | None = None
-                self._sync()
+                self._sync_components()
 
-            def _sync(self):
-                self.prev_btn.disabled = self.current <= 1
-                self.next_btn.disabled = self.current >= pages
+            def _pages(self) -> int:
+                items = get_items(self.type_key)
+                return max(1, math.ceil(len(items) / per))
+
+            def _page_items(self) -> list[dict]:
+                items = get_items(self.type_key)
+                pages = max(1, math.ceil(len(items) / per))
+                self.page = max(1, min(int(self.page), pages))
+                start = (self.page - 1) * per
+                return items[start : start + per]
+
+            def _sync_components(self):
+                pages = self._pages()
+                self.prev_btn.disabled = self.page <= 1
+                self.next_btn.disabled = self.page >= pages
+
+                # Update type select defaults
+                for opt in self.type_select.options:
+                    opt.default = opt.value == self.type_key
+
+                # Update fruit select options for current page
+                chunk = self._page_items()
+                opts: list[discord.SelectOption] = []
+                for f in chunk[:25]:
+                    name = str(f.get("name", "Unknown") or "Unknown")
+                    price = int(f.get("price", 0) or 0)
+                    stock = f.get("stock", None)
+                    stock_txt = "∞" if stock is None else str(stock)
+                    label = name if len(name) <= 100 else (name[:99] + "…")
+                    desc = f"{price:,} • Stock {stock_txt}"
+                    opts.append(discord.SelectOption(label=label, value=name, description=desc[:100]))
+
+                self.fruit_select.options = opts
+                if self.selected_name and all(o.value != self.selected_name for o in opts):
+                    self.selected_name = None
+
+                self.buy_btn.disabled = not bool(self.selected_name)
 
             async def interaction_check(self, interaction: discord.Interaction) -> bool:
                 return interaction.user is not None and interaction.user.id == self.author_id
 
             async def on_timeout(self) -> None:
                 for child in self.children:
-                    if isinstance(child, discord.ui.Button):
+                    if isinstance(child, (discord.ui.Button, discord.ui.Select)):
                         child.disabled = True
                 if self._msg:
                     try:
@@ -209,20 +283,75 @@ class PlayerCommandsMixin:
                     except Exception:
                         pass
 
+            @discord.ui.select(
+                placeholder="Type…",
+                options=[discord.SelectOption(label=label, value=value) for value, label in TYPE_OPTIONS],
+            )
+            async def type_select(self, interaction: discord.Interaction, select: discord.ui.Select):
+                self.type_key = select.values[0]
+                self.page = 1
+                self.selected_name = None
+                self._sync_components()
+                await interaction.response.edit_message(
+                    embed=build_embed(type_key=self.type_key, page=self.page),
+                    view=self,
+                )
+
+            @discord.ui.select(placeholder="Pick a fruit…", options=[])
+            async def fruit_select(self, interaction: discord.Interaction, select: discord.ui.Select):
+                self.selected_name = select.values[0] if select.values else None
+                self._sync_components()
+                await interaction.response.edit_message(
+                    embed=build_embed(type_key=self.type_key, page=self.page),
+                    view=self,
+                )
+
+            @discord.ui.button(label="Buy", style=discord.ButtonStyle.success)
+            async def buy_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+                if not self.selected_name:
+                    return await interaction.response.send_message("Pick a fruit first.", ephemeral=True)
+                ok, msg_text = await do_buy(buyer=interaction.user, fruit_name=self.selected_name)
+                # Refresh list (stock may change)
+                self._sync_components()
+                try:
+                    await interaction.response.edit_message(
+                        embed=build_embed(type_key=self.type_key, page=self.page),
+                        view=self,
+                    )
+                except Exception:
+                    pass
+                # Confirmation
+                try:
+                    await interaction.followup.send(msg_text, ephemeral=True)
+                except Exception:
+                    # fallback if followup fails
+                    if not ok:
+                        pass
+
             @discord.ui.button(label="◀ Prev", style=discord.ButtonStyle.secondary)
             async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-                self.current = max(1, self.current - 1)
-                self._sync()
-                await interaction.response.edit_message(embed=build_embed(self.current), view=self)
+                self.page = max(1, self.page - 1)
+                self.selected_name = None
+                self._sync_components()
+                await interaction.response.edit_message(
+                    embed=build_embed(type_key=self.type_key, page=self.page),
+                    view=self,
+                )
 
             @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.secondary)
             async def next_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-                self.current = min(pages, self.current + 1)
-                self._sync()
-                await interaction.response.edit_message(embed=build_embed(self.current), view=self)
+                self.page = min(self._pages(), self.page + 1)
+                self.selected_name = None
+                self._sync_components()
+                await interaction.response.edit_message(
+                    embed=build_embed(type_key=self.type_key, page=self.page),
+                    view=self,
+                )
 
-        view = _ShopPager(author_id=ctx.author.id)
-        msg = await ctx.send(embed=build_embed(1), view=view)
+        view = _ShopView(author_id=ctx.author.id, type_key=initial_type, page=1)
+        # initial sync after components exist
+        view._sync_components()
+        msg = await ctx.send(embed=build_embed(type_key=view.type_key, page=view.page), view=view)
         view._msg = msg
 
     @commands.command(name="cbbuy")
