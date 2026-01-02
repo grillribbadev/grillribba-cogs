@@ -505,6 +505,65 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
 
         await ctx.reply(f"✅ Reset Crew Battles data for **{member.display_name}**.")
 
+    @cbadmin.command(name="setlevel", aliases=["setlvl", "setuserlevel"])
+    async def cbadmin_setlevel(self, ctx: commands.Context, member: discord.Member, level: int):
+        """Set a user's CrewBattles level."""
+        try:
+            level = int(level)
+        except Exception:
+            return await ctx.reply("Level must be a number.")
+
+        level = max(1, min(int(MAX_LEVEL), level))
+        p = await self.players.get(member)
+        if not p.get("started"):
+            e = discord.Embed(
+                title="⚠️ Player Not Started",
+                description=(
+                    f"**{member.display_name}** has not started Crew Battles yet.\n"
+                    "They must run **`.startcb`** first before you can set their level."
+                ),
+                color=discord.Color.orange(),
+            )
+            return await ctx.reply(embed=e)
+
+        before_level = int(p.get("level", 1) or 1)
+        p["level"] = level
+        # Keep it simple/consistent: reset EXP at the new level.
+        p["exp"] = 0
+        await self.players.save(member, p)
+
+        g = await self.config.guild(ctx.guild).all()
+        cost = int(g.get("conqueror_unlock_cost", 5000) or 5000)
+        if cost < 0:
+            cost = 0
+
+        conq_text = (
+            "Locked until **Level 10**."
+            if level < 10
+            else f"Unlock with **`.cbunlockconqueror`** for `{cost:,}` Beri."
+        )
+
+        e = discord.Embed(
+            title="✅ Crew Battles Level Updated",
+            description=f"{member.mention} your level was updated by an admin.",
+            color=discord.Color.green(),
+            timestamp=discord.utils.utcnow(),
+        )
+        e.add_field(
+            name="Level",
+            value=f"`{before_level}` → `{level}`\nEXP reset to `0` at the new level.",
+            inline=False,
+        )
+        e.add_field(
+            name="👑 Conqueror Unlock",
+            value=(
+                f"{conq_text}\n"
+                "(Admins set the price with **`.cbadmin setconquerorcost <amount>`**.)"
+            ),
+            inline=False,
+        )
+        return await ctx.reply(embed=e)
+
     # =========================================================
     # Player commands
     # =========================================================
@@ -718,6 +777,13 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
         if not p.get("started"):
             return await ctx.reply("This player has not started Crew Battles.")
 
+        g = await self.config.guild(ctx.guild).all()
+        unlock_cost = int(g.get("conqueror_unlock_cost", 5000) or 5000)
+        if unlock_cost < 0:
+            unlock_cost = 0
+
+        level = int(p.get("level", 1) or 1)
+
         haki = p.get("haki", {}) or {}
         arm = int(haki.get("armament", 0) or 0)
         obs = int(haki.get("observation", 0) or 0)
@@ -757,9 +823,21 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
                 inline=False,
             )
         else:
+            if level < 10:
+                locked_txt = (
+                    "`Locked`\n"
+                    f"🔒 Requires **Level 10** (you are level `{level}`).\n"
+                    f"💰 Unlock cost: `{unlock_cost:,}` Beri (server-set)"
+                )
+            else:
+                locked_txt = (
+                    "`Locked`\n"
+                    "🔓 Unlock with **`.cbunlockconqueror`**\n"
+                    f"💰 Cost: `{unlock_cost:,}` Beri (set with `.cbadmin setconquerorcost`)"
+                )
             embed.add_field(
                 name="👑 Conqueror (COUNTER CRIT)",
-                value="`Locked`\n🔓 Unlock at **Level 10** with `.cbunlockconqueror`",
+                value=locked_txt,
                 inline=False,
             )
 
@@ -773,33 +851,54 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
         if not p.get("started"):
             return await ctx.reply("You must start Crew Battles first (`.startcb`).")
 
-        level = int(p.get("level", 1) or 1)
-        if level < 10:
-            return await ctx.reply("👑 Conqueror is unlocked at **Level 10**.")
-
-        haki = p.get("haki", {}) or {}
-        if bool(haki.get("conquerors")):
-            return await ctx.reply("👑 You already unlocked Conqueror's Haki.")
-
         g = await self.config.guild(ctx.guild).all()
         cost = int(g.get("conqueror_unlock_cost", 5000) or 5000)
         if cost < 0:
             cost = 0
 
+        level = int(p.get("level", 1) or 1)
+        if level < 10:
+            e = discord.Embed(
+                title="👑 Conqueror Locked",
+                description=(
+                    f"You can unlock Conqueror's Haki at **Level 10**.\n"
+                    f"Your level: `{level}`\n\n"
+                    f"When you reach Level 10: use **`.cbunlockconqueror`** to unlock it for `{cost:,}` Beri.\n"
+                    "(Admins set the price via **`.cbadmin setconquerorcost`**.)"
+                ),
+                color=discord.Color.orange(),
+            )
+            return await ctx.reply(embed=e)
+
+        haki = p.get("haki", {}) or {}
+        if bool(haki.get("conquerors")):
+            return await ctx.reply("👑 You already unlocked Conqueror's Haki.")
+
         if cost > 0:
             ok = await self._spend_money(ctx.author, cost, reason="crew_battles:unlock_conqueror")
             if not ok:
                 bal = await self._get_money(ctx.author)
-                return await ctx.reply(f"Not enough Beri. Cost `{cost:,}`, you have `{bal:,}`.")
+                e = discord.Embed(
+                    title="💸 Not Enough Beri",
+                    description=f"Unlock costs `{cost:,}` Beri, but you have `{bal:,}`.",
+                    color=discord.Color.red(),
+                )
+                return await ctx.reply(embed=e)
 
         haki["conquerors"] = True
         haki["conqueror"] = int(haki.get("conqueror", 0) or 0)
         p["haki"] = haki
         await self.players.save(ctx.author, p)
 
+        e = discord.Embed(
+            title="✅ Conqueror Unlocked",
+            description="You unlocked **Conqueror's Haki**!",
+            color=discord.Color.green(),
+        )
         if cost > 0:
-            return await ctx.reply(f"✅ Unlocked **Conqueror's Haki** for `{cost:,}` Beri!")
-        return await ctx.reply("✅ Unlocked **Conqueror's Haki**!")
+            e.add_field(name="Cost", value=f"`{cost:,}` Beri", inline=True)
+        e.add_field(name="Next", value="Train it with **`.cbtrain conqueror [points]`**", inline=False)
+        return await ctx.reply(embed=e)
 
     @commands.command(name="cbtrainhaki")
     async def cbtrainhaki(self, ctx: commands.Context, haki_type: str, points: int = 1):
