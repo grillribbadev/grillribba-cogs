@@ -529,7 +529,6 @@ class PlayerCommandsMixin:
         p["haki"] = haki
         await self.players.save(ctx.author, p)
 
-        gif_url = "https://media1.tenor.com/m/aZ1ekamK9lEAAAAd/gear-5-gear-5-luffy.gif"
         e = discord.Embed(
             title="⚡👑 Conqueror's Haki Awakened! 👑⚡",
             description=f"{ctx.author.mention} has unlocked **Conqueror's Haki**!\n\n⚡ The air crackles with lightning…",
@@ -539,7 +538,6 @@ class PlayerCommandsMixin:
             e.set_thumbnail(url=ctx.author.display_avatar.url)
         except Exception:
             pass
-        e.set_image(url=gif_url)
         if cost > 0:
             e.add_field(name="Cost", value=f"`{cost:,}` Beri", inline=True)
         e.add_field(name="Next", value="Train it with **`.cbtrain conqueror`**", inline=False)
