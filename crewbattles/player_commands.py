@@ -42,7 +42,7 @@ class PlayerCommandsMixin:
                 "• Leaderboard: **`.cbleaderboard`**\n\n"
                 "**Haki**\n"
                 "• View Haki: **`.cbhaki`**\n"
-                "• Train: **`.cbtrain armament|observation|conqueror [points]`**\n\n"
+                "• Train: **`.cbtrain armament|observation|conqueror`**\n\n"
                 "**Devil Fruits**\n"
                 "• Shop: **`.cbshop`** (use the Type dropdown + pick a fruit + **Buy**)\n"
                 "• (Fallback) Buy by name: **`.cbbuy <fruit name>`**\n"
@@ -542,11 +542,11 @@ class PlayerCommandsMixin:
         e.set_image(url=gif_url)
         if cost > 0:
             e.add_field(name="Cost", value=f"`{cost:,}` Beri", inline=True)
-        e.add_field(name="Next", value="Train it with **`.cbtrain conqueror [points]`**", inline=False)
+        e.add_field(name="Next", value="Train it with **`.cbtrain conqueror`**", inline=False)
         return await ctx.send(embed=e)
 
     @commands.command(name="cbtrainhaki")
-    async def cbtrainhaki(self, ctx: commands.Context, haki_type: str, points: int = 1):
+    async def cbtrainhaki(self, ctx: commands.Context, haki_type: str, *rest: str):
         p = await self.players.get(ctx.author)
         if not p.get("started"):
             return await ctx.reply("You must `.startcb` first.")
@@ -557,9 +557,8 @@ class PlayerCommandsMixin:
         if haki_type not in ("armament", "observation", "conqueror"):
             return await ctx.reply("Type must be: `armament`, `observation`, or `conqueror`.")
 
-        points = int(points or 1)
-        if points <= 0:
-            return await ctx.reply("Points must be a positive number.")
+        # 1 point per train (extra args ignored for back-compat)
+        points = 1
 
         haki = p.get("haki", {}) or {}
         if haki_type == "conqueror" and not bool(haki.get("conquerors")):
@@ -578,7 +577,7 @@ class PlayerCommandsMixin:
             return await ctx.reply(f"⏳ Wait `{rem}s` before training **{haki_type}** again.")
 
         cost_per = int(g.get("haki_cost", 500) or 500)
-        total_cost = max(0, cost_per * points)
+        total_cost = max(0, cost_per)
         ok = await self._spend_money(ctx.author, total_cost, reason="crew_battles:train_haki")
         if not ok:
             bal = await self._get_money(ctx.author)
@@ -598,8 +597,8 @@ class PlayerCommandsMixin:
         return await ctx.reply(f"✅ Trained **{haki_type}**: `{cur}` → `{new}` (spent `{total_cost:,}` Beri).")
 
     @commands.command(name="cbtrain")
-    async def cbtrain(self, ctx: commands.Context, haki_type: str, points: int = 1):
-        return await self.cbtrainhaki(ctx, haki_type, points)
+    async def cbtrain(self, ctx: commands.Context, haki_type: str, *rest: str):
+        return await self.cbtrainhaki(ctx, haki_type, *rest)
 
     @commands.command(name="cbleaderboard", aliases=["cblb", "cbtop"])
     async def cbleaderboard(self, ctx: commands.Context, *args: str):

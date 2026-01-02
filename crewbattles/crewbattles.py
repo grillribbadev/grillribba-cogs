@@ -840,7 +840,7 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
                 inline=False,
             )
 
-        embed.set_footer(text="Train: .cbtrain armament|observation|conqueror [points]")
+        embed.set_footer(text="Train: .cbtrain armament|observation|conqueror")
         await ctx.reply(embed=embed)
 
     @commands.command(name="cbunlockconqueror", aliases=["unlockconqueror", "cbunlockconq", "cbunlockconquerors"])
@@ -901,16 +901,16 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
         e.set_image(url=gif_url)
         if cost > 0:
             e.add_field(name="Cost", value=f"`{cost:,}` Beri", inline=True)
-        e.add_field(name="Next", value="Train it with **`.cbtrain conqueror [points]`**", inline=False)
+        e.add_field(name="Next", value="Train it with **`.cbtrain conqueror`**", inline=False)
 
         # Send in-channel (not ephemeral) for flair
         return await ctx.send(embed=e)
 
     @commands.command(name="cbtrainhaki")
-    async def cbtrainhaki(self, ctx: commands.Context, haki_type: str, points: int = 1):
+    async def cbtrainhaki(self, ctx: commands.Context, haki_type: str, *rest: str):
         """
         Train Haki for Beri.
-        Usage: .cbtrainhaki armament|observation|conqueror [points]
+        Usage: .cbtrainhaki armament|observation|conqueror
         """
         p = await self.players.get(ctx.author)
         if not p.get("started"):
@@ -922,9 +922,8 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
         if haki_type not in ("armament", "observation", "conqueror"):
             return await ctx.reply("Type must be: `armament`, `observation`, or `conqueror`.")
 
-        points = int(points or 1)
-        if points <= 0:
-            return await ctx.reply("Points must be a positive number.")
+        # 1 point per train (extra args ignored for back-compat)
+        points = 1
 
         haki = p.get("haki", {}) or {}
 
@@ -947,7 +946,7 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
 
         # cost
         cost_per = int(g.get("haki_cost", HAKI_TRAIN_COST) or HAKI_TRAIN_COST)
-        total_cost = max(0, cost_per * points)
+        total_cost = max(0, cost_per)
 
         ok = await self._spend_money(ctx.author, total_cost, reason="crew_battles:train_haki")
         if not ok:
@@ -974,8 +973,8 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
         )
 
     @commands.command(name="cbtrain")
-    async def cbtrain(self, ctx, haki_type: str, points: int = 1):
-        return await self.cbtrainhaki(ctx, haki_type, points)
+    async def cbtrain(self, ctx, haki_type: str, *rest: str):
+        return await self.cbtrainhaki(ctx, haki_type, *rest)
 
     @commands.command(name="battle")
     async def battle(self, ctx: commands.Context, opponent: discord.Member):
