@@ -44,8 +44,8 @@ class PlayerCommandsMixin:
                 "• View Haki: **`.cbhaki`**\n"
                 "• Train: **`.cbtrain armament|observation|conqueror [points]`**\n\n"
                 "**Devil Fruits**\n"
-                "• Shop: **`.cbshop`**\n"
-                "• Buy: **`.cbbuy <fruit name>`**\n"
+                "• Shop: **`.cbshop`** (use the Type dropdown + pick a fruit + **Buy**)\n"
+                "• (Fallback) Buy by name: **`.cbbuy <fruit name>`**\n"
                 "• Remove: **`.cbremovefruit`**\n"
                 "• Abilities only trigger if you **own/equip** the fruit."
             ),
