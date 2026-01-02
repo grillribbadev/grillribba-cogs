@@ -888,15 +888,23 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
         p["haki"] = haki
         await self.players.save(ctx.author, p)
 
+        gif_url = "https://media1.tenor.com/m/uhEaeuxDjoQAAAAd/gear-5-gear-5-luffy.gif"
         e = discord.Embed(
-            title="✅ Conqueror Unlocked",
-            description="You unlocked **Conqueror's Haki**!",
-            color=discord.Color.green(),
+            title="⚡👑 Conqueror's Haki Awakened! 👑⚡",
+            description=f"{ctx.author.mention} has unlocked **Conqueror's Haki**!\n\n⚡ The air crackles with lightning…",
+            color=discord.Color.purple(),
         )
+        try:
+            e.set_thumbnail(url=ctx.author.display_avatar.url)
+        except Exception:
+            pass
+        e.set_image(url=gif_url)
         if cost > 0:
             e.add_field(name="Cost", value=f"`{cost:,}` Beri", inline=True)
         e.add_field(name="Next", value="Train it with **`.cbtrain conqueror [points]`**", inline=False)
-        return await ctx.reply(embed=e)
+
+        # Send in-channel (not ephemeral) for flair
+        return await ctx.send(embed=e)
 
     @commands.command(name="cbtrainhaki")
     async def cbtrainhaki(self, ctx: commands.Context, haki_type: str, points: int = 1):
