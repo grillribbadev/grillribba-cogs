@@ -529,104 +529,104 @@ class PlayerCommandsMixin:
             return await ctx.send(embed=build_embed(1, sort_by))
 
         class _LeaderboardPager(discord.ui.View):
-        def __init__(self, *, author_id: int, mode: str, page: int, entries: list, pages: int, disp_name_func, per: int):
-            super().__init__(timeout=60)
-            self.author_id = author_id
-            self.mode = mode
-            self.current = page
-            self.entries = entries
-            self.pages = pages
-            self.disp_name = disp_name_func
-            self.per = per
-            self._msg: discord.Message | None = None
-            self._sort_entries(self.mode)
-            self._sync()
+            def __init__(self, *, author_id: int, mode: str, page: int, entries: list, pages: int, disp_name_func, per: int):
+                super().__init__(timeout=60)
+                self.author_id = author_id
+                self.mode = mode
+                self.current = page
+                self.entries = entries
+                self.pages = pages
+                self.disp_name = disp_name_func
+                self.per = per
+                self._msg: discord.Message | None = None
+                self._sort_entries(self.mode)
+                self._sync()
 
-        def _sort_entries(self, mode: str):
-            if mode == "level":
-                self.entries.sort(key=lambda x: (x["level"], x["exp"], x["wins"]), reverse=True)
-            elif mode == "winrate":
-                self.entries.sort(key=lambda x: (x["total"] > 0, x["winrate"], x["wins"], x["level"]), reverse=True)
-            else:
-                self.entries.sort(key=lambda x: (x["wins"], x["winrate"], x["level"]), reverse=True)
+            def _sort_entries(self, mode: str):
+                if mode == "level":
+                    self.entries.sort(key=lambda x: (x["level"], x["exp"], x["wins"]), reverse=True)
+                elif mode == "winrate":
+                    self.entries.sort(key=lambda x: (x["total"] > 0, x["winrate"], x["wins"], x["level"]), reverse=True)
+                else:
+                    self.entries.sort(key=lambda x: (x["wins"], x["winrate"], x["level"]), reverse=True)
 
-        def _build_embed(self, page: int, mode: str) -> discord.Embed:
-            page = max(1, min(int(page), self.pages))
-            start = (page - 1) * self.per
-            chunk = self.entries[start : start + self.per]
+            def _build_embed(self, page: int, mode: str) -> discord.Embed:
+                page = max(1, min(int(page), self.pages))
+                start = (page - 1) * self.per
+                chunk = self.entries[start : start + self.per]
 
-            header = f"{'Rank':>4}  {'Name':<20}  {'W':>4}  {'L':>4}  {'Lvl':>4}  {'WR%':>6}"
-            lines = [header, "-" * len(header)]
-            for idx, row in enumerate(chunk, start=start + 1):
-                name = self.disp_name(row["uid"])
-                lines.append(
-                    f"{idx:>4}  {name:<20}  {row['wins']:>4}  {row['losses']:>4}  {row['level']:>4}  {row['winrate']:>6.1f}"
+                header = f"{'Rank':>4}  {'Name':<20}  {'W':>4}  {'L':>4}  {'Lvl':>4}  {'WR%':>6}"
+                lines = [header, "-" * len(header)]
+                for idx, row in enumerate(chunk, start=start + 1):
+                    name = self.disp_name(row["uid"])
+                    lines.append(
+                        f"{idx:>4}  {name:<20}  {row['wins']:>4}  {row['losses']:>4}  {row['level']:>4}  {row['winrate']:>6.1f}"
+                    )
+
+                e = discord.Embed(
+                    title="🏆 Crew Battles Leaderboard",
+                    description="```text\n" + "\n".join(lines) + "\n```",
+                    color=discord.Color.gold(),
+                    timestamp=discord.utils.utcnow(),
                 )
+                e.set_footer(text=f"Sorted by {mode} • Page {page}/{self.pages} • Players: {len(self.entries)}")
+                return e
 
-            e = discord.Embed(
-                title="🏆 Crew Battles Leaderboard",
-                description="```text\n" + "\n".join(lines) + "\n```",
-                color=discord.Color.gold(),
-                timestamp=discord.utils.utcnow(),
+            def _sync(self):
+                self.prev_btn.disabled = self.current <= 1
+                self.next_btn.disabled = self.current >= self.pages
+
+            async def interaction_check(self, interaction: discord.Interaction) -> bool:
+                return interaction.user is not None and interaction.user.id == self.author_id
+
+            async def on_timeout(self) -> None:
+                for child in self.children:
+                    if isinstance(child, (discord.ui.Button, discord.ui.Select)):
+                        child.disabled = True
+                if self._msg:
+                    try:
+                        await self._msg.edit(view=self)
+                    except Exception:
+                        pass
+
+            @discord.ui.select(
+                placeholder="Sort by…",
+                options=[
+                    discord.SelectOption(label="Wins", value="wins"),
+                    discord.SelectOption(label="Level", value="level"),
+                    discord.SelectOption(label="Winrate", value="winrate"),
+                ],
             )
-            e.set_footer(text=f"Sorted by {mode} • Page {page}/{self.pages} • Players: {len(self.entries)}")
-            return e
+            async def sort_select(self, interaction: discord.Interaction, select: discord.ui.Select):
+                self.mode = select.values[0]
+                self._sort_entries(self.mode)
+                self.current = 1
+                self._sync()
+                await interaction.response.edit_message(embed=self._build_embed(self.current, self.mode), view=self)
 
-        def _sync(self):
-            self.prev_btn.disabled = self.current <= 1
-            self.next_btn.disabled = self.current >= self.pages
+            @discord.ui.button(label="◀ Prev", style=discord.ButtonStyle.secondary)
+            async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+                self.current = max(1, self.current - 1)
+                self._sync()
+                await interaction.response.edit_message(embed=self._build_embed(self.current, self.mode), view=self)
 
-        async def interaction_check(self, interaction: discord.Interaction) -> bool:
-            return interaction.user is not None and interaction.user.id == self.author_id
+            @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.secondary)
+            async def next_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+                self.current = min(self.pages, self.current + 1)
+                self._sync()
+                await interaction.response.edit_message(embed=self._build_embed(self.current, self.mode), view=self)
 
-        async def on_timeout(self) -> None:
-            for child in self.children:
-                if isinstance(child, (discord.ui.Button, discord.ui.Select)):
-                    child.disabled = True
-            if self._msg:
-                try:
-                    await self._msg.edit(view=self)
-                except Exception:
-                    pass
-
-        @discord.ui.select(
-            placeholder="Sort by…",
-            options=[
-                discord.SelectOption(label="Wins", value="wins"),
-                discord.SelectOption(label="Level", value="level"),
-                discord.SelectOption(label="Winrate", value="winrate"),
-            ],
+        view = _LeaderboardPager(
+            author_id=ctx.author.id,
+            mode=sort_by,
+            page=start_page,
+            entries=entries,
+            pages=pages,
+            disp_name_func=disp_name,
+            per=per
         )
-        async def sort_select(self, interaction: discord.Interaction, select: discord.ui.Select):
-            self.mode = select.values[0]
-            self._sort_entries(self.mode)
-            self.current = 1
-            self._sync()
-            await interaction.response.edit_message(embed=self._build_embed(self.current, self.mode), view=self)
-
-        @discord.ui.button(label="◀ Prev", style=discord.ButtonStyle.secondary)
-        async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-            self.current = max(1, self.current - 1)
-            self._sync()
-            await interaction.response.edit_message(embed=self._build_embed(self.current, self.mode), view=self)
-
-        @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.secondary)
-        async def next_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-            self.current = min(self.pages, self.current + 1)
-            self._sync()
-            await interaction.response.edit_message(embed=self._build_embed(self.current, self.mode), view=self)
-
-    view = _LeaderboardPager(
-        author_id=ctx.author.id,
-        mode=sort_by,
-        page=start_page,
-        entries=entries,
-        pages=pages,
-        disp_name_func=disp_name,
-        per=per
-    )
-    msg = await ctx.send(embed=view._build_embed(start_page, sort_by), view=view)
-    view._msg = msg
+        msg = await ctx.send(embed=view._build_embed(start_page, sort_by), view=view)
+        view._msg = msg
 
     @commands.is_owner()
     @commands.command(name="cbdebugbattle")
