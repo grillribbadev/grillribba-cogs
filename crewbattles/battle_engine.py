@@ -191,6 +191,21 @@ def simulate(p1: dict, p2: dict, fruits_mgr):
     def roll(p: float) -> bool:
         return random.random() < max(0.0, min(1.0, p))
 
+    def attack_name_for(arm: int) -> str:
+        """Pick a move name.
+
+        Keep normal attacks as the baseline for variety.
+        If the attacker has armament, occasionally show an armament-themed move name.
+        """
+        a = max(0, int(arm or 0))
+        if a <= 0:
+            return random.choice(ATTACKS)
+        # 10% base + up to +20% at 100 armament, capped at 35%
+        armament_name_chance = min(0.35, 0.10 + (a * 0.002))
+        if roll(armament_name_chance):
+            return random.choice(ARMAMENT_ATTACKS)
+        return random.choice(ATTACKS)
+
     def dodge_chance(side: str, obs: int, ability_profile: dict) -> float:
         bonus = float(ability_profile.get("dodge_bonus", 0.0) or 0.0)
         pen = float(state[side]["dodge_penalty"] or 0.0) if state[side]["dodge_penalty_turns"] > 0 else 0.0
@@ -317,7 +332,7 @@ def simulate(p1: dict, p2: dict, fruits_mgr):
                 dmg = int(dmg * crit_mult)  # crit-tier damage
             else:
                 crit = roll(crit_chance(arm1, a1))
-                atk_name = random.choice(ARMAMENT_ATTACKS) if arm1 > 0 else random.choice(ATTACKS)
+                atk_name = attack_name_for(arm1)
                 if crit:
                     dmg = int(dmg * crit_mult)
 
@@ -382,7 +397,7 @@ def simulate(p1: dict, p2: dict, fruits_mgr):
             dmg = int(dmg * crit_mult)
         else:
             crit = roll(crit_chance(arm2, a2))
-            atk_name = random.choice(ARMAMENT_ATTACKS) if arm2 > 0 else random.choice(ATTACKS)
+            atk_name = attack_name_for(arm2)
             if crit:
                 dmg = int(dmg * crit_mult)
 
