@@ -1025,9 +1025,15 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
             hp1 = int(BASE_HP)
             hp2 = int(BASE_HP)
 
-            log_lines = []
+            log_entries = []
             turn_no = 0
             msg = await ctx.send(embed=battle_embed(ctx.author, opponent, hp1, hp2, BASE_HP, BASE_HP, "—"))
+
+            def _yaml_safe(s: str) -> str:
+                s = str(s or "")
+                s = s.replace("\\", "\\\\").replace('"', "\\\"")
+                s = s.replace("\n", " ").replace("\r", " ").strip()
+                return s
 
             # Play turns (cap log lines so embed stays readable)
             for side, dmg, defender_hp_after, atk_name, crit in turns:
@@ -1041,24 +1047,53 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
                     actor = opponent.display_name
                     defender = ctx.author.display_name
 
-                tag = None
-                if isinstance(atk_name, str) and atk_name.startswith("🍈 "):
-                    tag = "FRUIT"
-                elif crit:
-                    tag = "CRIT"
+                tags: list[str] = []
+
+                is_counter = str(atk_name) == "Conqueror Counter"
+                is_fruit = isinstance(atk_name, str) and atk_name.startswith("🍈 ")
 
                 if int(dmg) <= 0 and str(atk_name).lower() == "dodged":
-                    line = f"- {{t: {turn_no}, by: '{defender}', action: dodge}}"
+                    # NOTE: In the turn tuple, `side` is the attacker. A "Dodged" entry means
+                    # the defender dodged the attacker's move.
+                    tags.append("dodge")
+                    line_text = f"💨 {defender} dodged {actor}'s attack!"
                 else:
-                    safe_actor = str(actor).replace("'", "\"")
-                    safe_move = str(atk_name).replace("'", "\"")
-                    tag_part = f", tag: {tag}" if tag else ""
-                    # YAML flow mapping: compact + readable
-                    line = f"- {{t: {turn_no}, by: '{safe_actor}', move: '{safe_move}', dmg: {int(dmg)}{tag_part}}}"
+                    if is_counter:
+                        tags.append("counter_crit")
+                        line_text = f"👑 {actor} used Conqueror Counter for {int(dmg)} damage. [COUNTER-CRIT]"
+                    else:
+                        if crit:
+                            tags.append("crit")
+                        if is_fruit:
+                            tags.append("fruit")
 
-                log_lines.append(line)
-                log_lines = log_lines[-6:]  # last 6 entries only (less spammy)
-                log_text = "```yaml\n" + "\n".join(log_lines) + "\n```"
+                        move_display = str(atk_name)
+                        emoji = "🗡️"
+                        if is_fruit:
+                            emoji = "🍈"
+                            move_display = str(atk_name)[2:].strip() or "Fruit Technique"
+
+                        suffix = ""
+                        if "crit" in tags:
+                            suffix = " [CRIT]"
+                        elif "fruit" in tags:
+                            suffix = " [FRUIT]"
+
+                        line_text = f"{emoji} {actor} used {move_display} for {int(dmg)} damage.{suffix}"
+
+                safe_line = _yaml_safe(line_text)
+                entry_lines = [
+                    f"- t: {turn_no}",
+                    f"  line: \"{safe_line}\"",
+                ]
+                if tags:
+                    entry_lines.append("  tags: [" + ", ".join(tags) + "]")
+                entry = "\n".join(entry_lines)
+
+                log_entries.append(entry)
+                # Keep more history since entries are compact now
+                log_entries = log_entries[-8:]
+                log_text = "```yaml\n" + "\n\n".join(log_entries) + "\n```"
 
                 try:
                     await msg.edit(embed=battle_embed(ctx.author, opponent, hp1, hp2, BASE_HP, BASE_HP, log_text))
