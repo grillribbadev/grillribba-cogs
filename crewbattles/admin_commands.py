@@ -206,7 +206,49 @@ class AdminCommandsMixin:
     @cbadmin.command(name="sethakicost")
     async def cbadmin_sethakicost(self, ctx: commands.Context, cost: int):
         await self.config.guild(ctx.guild).haki_cost.set(int(cost))
-        await ctx.reply(f"Haki training cost set to {int(cost)} per point")
+        await ctx.reply(
+            f"Default (fallback) Haki training cost set to {int(cost)} per train. "
+            "Use `.cbadmin sethakicosttype <armament|observation|conqueror> <cost>` for per-type pricing."
+        )
+
+    @cbadmin.command(name="sethakicosttype")
+    async def cbadmin_sethakicosttype(self, ctx: commands.Context, haki_type: str, cost: int):
+        """Set per-type haki training cost (armament/observation/conqueror)."""
+        t = " ".join((haki_type or "").strip().lower().split())
+        if t in ("conq", "conquerors"):
+            t = "conqueror"
+        if t not in ("armament", "observation", "conqueror"):
+            return await ctx.reply("Type must be: `armament`, `observation`, or `conqueror`.")
+
+        cost = int(cost)
+        if cost < 0:
+            return await ctx.reply("Cost must be >= 0.")
+
+        key = {
+            "armament": "haki_cost_armament",
+            "observation": "haki_cost_observation",
+            "conqueror": "haki_cost_conqueror",
+        }[t]
+        await self.config.guild(ctx.guild).set_raw(key, value=cost)
+        return await ctx.reply(f"Haki training cost for **{t}** set to `{cost}` per train.")
+
+    @cbadmin.command(name="sethakicosts")
+    async def cbadmin_sethakicosts(self, ctx: commands.Context, armament: int, observation: int, conqueror: int):
+        """Set all per-type haki training costs in one command."""
+        armament = int(armament)
+        observation = int(observation)
+        conqueror = int(conqueror)
+        if armament < 0 or observation < 0 or conqueror < 0:
+            return await ctx.reply("All costs must be >= 0.")
+
+        gconf = self.config.guild(ctx.guild)
+        await gconf.haki_cost_armament.set(armament)
+        await gconf.haki_cost_observation.set(observation)
+        await gconf.haki_cost_conqueror.set(conqueror)
+        return await ctx.reply(
+            "Haki training costs updated: "
+            f"armament=`{armament}`, observation=`{observation}`, conqueror=`{conqueror}` (per train)."
+        )
 
     @cbadmin.command(name="sethakicooldown")
     async def cbadmin_sethakicooldown(self, ctx: commands.Context, seconds: int):

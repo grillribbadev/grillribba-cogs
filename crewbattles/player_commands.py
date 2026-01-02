@@ -495,7 +495,7 @@ class PlayerCommandsMixin:
         else:
             embed.add_field(name="👑 Conqueror", value="Locked", inline=False)
 
-        embed.set_footer(text="Train: .cbtrain armament|observation|conqueror [points]")
+        embed.set_footer(text="Train: .cbtrain armament|observation|conqueror")
         return await ctx.reply(embed=embed)
 
     @commands.command(name="cbunlockconqueror", aliases=["unlockconqueror", "cbunlockconq", "cbunlockconquerors"])
@@ -576,7 +576,15 @@ class PlayerCommandsMixin:
         if rem > 0:
             return await ctx.reply(f"⏳ Wait `{rem}s` before training **{haki_type}** again.")
 
-        cost_per = int(g.get("haki_cost", 500) or 500)
+        # per-type cost (falls back to haki_cost)
+        base_cost = int(g.get("haki_cost", 500) or 500)
+        type_cost_key = {
+            "armament": "haki_cost_armament",
+            "observation": "haki_cost_observation",
+            "conqueror": "haki_cost_conqueror",
+        }.get(haki_type, "haki_cost")
+        raw_cost = g.get(type_cost_key, None)
+        cost_per = base_cost if raw_cost is None else int(raw_cost or 0)
         total_cost = max(0, cost_per)
         ok = await self._spend_money(ctx.author, total_cost, reason="crew_battles:train_haki")
         if not ok:

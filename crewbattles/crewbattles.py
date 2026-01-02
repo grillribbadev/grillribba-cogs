@@ -44,6 +44,9 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
             beri_loss=0,
             turn_delay=1.0,
             haki_cost=HAKI_TRAIN_COST,
+            haki_cost_armament=HAKI_TRAIN_COST,
+            haki_cost_observation=HAKI_TRAIN_COST,
+            haki_cost_conqueror=HAKI_TRAIN_COST,
             haki_cooldown=HAKI_TRAIN_COOLDOWN,
             conqueror_unlock_cost=5000,
             crew_points_win=1,
@@ -421,7 +424,49 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
     @cbadmin.command()
     async def sethakicost(self, ctx, cost: int):
         await self.config.guild(ctx.guild).haki_cost.set(int(cost))
-        await ctx.reply(f"Haki training cost set to {int(cost)} per point")
+        await ctx.reply(
+            f"Default (fallback) Haki training cost set to {int(cost)} per train. "
+            "Use `.cbadmin sethakicosttype <armament|observation|conqueror> <cost>` for per-type pricing."
+        )
+
+    @cbadmin.command()
+    async def sethakicosttype(self, ctx, haki_type: str, cost: int):
+        """Set per-type haki training cost (armament/observation/conqueror)."""
+        t = " ".join((haki_type or "").strip().lower().split())
+        if t in ("conq", "conquerors"):
+            t = "conqueror"
+        if t not in ("armament", "observation", "conqueror"):
+            return await ctx.reply("Type must be: `armament`, `observation`, or `conqueror`.")
+
+        cost = int(cost)
+        if cost < 0:
+            return await ctx.reply("Cost must be >= 0.")
+
+        key = {
+            "armament": "haki_cost_armament",
+            "observation": "haki_cost_observation",
+            "conqueror": "haki_cost_conqueror",
+        }[t]
+        await self.config.guild(ctx.guild).set_raw(key, value=cost)
+        return await ctx.reply(f"Haki training cost for **{t}** set to `{cost}` per train.")
+
+    @cbadmin.command()
+    async def sethakicosts(self, ctx, armament: int, observation: int, conqueror: int):
+        """Set all per-type haki training costs in one command."""
+        armament = int(armament)
+        observation = int(observation)
+        conqueror = int(conqueror)
+        if armament < 0 or observation < 0 or conqueror < 0:
+            return await ctx.reply("All costs must be >= 0.")
+
+        gconf = self.config.guild(ctx.guild)
+        await gconf.haki_cost_armament.set(armament)
+        await gconf.haki_cost_observation.set(observation)
+        await gconf.haki_cost_conqueror.set(conqueror)
+        return await ctx.reply(
+            "Haki training costs updated: "
+            f"armament=`{armament}`, observation=`{observation}`, conqueror=`{conqueror}` (per train)."
+        )
 
     @cbadmin.command()
     async def sethakicooldown(self, ctx, seconds: int):
@@ -630,7 +675,7 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
         )
         e.add_field(
             name="📈 Progress",
-            value=f"Level: `{lvl}` • EXP: `{exp}`\nTrain Haki: **`.cbtrain armament|observation|conqueror <points>`**",
+            value=f"Level: `{lvl}` • EXP: `{exp}`\nTrain Haki: **`.cbtrain armament|observation|conqueror`**",
             inline=False,
         )
         e.set_footer(text="Tip: Use .cbhaki to see your Haki bonuses (crit/dodge/counter).")
@@ -944,8 +989,15 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
         if remaining > 0:
             return await ctx.reply(f"⏳ You must wait `{remaining}s` before training **{haki_type}** again.")
 
-        # cost
-        cost_per = int(g.get("haki_cost", HAKI_TRAIN_COST) or HAKI_TRAIN_COST)
+        # cost (per-type, falls back to haki_cost)
+        base_cost = int(g.get("haki_cost", HAKI_TRAIN_COST) or HAKI_TRAIN_COST)
+        type_cost_key = {
+            "armament": "haki_cost_armament",
+            "observation": "haki_cost_observation",
+            "conqueror": "haki_cost_conqueror",
+        }.get(haki_type, "haki_cost")
+        raw_cost = g.get(type_cost_key, None)
+        cost_per = base_cost if raw_cost is None else int(raw_cost or 0)
         total_cost = max(0, cost_per)
 
         ok = await self._spend_money(ctx.author, total_cost, reason="crew_battles:train_haki")
