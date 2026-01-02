@@ -1038,6 +1038,10 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
             def _yaml_quote(s: str) -> str:
                 return f'"{_yaml_safe(s)}"'
 
+            def _short(s: str, n: int) -> str:
+                s = str(s or "")
+                return (s[: n - 1] + "…") if n >= 2 and len(s) > n else s
+
             # Play turns (cap log lines so embed stays readable)
             for side, dmg, defender_hp_after, atk_name, crit in turns:
                 turn_no += 1
@@ -1050,16 +1054,19 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
                     actor = opponent.display_name
                     defender = ctx.author.display_name
 
+                actor_s = _short(actor, 18)
+                defender_s = _short(defender, 18)
+
                 is_counter = str(atk_name) == "Conqueror Counter"
                 is_fruit = isinstance(atk_name, str) and atk_name.startswith("🍈 ")
 
                 if int(dmg) <= 0 and str(atk_name).lower() == "dodged":
                     # NOTE: In the turn tuple, `side` is the attacker. A "Dodged" entry means
                     # the defender dodged the attacker's move.
-                    line_text = f"💨 {defender} dodged {actor}'s attack!"
+                    line_text = f"💨 {defender_s} dodged {actor_s}"
                 else:
                     if is_counter:
-                        line_text = f"👑 {actor} used Conqueror Counter for {int(dmg)} damage. (COUNTER-CRIT)"
+                        line_text = f"👑 {actor_s}: Counter - {int(dmg)} (COUNTER-CRIT)"
                     else:
                         move_display = str(atk_name)
                         emoji = "🗡️"
@@ -1067,13 +1074,15 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
                             emoji = "🍈"
                             move_display = str(atk_name)[2:].strip() or "Fruit Technique"
 
+                        move_display = _short(move_display, 22)
+
                         suffix = ""
                         if crit:
                             suffix = " (CRIT)"
                         elif is_fruit:
                             suffix = " (FRUIT)"
 
-                        line_text = f"{emoji} {actor} used {move_display} for {int(dmg)} damage.{suffix}"
+                        line_text = f"{emoji} {actor_s}: {move_display} - {int(dmg)}{suffix}"
 
                 entry = f"- {_yaml_quote(line_text)}"
 
