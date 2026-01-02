@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import discord
-from redbot.core import commands, Config
+from redbot.core import commands, Config, bank
 from redbot.core.data_manager import cog_data_path
 
 from .constants import BASE_HP, DEFAULT_USER, DEFAULT_PRICE_RULES, MAX_LEVEL
@@ -45,6 +45,7 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
             turn_delay=1.0,
             haki_cost=HAKI_TRAIN_COST,
             haki_cooldown=HAKI_TRAIN_COOLDOWN,
+            conqueror_unlock_cost=5000,
             crew_points_win=1,
             exp_win_min=0,
             exp_win_max=0,
@@ -764,6 +765,41 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
 
         embed.set_footer(text="Train: .cbtrain armament|observation|conqueror [points]")
         await ctx.reply(embed=embed)
+
+    @commands.command(name="cbunlockconqueror", aliases=["unlockconqueror", "cbunlockconq", "cbunlockconquerors"])
+    async def cbunlockconqueror(self, ctx: commands.Context):
+        """Unlock Conqueror's Haki (requires level 10)."""
+        p = await self.players.get(ctx.author)
+        if not p.get("started"):
+            return await ctx.reply("You must start Crew Battles first (`.startcb`).")
+
+        level = int(p.get("level", 1) or 1)
+        if level < 10:
+            return await ctx.reply("👑 Conqueror is unlocked at **Level 10**.")
+
+        haki = p.get("haki", {}) or {}
+        if bool(haki.get("conquerors")):
+            return await ctx.reply("👑 You already unlocked Conqueror's Haki.")
+
+        g = await self.config.guild(ctx.guild).all()
+        cost = int(g.get("conqueror_unlock_cost", 5000) or 5000)
+        if cost < 0:
+            cost = 0
+
+        if cost > 0:
+            ok = await self._spend_money(ctx.author, cost, reason="crew_battles:unlock_conqueror")
+            if not ok:
+                bal = await self._get_money(ctx.author)
+                return await ctx.reply(f"Not enough Beri. Cost `{cost:,}`, you have `{bal:,}`.")
+
+        haki["conquerors"] = True
+        haki["conqueror"] = int(haki.get("conqueror", 0) or 0)
+        p["haki"] = haki
+        await self.players.save(ctx.author, p)
+
+        if cost > 0:
+            return await ctx.reply(f"✅ Unlocked **Conqueror's Haki** for `{cost:,}` Beri!")
+        return await ctx.reply("✅ Unlocked **Conqueror's Haki**!")
 
     @commands.command(name="cbtrainhaki")
     async def cbtrainhaki(self, ctx: commands.Context, haki_type: str, points: int = 1):
