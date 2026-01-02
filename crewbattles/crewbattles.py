@@ -1035,6 +1035,9 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
                 s = s.replace("\n", " ").replace("\r", " ").strip()
                 return s
 
+            def _yaml_quote(s: str) -> str:
+                return f'"{_yaml_safe(s)}"'
+
             # Play turns (cap log lines so embed stays readable)
             for side, dmg, defender_hp_after, atk_name, crit in turns:
                 turn_no += 1
@@ -1047,26 +1050,17 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
                     actor = opponent.display_name
                     defender = ctx.author.display_name
 
-                tags: list[str] = []
-
                 is_counter = str(atk_name) == "Conqueror Counter"
                 is_fruit = isinstance(atk_name, str) and atk_name.startswith("🍈 ")
 
                 if int(dmg) <= 0 and str(atk_name).lower() == "dodged":
                     # NOTE: In the turn tuple, `side` is the attacker. A "Dodged" entry means
                     # the defender dodged the attacker's move.
-                    tags.append("dodge")
                     line_text = f"💨 {defender} dodged {actor}'s attack!"
                 else:
                     if is_counter:
-                        tags.append("counter_crit")
-                        line_text = f"👑 {actor} used Conqueror Counter for {int(dmg)} damage. [COUNTER-CRIT]"
+                        line_text = f"👑 {actor} used Conqueror Counter for {int(dmg)} damage. (COUNTER-CRIT)"
                     else:
-                        if crit:
-                            tags.append("crit")
-                        if is_fruit:
-                            tags.append("fruit")
-
                         move_display = str(atk_name)
                         emoji = "🗡️"
                         if is_fruit:
@@ -1074,26 +1068,19 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
                             move_display = str(atk_name)[2:].strip() or "Fruit Technique"
 
                         suffix = ""
-                        if "crit" in tags:
-                            suffix = " [CRIT]"
-                        elif "fruit" in tags:
-                            suffix = " [FRUIT]"
+                        if crit:
+                            suffix = " (CRIT)"
+                        elif is_fruit:
+                            suffix = " (FRUIT)"
 
                         line_text = f"{emoji} {actor} used {move_display} for {int(dmg)} damage.{suffix}"
 
-                safe_line = _yaml_safe(line_text)
-                entry_lines = [
-                    f"- t: {turn_no}",
-                    f"  line: \"{safe_line}\"",
-                ]
-                if tags:
-                    entry_lines.append("  tags: [" + ", ".join(tags) + "]")
-                entry = "\n".join(entry_lines)
+                entry = f"- {_yaml_quote(line_text)}"
 
                 log_entries.append(entry)
-                # Keep more history since entries are compact now
-                log_entries = log_entries[-8:]
-                log_text = "```yaml\n" + "\n\n".join(log_entries) + "\n```"
+                # Keep more history since entries are now one-liners
+                log_entries = log_entries[-10:]
+                log_text = "```yaml\n" + "\n".join(log_entries) + "\n```"
 
                 try:
                     await msg.edit(embed=battle_embed(ctx.author, opponent, hp1, hp2, BASE_HP, BASE_HP, log_text))
