@@ -888,7 +888,7 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
         p["haki"] = haki
         await self.players.save(ctx.author, p)
 
-        gif_url = "https://media1.tenor.com/m/uhEaeuxDjoQAAAAd/gear-5-gear-5-luffy.gif"
+        gif_url = "https://media1.tenor.com/m/aZ1ekamK9lEAAAAd/gear-5-gear-5-luffy.gif"
         e = discord.Embed(
             title="⚡👑 Conqueror's Haki Awakened! 👑⚡",
             description=f"{ctx.author.mention} has unlocked **Conqueror's Haki**!\n\n⚡ The air crackles with lightning…",
