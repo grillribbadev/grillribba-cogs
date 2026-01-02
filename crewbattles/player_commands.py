@@ -535,29 +535,47 @@ class PlayerCommandsMixin:
         def disp_name(uid: int) -> str:
             m = ctx.guild.get_member(uid) if ctx.guild else None
             name = m.display_name if m else f"User {uid}"
-            name = name.replace("`", "'")
-            return (name[:18] + "…") if len(name) > 19 else name
+
+            # Keep names safe + compact for embeds (mobile-friendly wrapping)
+            name = name.replace("`", "'").replace("\n", " ").strip()
+            try:
+                name = discord.utils.escape_markdown(name)
+            except Exception:
+                pass
+            return (name[:28] + "…") if len(name) > 29 else name
 
         def build_embed(page: int, mode: str) -> discord.Embed:
             page = max(1, min(int(page), pages))
             start = (page - 1) * per
             chunk = entries[start : start + per]
 
-            header = f"{'Rank':>4}  {'Name':<20}  {'W':>4}  {'L':>4}  {'Lvl':>4}  {'WR%':>6}"
-            lines = [header, "-" * len(header)]
+            def _rank_icon(rank: int) -> str:
+                if rank == 1:
+                    return "🥇"
+                if rank == 2:
+                    return "🥈"
+                if rank == 3:
+                    return "🥉"
+                return f"#{rank}"
+
+            lines: list[str] = []
             for idx, row in enumerate(chunk, start=start + 1):
                 name = disp_name(row["uid"])
+                wr = float(row.get("winrate", 0.0) or 0.0)
                 lines.append(
-                    f"{idx:>4}  {name:<20}  {row['wins']:>4}  {row['losses']:>4}  {row['level']:>4}  {row['winrate']:>6.1f}"
+                    f"{_rank_icon(idx)} **{name}** — Lv **{row['level']}** • W **{row['wins']}** / L **{row['losses']}** • WR **{wr:.0f}%**"
                 )
 
+            desc = "\n".join(lines) if lines else "—"
             e = discord.Embed(
                 title="🏆 Crew Battles Leaderboard",
-                description="```text\n" + "\n".join(lines) + "\n```",
+                description=desc,
                 color=discord.Color.gold(),
                 timestamp=discord.utils.utcnow(),
             )
-            e.set_footer(text=f"Sorted by {mode} • Page {page}/{pages} • Players: {len(entries)}")
+
+            sort_label = {"wins": "Wins", "level": "Level", "winrate": "Winrate"}.get(mode, str(mode))
+            e.set_footer(text=f"Sorted by {sort_label} • Page {page}/{pages} • Players: {len(entries)}")
             return e
 
         if pages == 1:

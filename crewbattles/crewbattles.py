@@ -1026,10 +1026,12 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
             hp2 = int(BASE_HP)
 
             log_lines = []
+            turn_no = 0
             msg = await ctx.send(embed=battle_embed(ctx.author, opponent, hp1, hp2, BASE_HP, BASE_HP, "—"))
 
             # Play turns (cap log lines so embed stays readable)
             for side, dmg, defender_hp_after, atk_name, crit in turns:
+                turn_no += 1
                 if side == "p1":
                     hp2 = int(defender_hp_after)
                     actor = ctx.author.display_name
@@ -1039,20 +1041,24 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
                     actor = opponent.display_name
                     defender = ctx.author.display_name
 
-                tag = ""
+                tag = None
                 if isinstance(atk_name, str) and atk_name.startswith("🍈 "):
-                    tag = " **DEVIL FRUIT**"
+                    tag = "FRUIT"
                 elif crit:
-                    tag = " **CRIT**"
+                    tag = "CRIT"
 
                 if int(dmg) <= 0 and str(atk_name).lower() == "dodged":
-                    line = f"💨 **{defender}** dodged **{actor}**'s attack!"
+                    line = f"- {{t: {turn_no}, by: '{defender}', action: dodge}}"
                 else:
-                    line = f"🗡️ **{actor}** used **{atk_name}** for `{int(dmg)}` damage.{tag}"
+                    safe_actor = str(actor).replace("'", "\"")
+                    safe_move = str(atk_name).replace("'", "\"")
+                    tag_part = f", tag: {tag}" if tag else ""
+                    # YAML flow mapping: compact + readable
+                    line = f"- {{t: {turn_no}, by: '{safe_actor}', move: '{safe_move}', dmg: {int(dmg)}{tag_part}}}"
 
                 log_lines.append(line)
-                log_lines = log_lines[-10:]  # last 10 lines only
-                log_text = "\n".join(log_lines)
+                log_lines = log_lines[-6:]  # last 6 entries only (less spammy)
+                log_text = "```yaml\n" + "\n".join(log_lines) + "\n```"
 
                 try:
                     await msg.edit(embed=battle_embed(ctx.author, opponent, hp1, hp2, BASE_HP, BASE_HP, log_text))
