@@ -483,16 +483,6 @@ class PlayerCommandsMixin:
         if not entries:
             return await ctx.reply("No players found yet. Use `.startcb` to begin.")
 
-        per = 10
-        pages = max(1, math.ceil(len(entries) / per))
-        start_page = max(1, min(start_page, pages))
-
-        def disp_name(uid: int) -> str:
-            m = ctx.guild.get_member(uid) if ctx.guild else None
-            name = m.display_name if m else f"User {uid}"
-            name = name.replace("`", "'")
-            return (name[:18] + "…") if len(name) > 19 else name
-
         def sort_entries(mode: str):
             if mode == "level":
                 entries.sort(key=lambda x: (x["level"], x["exp"], x["wins"]), reverse=True)
@@ -502,6 +492,16 @@ class PlayerCommandsMixin:
                 entries.sort(key=lambda x: (x["wins"], x["winrate"], x["level"]), reverse=True)
 
         sort_entries(sort_by)
+
+        per = 10
+        pages = max(1, math.ceil(len(entries) / per))
+        start_page = max(1, min(start_page, pages))
+
+        def disp_name(uid: int) -> str:
+            m = ctx.guild.get_member(uid) if ctx.guild else None
+            name = m.display_name if m else f"User {uid}"
+            name = name.replace("`", "'")
+            return (name[:18] + "…") if len(name) > 19 else name
 
         def build_embed(page: int, mode: str) -> discord.Embed:
             page = max(1, min(int(page), pages))
@@ -529,28 +529,28 @@ class PlayerCommandsMixin:
             return await ctx.send(embed=build_embed(1, sort_by))
 
         class _LeaderboardPager(discord.ui.View):
-            def __init__(inner_self, *, author_id: int, mode: str, page: int):
+            def __init__(self, *, author_id: int, mode: str, page: int):
                 super().__init__(timeout=60)
-                inner_self.author_id = author_id
-                inner_self.mode = mode
-                inner_self.current = page
-                inner_self._msg = None
-                inner_self._sync()
+                self.author_id = author_id
+                self.mode = mode
+                self.current = page
+                self._msg: discord.Message | None = None
+                self._sync()
 
-            def _sync(inner_self):
-                inner_self.prev_btn.disabled = inner_self.current <= 1
-                inner_self.next_btn.disabled = inner_self.current >= pages
+            def _sync(self):
+                self.prev_btn.disabled = self.current <= 1
+                self.next_btn.disabled = self.current >= pages
 
-            async def interaction_check(inner_self, interaction: discord.Interaction) -> bool:
-                return interaction.user is not None and interaction.user.id == inner_self.author_id
+            async def interaction_check(self, interaction: discord.Interaction) -> bool:
+                return interaction.user is not None and interaction.user.id == self.author_id
 
-            async def on_timeout(inner_self) -> None:
-                for child in inner_self.children:
+            async def on_timeout(self) -> None:
+                for child in self.children:
                     if isinstance(child, (discord.ui.Button, discord.ui.Select)):
                         child.disabled = True
-                if inner_self._msg:
+                if self._msg:
                     try:
-                        await inner_self._msg.edit(view=inner_self)
+                        await self._msg.edit(view=self)
                     except Exception:
                         pass
 
@@ -562,24 +562,24 @@ class PlayerCommandsMixin:
                     discord.SelectOption(label="Winrate", value="winrate"),
                 ],
             )
-            async def sort_select(inner_self, interaction: discord.Interaction, select: discord.ui.Select):
-                inner_self.mode = select.values[0]
-                sort_entries(inner_self.mode)
-                inner_self.current = 1
-                inner_self._sync()
-                await interaction.response.edit_message(embed=build_embed(inner_self.current, inner_self.mode), view=inner_self)
+            async def sort_select(self, interaction: discord.Interaction, select: discord.ui.Select):
+                self.mode = select.values[0]
+                sort_entries(self.mode)
+                self.current = 1
+                self._sync()
+                await interaction.response.edit_message(embed=build_embed(self.current, self.mode), view=self)
 
             @discord.ui.button(label="◀ Prev", style=discord.ButtonStyle.secondary)
-            async def prev_btn(inner_self, interaction: discord.Interaction, button: discord.ui.Button):
-                inner_self.current = max(1, inner_self.current - 1)
-                inner_self._sync()
-                await interaction.response.edit_message(embed=build_embed(inner_self.current, inner_self.mode), view=inner_self)
+            async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+                self.current = max(1, self.current - 1)
+                self._sync()
+                await interaction.response.edit_message(embed=build_embed(self.current, self.mode), view=self)
 
             @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.secondary)
-            async def next_btn(inner_self, interaction: discord.Interaction, button: discord.ui.Button):
-                inner_self.current = min(pages, inner_self.current + 1)
-                inner_self._sync()
-                await interaction.response.edit_message(embed=build_embed(inner_self.current, inner_self.mode), view=inner_self)
+            async def next_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+                self.current = min(pages, self.current + 1)
+                self._sync()
+                await interaction.response.edit_message(embed=build_embed(self.current, self.mode), view=self)
 
         view = _LeaderboardPager(author_id=ctx.author.id, mode=sort_by, page=start_page)
         msg = await ctx.send(embed=build_embed(start_page, sort_by), view=view)
