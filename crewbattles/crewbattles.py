@@ -557,8 +557,7 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
         e.add_field(
             name="👑 Conqueror Unlock",
             value=(
-                f"{conq_text}\n"
-                "(Admins set the price with **`.cbadmin setconquerorcost <amount>`**.)"
+                f"{conq_text}"
             ),
             inline=False,
         )
@@ -833,7 +832,7 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
                 locked_txt = (
                     "`Locked`\n"
                     "🔓 Unlock with **`.cbunlockconqueror`**\n"
-                    f"💰 Cost: `{unlock_cost:,}` Beri (set with `.cbadmin setconquerorcost`)"
+                    f"💰 Cost: `{unlock_cost:,}` Beri"
                 )
             embed.add_field(
                 name="👑 Conqueror (COUNTER CRIT)",
@@ -863,8 +862,7 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
                 description=(
                     f"You can unlock Conqueror's Haki at **Level 10**.\n"
                     f"Your level: `{level}`\n\n"
-                    f"When you reach Level 10: use **`.cbunlockconqueror`** to unlock it for `{cost:,}` Beri.\n"
-                    "(Admins set the price via **`.cbadmin setconquerorcost`**.)"
+                    f"When you reach Level 10: use **`.cbunlockconqueror`** to unlock it for `{cost:,}` Beri."
                 ),
                 color=discord.Color.orange(),
             )
