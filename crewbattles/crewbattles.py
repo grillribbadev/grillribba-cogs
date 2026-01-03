@@ -1547,7 +1547,8 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
             if beri_loss:
                 await self._add_beri(loser_user, beri_loss, reason="crew_battle:loss")
 
-            crew_points = int(g.get("crew_points_win", 1) or 1)
+            raw_crew_points = g.get("crew_points_win", 1)
+            crew_points = int(raw_crew_points) if raw_crew_points is not None else 1
             points_added = 0
             if crew_points > 0:
                 try:
