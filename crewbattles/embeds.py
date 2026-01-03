@@ -52,8 +52,12 @@ def battle_embed(p1, p2, hp1: int, hp2: int, max_hp1: int, max_hp2: int, log_tex
     p1_name = getattr(p1, "display_name", "Player 1")
     p2_name = getattr(p2, "display_name", "Player 2")
 
+    # Adds a little left-padding inside the 2nd inline field so the two heart bars
+    # don't visually touch at the boundary between the columns.
+    _BAR_PAD = "⠀"  # braille blank (renders as visible spacing in Discord)
+
     p1_line = f"❤️ **HP:** `{hp1}/{max_hp1}`\n{_hp_bar(hp1, max_hp1)}"
-    p2_line = f"❤️ **HP:** `{hp2}/{max_hp2}`\n{_hp_bar(hp2, max_hp2)}"
+    p2_line = f"❤️ **HP:** `{hp2}/{max_hp2}`\n{_BAR_PAD}{_hp_bar(hp2, max_hp2)}"
 
     e.add_field(name=f"🏴‍☠️ {p1_name}", value=p1_line, inline=True)
     e.add_field(name=f"🏴‍☠️ {p2_name}", value=p2_line, inline=True)
