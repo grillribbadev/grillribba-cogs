@@ -632,7 +632,7 @@ class PlayerCommandsMixin:
         if sort_by not in ("wins", "level", "winrate"):
             sort_by = "wins"
 
-        all_users = await self.players.all()
+        all_users = await self.players.all(ctx.guild)
         entries = []
         for uid, pdata in (all_users or {}).items():
             if not isinstance(pdata, dict) or not pdata.get("started"):

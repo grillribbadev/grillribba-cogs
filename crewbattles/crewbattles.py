@@ -37,12 +37,14 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
         self.config = Config.get_conf(self, identifier=1234567890, force_registration=True)
 
         self.config.register_user(**DEFAULT_USER)
+        self.config.register_member(**DEFAULT_USER)
 
         self.config.register_guild(
             maintenance=False,
             beri_win=0,
             beri_loss=0,
             turn_delay=1.0,
+            battle_cooldown=DEFAULT_BATTLE_COOLDOWN,
             haki_cost=HAKI_TRAIN_COST,
             haki_cost_armament=HAKI_TRAIN_COST,
             haki_cost_observation=HAKI_TRAIN_COST,
@@ -81,18 +83,41 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
         d.mkdir(parents=True, exist_ok=True)
         return d
 
-    async def _write_backup(self, *, note: str = "") -> Path:
-        all_users = await self.config.all_users()
+    async def _write_backup(self, *, note: str = "", guild: discord.Guild = None) -> Path:
+        """Write a backup of member-scoped data (per guild). If no guild provided, backs up all guilds."""
+        ts = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
+
         payload = {
             "meta": {
                 "cog": "crewbattles",
                 "ts": datetime.now(timezone.utc).isoformat(),
                 "note": note,
-                "count": len(all_users or {}),
-            },
-            "users": all_users or {},
+                "scope": "guild" if guild else "all_guilds",
+                "guild_id": int(getattr(guild, "id", 0) or 0) if guild else None,
+            }
         }
-        fname = f"users_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.json"
+
+        if guild:
+            members = await self.config.all_members(guild)
+            payload["meta"]["count"] = len(members or {})
+            payload["members"] = members or {}
+        else:
+            guilds_payload = {}
+            for g in list(getattr(self.bot, "guilds", []) or []):
+                try:
+                    guilds_payload[str(int(g.id))] = await self.config.all_members(g)
+                except Exception:
+                    guilds_payload[str(int(getattr(g, "id", 0) or 0))] = {}
+            payload["meta"]["count"] = sum(len(v or {}) for v in guilds_payload.values())
+            payload["guilds"] = guilds_payload
+
+        # Include legacy user-scope data for safety/rollback.
+        try:
+            payload["users_legacy"] = await self.config.all_users()
+        except Exception:
+            payload["users_legacy"] = {}
+
+        fname = f"users_{ts}.json"
         path = self._backup_dir() / fname
 
         def _sync_write():
@@ -111,27 +136,68 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
                 print(f"[CrewBattles] periodic backup failed: {e}")
             await asyncio.sleep(6 * 60 * 60)
 
-    async def _restore_backup(self, backup_path: Path) -> int:
+    async def _restore_backup(self, backup_path: Path, guild: discord.Guild = None) -> int:
         def _sync_read():
             with open(backup_path, "r", encoding="utf-8") as f:
                 return json.load(f)
 
         data = await asyncio.to_thread(_sync_read)
-        users = (data or {}).get("users") or {}
-        if not isinstance(users, dict):
-            raise ValueError("Backup file format invalid: users is not a dict")
-
         restored = 0
-        for uid, pdata in users.items():
-            try:
-                uid_int = int(uid)
-            except Exception:
-                continue
-            if not isinstance(pdata, dict):
-                continue
-            await self.config.user_from_id(uid_int).set(pdata)
-            restored += 1
-        return restored
+
+        # Preferred: member-scoped restore
+        members = (data or {}).get("members")
+        guilds_map = (data or {}).get("guilds")
+
+        if guild and isinstance(members, dict):
+            for uid, pdata in members.items():
+                try:
+                    uid_int = int(uid)
+                except Exception:
+                    continue
+                if not isinstance(pdata, dict):
+                    continue
+                try:
+                    await self.config.member_from_ids(guild.id, uid_int).set(pdata)
+                    restored += 1
+                except Exception:
+                    pass
+            return restored
+
+        if guild and isinstance(guilds_map, dict):
+            bucket = guilds_map.get(str(int(guild.id)))
+            if isinstance(bucket, dict):
+                for uid, pdata in bucket.items():
+                    try:
+                        uid_int = int(uid)
+                    except Exception:
+                        continue
+                    if not isinstance(pdata, dict):
+                        continue
+                    try:
+                        await self.config.member_from_ids(guild.id, uid_int).set(pdata)
+                        restored += 1
+                    except Exception:
+                        pass
+                return restored
+
+        # Legacy: restore user-scope backups into THIS guild's member scope
+        legacy_users = (data or {}).get("users") or (data or {}).get("users_legacy") or {}
+        if guild and isinstance(legacy_users, dict):
+            for uid, pdata in legacy_users.items():
+                try:
+                    uid_int = int(uid)
+                except Exception:
+                    continue
+                if not isinstance(pdata, dict):
+                    continue
+                try:
+                    await self.config.member_from_ids(guild.id, uid_int).set(pdata)
+                    restored += 1
+                except Exception:
+                    pass
+            return restored
+
+        raise ValueError("Backup file format invalid or no guild provided for restore")
 
     # -----------------------------
     # Economy helpers (BeriCore or bank)
@@ -319,7 +385,7 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
     @cbadmin.command(name="backup")
     async def cbadmin_backup(self, ctx: commands.Context):
         async with ctx.typing():
-            path = await self._write_backup(note=f"manual by {ctx.author.id}")
+            path = await self._write_backup(note=f"manual by {ctx.author.id}", guild=ctx.guild)
         await ctx.reply(f"Backup written: `{path.name}`")
 
     @cbadmin.command(name="restore")
@@ -338,18 +404,18 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
             return await ctx.reply("Backup file not found.")
 
         async with ctx.typing():
-            restored = await self._restore_backup(bp)
-        await ctx.reply(f"Restored {restored} user record(s) from `{bp.name}`")
+            restored = await self._restore_backup(bp, guild=ctx.guild)
+        await ctx.reply(f"Restored {restored} member record(s) for this server from `{bp.name}`")
 
     @cbadmin.command(name="storedcounts")
     async def cbadmin_storedcounts(self, ctx: commands.Context):
         try:
-            all_users = await self.config.all_users()
+            all_users = await self.config.all_members(ctx.guild)
         except Exception as e:
             return await ctx.reply(f"Could not read storage: {e}")
         total = len(all_users or {})
         started = sum(1 for _, v in (all_users or {}).items() if isinstance(v, dict) and v.get("started"))
-        await ctx.reply(f"Stored user records: {total} | started=True: {started}")
+        await ctx.reply(f"Stored member records (this server): {total} | started=True: {started}")
 
     @cbadmin.command(name="resetall", aliases=["resetstarted", "resetplayers"])
     async def cbadmin_resetall(self, ctx: commands.Context, confirm: str = None):
@@ -358,11 +424,11 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
 
         async with ctx.typing():
             try:
-                await self._write_backup(note=f"pre-resetall by {ctx.author.id}")
+                await self._write_backup(note=f"pre-resetall by {ctx.author.id}", guild=ctx.guild)
             except Exception as e:
                 return await ctx.reply(f"Backup failed; aborting reset: {e}")
 
-            all_users = await self.players.all()
+            all_users = await self.players.all(ctx.guild)
             started_ids = []
             for uid, pdata in (all_users or {}).items():
                 if isinstance(pdata, dict) and pdata.get("started"):
@@ -374,7 +440,7 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
             reset = 0
             for uid in started_ids:
                 try:
-                    await self.config.user_from_id(uid).set(copy.deepcopy(DEFAULT_USER))
+                    await self.config.member_from_ids(ctx.guild.id, uid).set(copy.deepcopy(DEFAULT_USER))
                     reset += 1
                 except Exception:
                     pass
@@ -388,11 +454,11 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
 
         async with ctx.typing():
             try:
-                await self._write_backup(note=f"pre-wipeall by {ctx.author.id}")
+                await self._write_backup(note=f"pre-wipeall by {ctx.author.id}", guild=ctx.guild)
             except Exception as e:
                 return await ctx.reply(f"Backup failed; aborting wipe: {e}")
 
-            all_users = await self.players.all()
+            all_users = await self.players.all(ctx.guild)
             uids = []
             for uid in (all_users or {}).keys():
                 try:
@@ -403,7 +469,7 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
             wiped = 0
             for uid in uids:
                 try:
-                    await self.config.user_from_id(uid).clear()
+                    await self.config.member_from_ids(ctx.guild.id, uid).clear()
                     wiped += 1
                 except Exception:
                     pass
@@ -420,6 +486,16 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
     async def setturn_delay(self, ctx, delay: float):
         await self.config.guild(ctx.guild).turn_delay.set(float(delay))
         await ctx.reply(f"Turn delay set to {delay}s")
+
+    @cbadmin.command()
+    async def setbattlecooldown(self, ctx, seconds: int):
+        seconds = int(seconds)
+        if seconds < MIN_BATTLE_COOLDOWN or seconds > MAX_BATTLE_COOLDOWN:
+            return await ctx.reply(
+                f"Battle cooldown must be between {MIN_BATTLE_COOLDOWN} and {MAX_BATTLE_COOLDOWN} seconds."
+            )
+        await self.config.guild(ctx.guild).battle_cooldown.set(seconds)
+        await ctx.reply(f"Battle cooldown set to {seconds}s")
 
     @cbadmin.command()
     async def sethakicost(self, ctx, cost: int):
@@ -504,7 +580,7 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
     @cbadmin.command(name="fixlevels", aliases=["recalclevels", "recalcexp"])
     async def cbadmin_fixlevels(self, ctx: commands.Context):
         async with ctx.typing():
-            all_users = await self.players.all()
+            all_users = await self.players.all(ctx.guild)
             changed = 0
             total = 0
             for uid, pdata in (all_users or {}).items():
@@ -521,7 +597,7 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
 
                 if after_lvl != before_lvl or after_exp != before_exp:
                     try:
-                        await self.config.user_from_id(int(uid)).set(pdata)
+                        await self.config.member_from_ids(ctx.guild.id, int(uid)).set(pdata)
                         changed += 1
                     except Exception:
                         pass
@@ -544,7 +620,7 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
 
         async with ctx.typing():
             try:
-                await self.config.user(member).set(copy.deepcopy(DEFAULT_USER))
+                await self.config.member(member).set(copy.deepcopy(DEFAULT_USER))
             except Exception as e:
                 return await ctx.reply(f"Reset failed: {e}")
 
@@ -1026,8 +1102,7 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
     async def cbtrain(self, ctx, haki_type: str, *rest: str):
         return await self.cbtrainhaki(ctx, haki_type, *rest)
 
-    @commands.command(name="battle")
-    async def battle(self, ctx: commands.Context, opponent: discord.Member):
+    async def _run_battle(self, ctx: commands.Context, opponent: discord.Member):
         """Start a Crew Battle with animated embed + results screen."""
         if opponent.bot:
             return await ctx.reply("You can't battle bots.")
@@ -1040,6 +1115,8 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
         self._active_battles.add(ctx.channel.id)
 
         try:
+            g = await self.config.guild(ctx.guild).all()
+
             p1 = await self.players.get(ctx.author)
             p2 = await self.players.get(opponent)
             if not p1.get("started"):
@@ -1053,10 +1130,10 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
             if int(p2.get("tempban_until", 0) or 0) > self._now():
                 return await ctx.reply("That user is temporarily banned from Crew Battles.")
 
-            # battle cooldown (per-player)
+            # battle cooldown
             now = self._now()
-            cd = int(p1.get("battle_cd", DEFAULT_BATTLE_COOLDOWN) or DEFAULT_BATTLE_COOLDOWN)
-            cd = max(MIN_BATTLE_COOLDOWN, min(MAX_BATTLE_COOLDOWN, cd))
+            cd = int(g.get("battle_cooldown", DEFAULT_BATTLE_COOLDOWN) or DEFAULT_BATTLE_COOLDOWN)
+            cd = max(MIN_BATTLE_COOLDOWN, min(MAX_BATTLE_COOLDOWN, int(cd)))
             last = int(p1.get("last_battle", 0) or 0)
             rem = (last + cd) - now
             if rem > 0:
@@ -1075,7 +1152,6 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
             winner_key, turns, final_hp1, final_hp2 = simulate(p1, p2, self.fruits)
 
             # animated embed
-            g = await self.config.guild(ctx.guild).all()
             turn_delay = float(g.get("turn_delay", 1.0) or 1.0)
             turn_delay = max(0.0, min(5.0, turn_delay))  # hard clamp so it doesn't freeze channels
 
@@ -1257,6 +1333,42 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
                 self._active_battles.discard(ctx.channel.id)
             except Exception:
                 pass
+
+    @commands.group(name="battle", invoke_without_command=True)
+    async def battle(self, ctx: commands.Context, opponent: discord.Member = None):
+        """Start a Crew Battle, or use `.battle random`."""
+        if opponent is None:
+            return await ctx.reply("Usage: `.battle @user` or `.battle random`")
+        return await self._run_battle(ctx, opponent)
+
+    @battle.command(name="random")
+    async def battle_random(self, ctx: commands.Context):
+        """Battle a random started player in this server."""
+        if not ctx.guild:
+            return await ctx.reply("This command can only be used in a server.")
+
+        all_users = await self.players.all(ctx.guild)
+        candidates: list[discord.Member] = []
+        for uid, pdata in (all_users or {}).items():
+            if not isinstance(pdata, dict) or not pdata.get("started"):
+                continue
+            try:
+                uid_int = int(uid)
+            except Exception:
+                continue
+            if uid_int == ctx.author.id:
+                continue
+
+            m = ctx.guild.get_member(uid_int)
+            if not m or m.bot:
+                continue
+            candidates.append(m)
+
+        if not candidates:
+            return await ctx.reply("No eligible players found in the player pool.")
+
+        opponent = random.choice(candidates)
+        return await self._run_battle(ctx, opponent)
 
     # NOTE: Do NOT define a method named `cbleaderboard` on the Cog class unless it is the
     # actual decorated command. A plain method with that name will override the Command

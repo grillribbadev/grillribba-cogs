@@ -21,16 +21,22 @@ class AdminCommandsMixin:
         d.mkdir(parents=True, exist_ok=True)
         return d
 
-    async def _write_backup(self, *, note: str = "") -> Path:
-        all_users = await self.config.all_users()
+    async def _write_backup(self, *, note: str = "", guild: discord.Guild = None) -> Path:
+        """Write a backup of member-scoped data for this guild."""
+        if guild is None:
+            raise ValueError("Guild required for backup")
+
+        members = await self.config.all_members(guild)
         payload = {
             "meta": {
                 "cog": "crewbattles",
                 "ts": datetime.now(timezone.utc).isoformat(),
                 "note": note,
-                "count": len(all_users or {}),
+                "scope": "guild",
+                "guild_id": int(guild.id),
+                "count": len(members or {}),
             },
-            "users": all_users or {},
+            "members": members or {},
         }
         fname = f"users_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.json"
         path = self._backup_dir() / fname
@@ -42,25 +48,38 @@ class AdminCommandsMixin:
         await self.bot.loop.run_in_executor(None, _sync_write)
         return path
 
-    async def _restore_backup(self, backup_path: Path) -> int:
+    async def _restore_backup(self, backup_path: Path, guild: discord.Guild = None) -> int:
+        if guild is None:
+            raise ValueError("Guild required for restore")
+
         def _sync_read():
             with open(backup_path, "r", encoding="utf-8") as f:
                 return json.load(f)
 
         data = await self.bot.loop.run_in_executor(None, _sync_read)
-        users = (data or {}).get("users") or {}
-        if not isinstance(users, dict):
-            raise ValueError("Backup file format invalid: users is not a dict")
+        members = (data or {}).get("members")
+        guilds_map = (data or {}).get("guilds")
+        legacy_users = (data or {}).get("users") or (data or {}).get("users_legacy")
+
+        if isinstance(members, dict):
+            bucket = members
+        elif isinstance(guilds_map, dict):
+            bucket = guilds_map.get(str(int(guild.id)), {})
+        elif isinstance(legacy_users, dict):
+            # legacy backups (global) restored into THIS guild
+            bucket = legacy_users
+        else:
+            raise ValueError("Backup file format invalid")
 
         restored = 0
-        for uid, pdata in users.items():
+        for uid, pdata in bucket.items():
             try:
                 uid_int = int(uid)
             except Exception:
                 continue
             if not isinstance(pdata, dict):
                 continue
-            await self.config.user_from_id(uid_int).set(pdata)
+            await self.config.member_from_ids(guild.id, uid_int).set(pdata)
             restored += 1
         return restored
 
@@ -128,7 +147,7 @@ class AdminCommandsMixin:
     @cbadmin.command(name="backup")
     async def cbadmin_backup(self, ctx: commands.Context):
         async with ctx.typing():
-            path = await self._write_backup(note=f"manual by {ctx.author} in {ctx.guild}")
+            path = await self._write_backup(note=f"manual by {ctx.author} in {ctx.guild}", guild=ctx.guild)
         await ctx.reply(f"Backup written: `{path.name}`")
 
     @cbadmin.command(name="restore")
@@ -143,22 +162,22 @@ class AdminCommandsMixin:
             return await ctx.reply("That backup file does not exist in the backups folder.")
 
         async with ctx.typing():
-            restored = await self._restore_backup(bp)
-        await ctx.reply(f"Restored {restored} user record(s) from `{bp.name}`")
+            restored = await self._restore_backup(bp, guild=ctx.guild)
+        await ctx.reply(f"Restored {restored} member record(s) for this server from `{bp.name}`")
 
     @cbadmin.command(name="storedcounts")
     async def cbadmin_storedcounts(self, ctx: commands.Context):
-        all_users = await self.config.all_users()
+        all_users = await self.config.all_members(ctx.guild)
         total = len(all_users or {})
         started = sum(1 for _, v in (all_users or {}).items() if isinstance(v, dict) and v.get("started"))
-        await ctx.reply(f"Stored user records: {total} | started=True: {started}")
+        await ctx.reply(f"Stored member records (this server): {total} | started=True: {started}")
 
     @cbadmin.command(name="resetall", aliases=["resetstarted", "resetplayers"])
     async def cbadmin_resetall(self, ctx: commands.Context, confirm: str = None):
         if confirm != "confirm":
             return await ctx.reply("Run: `.cbadmin resetall confirm`")
 
-        all_users = await self.config.all_users()
+        all_users = await self.config.all_members(ctx.guild)
         reset = 0
         async with ctx.typing():
             for uid, pdata in (all_users or {}).items():
@@ -168,7 +187,7 @@ class AdminCommandsMixin:
                     continue
                 if not isinstance(pdata, dict) or not pdata.get("started"):
                     continue
-                await self.config.user_from_id(uid_int).set(copy.deepcopy(DEFAULT_USER))
+                await self.config.member_from_ids(ctx.guild.id, uid_int).set(copy.deepcopy(DEFAULT_USER))
                 reset += 1
 
         await ctx.reply(f"Reset data for {reset} started player(s).")
@@ -180,13 +199,13 @@ class AdminCommandsMixin:
 
         async with ctx.typing():
             try:
-                await self.config.clear_all_users()
+                await self.config.clear_all_members(ctx.guild)
             except Exception:
-                # fallback: reset known users to defaults
-                all_users = await self.config.all_users()
+                # fallback: reset known members to defaults
+                all_users = await self.config.all_members(ctx.guild)
                 for uid in (all_users or {}).keys():
                     try:
-                        await self.config.user_from_id(int(uid)).set(copy.deepcopy(DEFAULT_USER))
+                        await self.config.member_from_ids(ctx.guild.id, int(uid)).set(copy.deepcopy(DEFAULT_USER))
                     except Exception:
                         pass
 
@@ -202,6 +221,14 @@ class AdminCommandsMixin:
     async def cbadmin_setturn_delay(self, ctx: commands.Context, delay: float):
         await self.config.guild(ctx.guild).turn_delay.set(float(delay))
         await ctx.reply(f"Turn delay set to {float(delay)}s")
+
+    @cbadmin.command(name="setbattlecooldown", aliases=["setbattlecd", "setbattlecooldownseconds"])
+    async def cbadmin_setbattlecooldown(self, ctx: commands.Context, seconds: int):
+        seconds = int(seconds)
+        if seconds < 10 or seconds > 3600:
+            return await ctx.reply("Battle cooldown must be between 10 and 3600 seconds.")
+        await self.config.guild(ctx.guild).battle_cooldown.set(seconds)
+        await ctx.reply(f"Battle cooldown set to {seconds}s")
 
     @cbadmin.command(name="sethakicost")
     async def cbadmin_sethakicost(self, ctx: commands.Context, cost: int):
@@ -285,7 +312,7 @@ class AdminCommandsMixin:
 
     @cbadmin.command(name="fixlevels", aliases=["recalclevels", "recalcexp"])
     async def cbadmin_fixlevels(self, ctx: commands.Context):
-        all_users = await self.config.all_users()
+        all_users = await self.config.all_members(ctx.guild)
         total = 0
         changed = 0
 
@@ -325,7 +352,7 @@ class AdminCommandsMixin:
                 if new_lvl != old_lvl or new_xp != old_xp:
                     pdata["level"] = new_lvl
                     pdata["exp"] = new_xp
-                    await self.config.user_from_id(uid_int).set(pdata)
+                    await self.config.member_from_ids(ctx.guild.id, uid_int).set(pdata)
                     changed += 1
 
         await ctx.reply(f"Recalculated levels. Updated {changed} / {total} records.")
@@ -343,7 +370,7 @@ class AdminCommandsMixin:
         if confirm != "confirm":
             return await ctx.reply("Run: `.cbadmin resetuser @member confirm`")
         async with ctx.typing():
-            await self.config.user(member).set(copy.deepcopy(DEFAULT_USER))
+            await self.config.member(member).set(copy.deepcopy(DEFAULT_USER))
         await ctx.reply(f"✅ Reset Crew Battles data for **{member.display_name}**.")
 
     @cbadmin.command(name="sethaki")
@@ -374,13 +401,13 @@ class AdminCommandsMixin:
             pdata["haki"] = haki
             await self.players.save(member, pdata)
         else:
-            pdata = await self.config.user(member).all()
+            pdata = await self.config.member(member).all()
             haki = pdata.get("haki", {}) or {}
             haki[haki_type] = level
             if haki_type == "conqueror" and level > 0:
                 haki["conquerors"] = True
             pdata["haki"] = haki
-            await self.config.user(member).set(pdata)
+            await self.config.member(member).set(pdata)
 
         extra = ""
         if haki_type == "conqueror" and level > 0:
@@ -693,12 +720,12 @@ class AdminCommandsMixin:
             pdata["fruit"] = None
             await self.players.save(member, pdata)
         else:
-            pdata = await self.config.user(member).all()
+            pdata = await self.config.member(member).all()
             old = pdata.get("fruit")
             if not old:
                 return await ctx.reply("That user has no fruit equipped.")
             pdata["fruit"] = None
-            await self.config.user(member).set(pdata)
+            await self.config.member(member).set(pdata)
 
         await ctx.reply(f"✅ Removed **{member.display_name}**'s fruit: **{old}**")
 
@@ -745,7 +772,7 @@ class AdminCommandsMixin:
             pdata["fruit"] = canonical_name
             await self.players.save(member, pdata)
         else:
-            pdata = await self.config.user(member).all()
+            pdata = await self.config.member(member).all()
             if not pdata.get("started"):
                 return await ctx.reply("That user has not started. They must run `.startcb` first.")
 
@@ -757,6 +784,6 @@ class AdminCommandsMixin:
                 )
 
             pdata["fruit"] = canonical_name
-            await self.config.user(member).set(pdata)
+            await self.config.member(member).set(pdata)
 
         await ctx.reply(f"✅ Gave **{member.display_name}** the fruit: **{canonical_name}** (stock unchanged).")
