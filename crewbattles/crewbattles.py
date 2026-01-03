@@ -1594,12 +1594,18 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
             loser_level = int(loser_p.get("level", 1) or 1)
             loser_exp = int(loser_p.get("exp", 0) or 0)
 
+            crew_points_line = (
+                "🏴‍☠️ **Crew Points Added:** `DISABLED`"
+                if int(crew_points or 0) <= 0
+                else f"🏴‍☠️ **Crew Points Added:** `+{points_added}`"
+            )
+
             winner_lines = [
                 f"💰 **Beri:** `+{beri_win:,}`",
                 (f"⭐ **EXP:** `MAX`" if winner_level >= MAX_LEVEL else f"⭐ **EXP Gained:** `+{win_gain}`"),
                 (None if winner_level >= MAX_LEVEL else f"✨ **Current EXP:** `{winner_exp}`"),
                 (f"📈 **Level:** `MAX`" if winner_level >= MAX_LEVEL else (f"📈 **Level:** `{winner_level}`" + (f" *(+{leveled_w})*" if leveled_w else ""))),
-                f"🏴‍☠️ **Crew Points Added:** `+{points_added}`",
+                crew_points_line,
             ]
             winner_lines = [x for x in winner_lines if x]
             res.add_field(name=f"🏆 Winner — {winner_who}", value="\n".join(winner_lines), inline=False)
