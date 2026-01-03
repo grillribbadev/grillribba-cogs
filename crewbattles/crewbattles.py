@@ -6,6 +6,7 @@ import random
 import re
 import time
 import inspect  # <-- ADD THIS
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -142,7 +143,13 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
         return candidate
 
     def _guild_backup_dir(self, guild: discord.Guild) -> Path:
-        d = self._backup_dir() / f"guild_{int(getattr(guild, 'id', 0) or 0)}"
+        gname = self._safe_slug(str(getattr(guild, "name", "") or ""), limit=30) or "guild"
+        # Short stable suffix to avoid collisions between same-named guilds.
+        try:
+            hid = hashlib.sha1(str(int(getattr(guild, "id", 0) or 0)).encode("utf-8")).hexdigest()[:6]
+        except Exception:
+            hid = "000000"
+        d = self._backup_dir() / f"guild_{gname}_{hid}"
         d.mkdir(parents=True, exist_ok=True)
         return d
 
@@ -207,7 +214,6 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
         """Write a backup of member-scoped data (per guild). If no guild provided, backs up all guilds."""
         ts = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
         note = " ".join((note or "").strip().split())
-        slug = self._safe_slug(self._note_slug_base(note))
 
         payload = {
             "meta": {
@@ -241,8 +247,7 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
             payload["users_legacy"] = {}
 
         if guild:
-            suffix = f"__{slug}" if slug else ""
-            fname = f"users_{ts}{suffix}.json"
+            fname = f"users_{ts}.json"
             path = self._guild_backup_dir(guild) / fname
         else:
             fname = f"users_allguilds_{ts}.json"
@@ -518,6 +523,7 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
     @cbadmin.command(name="backup")
     async def cbadmin_backup(self, ctx: commands.Context, *, note: str = ""):
         note = " ".join((note or "").strip().split())
+        # Description is stored in backup metadata; not used in filename.
         note_line = f"manual by {ctx.author.id}" + (f": {note}" if note else "")
         async with ctx.typing():
             path = await self._write_backup(note=note_line, guild=ctx.guild)

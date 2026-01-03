@@ -2,6 +2,7 @@ import io
 import json
 import copy
 import discord
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -80,7 +81,12 @@ class AdminCommandsMixin:
         return candidate
 
     def _guild_backup_dir(self, guild: discord.Guild) -> Path:
-        d = self._backup_dir() / f"guild_{int(getattr(guild, 'id', 0) or 0)}"
+        gname = self._safe_slug(str(getattr(guild, "name", "") or ""), limit=30) or "guild"
+        try:
+            hid = hashlib.sha1(str(int(getattr(guild, "id", 0) or 0)).encode("utf-8")).hexdigest()[:6]
+        except Exception:
+            hid = "000000"
+        d = self._backup_dir() / f"guild_{gname}_{hid}"
         d.mkdir(parents=True, exist_ok=True)
         return d
 
@@ -141,7 +147,6 @@ class AdminCommandsMixin:
 
         ts = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
         note = " ".join((note or "").strip().split())
-        slug = self._safe_slug(self._note_slug_base(note))
 
         members = await self.config.all_members(guild)
         payload = {
@@ -156,8 +161,7 @@ class AdminCommandsMixin:
             },
             "members": members or {},
         }
-        suffix = f"__{slug}" if slug else ""
-        fname = f"users_{ts}{suffix}.json"
+        fname = f"users_{ts}.json"
         path = self._guild_backup_dir(guild) / fname
 
         def _sync_write():
