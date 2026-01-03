@@ -481,6 +481,13 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
             cur_exp = 0
 
         cur_level = max(1, cur_level)
+
+        # Hard ceiling: once max level, do not accumulate EXP.
+        if cur_level >= MAX_LEVEL:
+            player["level"] = int(MAX_LEVEL)
+            player["exp"] = 0
+            return 0
+
         cur_exp = max(0, cur_exp) + gain
 
         leveled = 0
@@ -1513,6 +1520,9 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
             winner_p["wins"] = int(winner_p.get("wins", 0) or 0) + 1
             loser_p["losses"] = int(loser_p.get("losses", 0) or 0) + 1
 
+            winner_pre_level = int(winner_p.get("level", 1) or 1)
+            loser_pre_level = int(loser_p.get("level", 1) or 1)
+
             win_min = int(g.get("exp_win_min", 0) or 0)
             win_max = int(g.get("exp_win_max", 0) or 0)
             loss_min = int(g.get("exp_loss_min", 0) or 0)
@@ -1520,6 +1530,12 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
 
             win_gain = random.randint(min(win_min, win_max), max(win_min, win_max)) if max(win_min, win_max) > 0 else 0
             loss_gain = random.randint(min(loss_min, loss_max), max(loss_min, loss_max)) if max(loss_min, loss_max) > 0 else 0
+
+            # Max-level ceiling: don't award EXP if already max.
+            if winner_pre_level >= MAX_LEVEL:
+                win_gain = 0
+            if loser_pre_level >= MAX_LEVEL:
+                loss_gain = 0
 
             leveled_w = self._apply_exp(winner_p, win_gain)
             leveled_l = self._apply_exp(loser_p, loss_gain)
@@ -1579,20 +1595,22 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
 
             winner_lines = [
                 f"💰 **Beri:** `+{beri_win:,}`",
-                f"⭐ **EXP Gained:** `+{win_gain}`",
-                f"✨ **Current EXP:** `{winner_exp}`",
-                f"📈 **Level:** `{winner_level}`" + (f" *(+{leveled_w})*" if leveled_w else ""),
+                (f"⭐ **EXP:** `MAX`" if winner_level >= MAX_LEVEL else f"⭐ **EXP Gained:** `+{win_gain}`"),
+                (None if winner_level >= MAX_LEVEL else f"✨ **Current EXP:** `{winner_exp}`"),
+                (f"📈 **Level:** `MAX`" if winner_level >= MAX_LEVEL else (f"📈 **Level:** `{winner_level}`" + (f" *(+{leveled_w})*" if leveled_w else ""))),
                 f"🏴‍☠️ **Crew Points Added:** `+{points_added}`",
             ]
+            winner_lines = [x for x in winner_lines if x]
             res.add_field(name=f"🏆 Winner — {winner_who}", value="\n".join(winner_lines), inline=False)
 
             # loser rewards in “lower/smaller” style using blockquote + italics
             loser_lines = [
                 f"💰 Beri: `+{beri_loss:,}`",
-                f"⭐ EXP Gained: `+{loss_gain}`",
-                f"✨ Current EXP: `{loser_exp}`",
-                f"📉 Level: `{loser_level}`" + (f" *(+{leveled_l})*" if leveled_l else ""),
+                (f"⭐ EXP: `MAX`" if loser_level >= MAX_LEVEL else f"⭐ EXP Gained: `+{loss_gain}`"),
+                (None if loser_level >= MAX_LEVEL else f"✨ Current EXP: `{loser_exp}`"),
+                (f"📉 Level: `MAX`" if loser_level >= MAX_LEVEL else (f"📉 Level: `{loser_level}`" + (f" *(+{leveled_l})*" if leveled_l else ""))),
             ]
+            loser_lines = [x for x in loser_lines if x]
             loser_value = "\n".join(f"> *{line}*" for line in loser_lines)
             res.add_field(name=f"☠️ Loser — {loser_who}", value=loser_value, inline=False)
 
