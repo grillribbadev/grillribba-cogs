@@ -1,25 +1,29 @@
 import discord
 
+# Custom heart emojis (replace names if yours differ; IDs must match your server emojis)
+FULL_HEART = "<:full_heart:1379318858279551027>"
+HALF_HEART = "<:half_heart:1379318888906489897>"
+EMPTY_HEART = "<:empty_heart:1379318910809018408>"
+
 def _clamp(n: int, lo: int, hi: int) -> int:
     return max(lo, min(hi, n))
 
 def _hp_bar(hp: int, max_hp: int, width: int = 14) -> str:
     max_hp = max(1, int(max_hp))
     hp = _clamp(int(hp), 0, max_hp)
-    filled = int(round((hp / max_hp) * width))
-    filled = _clamp(filled, 0, width)
-    empty = width - filled
-
-    # color-ish bar by remaining HP
+    # Hearts bar: full / half / empty
     ratio = hp / max_hp
-    if ratio >= 0.66:
-        fill_char = "🟩"
-    elif ratio >= 0.33:
-        fill_char = "🟨"
-    else:
-        fill_char = "🟥"
+    units = ratio * width
 
-    return f"{fill_char * filled}{'⬛' * empty}"
+    full = int(units)
+    half = 1 if (units - full) >= 0.5 else 0
+    full = _clamp(full, 0, width)
+    if full == width:
+        half = 0
+    empty = width - full - half
+    empty = _clamp(empty, 0, width)
+
+    return f"{FULL_HEART * full}{HALF_HEART * half}{EMPTY_HEART * empty}"
 
 def battle_embed(p1, p2, hp1: int, hp2: int, max_hp1: int, max_hp2: int, log_text: str) -> discord.Embed:
     """
