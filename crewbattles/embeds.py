@@ -8,7 +8,7 @@ EMPTY_HEART = "<:empty_heart:1379318910809018408>"
 def _clamp(n: int, lo: int, hi: int) -> int:
     return max(lo, min(hi, n))
 
-def _hp_bar(hp: int, max_hp: int, width: int = 14) -> str:
+def _hp_bar(hp: int, max_hp: int, width: int = 13) -> str:
     max_hp = max(1, int(max_hp))
     hp = _clamp(int(hp), 0, max_hp)
     # Hearts bar: full / half / empty
