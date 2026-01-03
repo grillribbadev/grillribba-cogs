@@ -83,9 +83,117 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
         d.mkdir(parents=True, exist_ok=True)
         return d
 
+    def _source_dir(self) -> Path:
+        return Path(__file__).resolve().parent
+
+    def _list_files_under(self, root: Path, *, max_items: int = 60) -> list[str]:
+        root = Path(root)
+        if not root.exists():
+            return []
+
+        out: list[str] = []
+        try:
+            for p in sorted(root.rglob("*")):
+                if len(out) >= max_items:
+                    break
+                if not p.is_file():
+                    continue
+                parts = {x.lower() for x in p.parts}
+                if "__pycache__" in parts:
+                    continue
+                if p.suffix.lower() in (".pyc", ".pyo"):
+                    continue
+                try:
+                    rel = str(p.relative_to(root)).replace("\\", "/")
+                except Exception:
+                    rel = p.name
+                out.append(rel)
+        except Exception:
+            return []
+        return out
+
+    def _resolve_scoped_path(self, scope: str, rel_path: str, guild: discord.Guild | None = None) -> Path | None:
+        scope = (scope or "").strip().lower()
+        rel_path = (rel_path or "").strip().lstrip("/")
+        if not scope or not rel_path:
+            return None
+
+        roots: dict[str, Path] = {
+            "source": self._source_dir(),
+            "data": cog_data_path(self),
+            "storage": cog_data_path(self),
+            "backups": self._backup_dir(),
+            "backup": self._backup_dir(),
+        }
+        root = roots.get(scope)
+        if root is None:
+            return None
+
+        root = root.resolve()
+        try:
+            candidate = (root / rel_path).resolve()
+        except Exception:
+            return None
+
+        if candidate == root or root not in candidate.parents:
+            return None
+        if not candidate.exists() or not candidate.is_file():
+            return None
+        return candidate
+
+    def _guild_backup_dir(self, guild: discord.Guild) -> Path:
+        d = self._backup_dir() / f"guild_{int(getattr(guild, 'id', 0) or 0)}"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def _safe_slug(self, s: str, *, limit: int = 40) -> str:
+        s = " ".join((s or "").strip().split())
+        if not s:
+            return ""
+        out = []
+        for ch in s:
+            if ch.isalnum():
+                out.append(ch.lower())
+            elif ch in (" ", "-", "_"):
+                out.append("_")
+        slug = "".join(out)
+        while "__" in slug:
+            slug = slug.replace("__", "_")
+        slug = slug.strip("_")
+        return slug[:limit]
+
+    def _resolve_backup_path(self, filename: str, guild: discord.Guild | None = None) -> Path | None:
+        """Resolve a backup filename safely from root or this guild's backup folder."""
+        if not filename:
+            return None
+
+        root = self._backup_dir().resolve()
+
+        # Allow relative paths under the backup root (e.g. guild_123/foo.json)
+        try:
+            candidate = (root / filename).resolve()
+            if candidate == root or root not in candidate.parents:
+                candidate = None
+        except Exception:
+            candidate = None
+        if candidate and candidate.exists() and candidate.is_file():
+            return candidate
+
+        # Otherwise try guild folder then root folder.
+        if guild:
+            gp = (self._guild_backup_dir(guild) / filename)
+            if gp.exists() and gp.is_file():
+                return gp
+        rp = (self._backup_dir() / filename)
+        if rp.exists() and rp.is_file():
+            return rp
+        return None
+
     async def _write_backup(self, *, note: str = "", guild: discord.Guild = None) -> Path:
         """Write a backup of member-scoped data (per guild). If no guild provided, backs up all guilds."""
         ts = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
+        note = " ".join((note or "").strip().split())
+        slug = self._safe_slug(note)
 
         payload = {
             "meta": {
@@ -94,6 +202,7 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
                 "note": note,
                 "scope": "guild" if guild else "all_guilds",
                 "guild_id": int(getattr(guild, "id", 0) or 0) if guild else None,
+                "guild_name": str(getattr(guild, "name", "")) if guild else None,
             }
         }
 
@@ -117,8 +226,14 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
         except Exception:
             payload["users_legacy"] = {}
 
-        fname = f"users_{ts}.json"
-        path = self._backup_dir() / fname
+        if guild:
+            gid = int(getattr(guild, "id", 0) or 0)
+            suffix = f"__{slug}" if slug else ""
+            fname = f"users_g{gid}_{ts}{suffix}.json"
+            path = self._guild_backup_dir(guild) / fname
+        else:
+            fname = f"users_allguilds_{ts}.json"
+            path = self._backup_dir() / fname
 
         def _sync_write():
             with open(path, "w", encoding="utf-8") as f:
@@ -131,7 +246,12 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
         await asyncio.sleep(30)
         while True:
             try:
-                await self._write_backup(note="periodic")
+                # Prefer per-guild periodic backups for clarity and safety.
+                for g in list(getattr(self.bot, "guilds", []) or []):
+                    try:
+                        await self._write_backup(note=f"periodic guild={int(getattr(g, 'id', 0) or 0)}", guild=g)
+                    except Exception:
+                        pass
             except Exception as e:
                 print(f"[CrewBattles] periodic backup failed: {e}")
             await asyncio.sleep(6 * 60 * 60)
@@ -383,15 +503,24 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
             await ctx.send_help()
 
     @cbadmin.command(name="backup")
-    async def cbadmin_backup(self, ctx: commands.Context):
+    async def cbadmin_backup(self, ctx: commands.Context, *, note: str = ""):
+        note = " ".join((note or "").strip().split())
+        note_line = f"manual by {ctx.author.id}" + (f": {note}" if note else "")
         async with ctx.typing():
-            path = await self._write_backup(note=f"manual by {ctx.author.id}", guild=ctx.guild)
-        await ctx.reply(f"Backup written: `{path.name}`")
+            path = await self._write_backup(note=note_line, guild=ctx.guild)
+        rel = None
+        try:
+            rel = str(path.relative_to(self._backup_dir()))
+        except Exception:
+            rel = path.name
+        await ctx.reply(f"Backup written: `{rel}`")
 
     @cbadmin.command(name="restore")
     async def cbadmin_restore(self, ctx: commands.Context, filename: str = None, confirm: str = None):
         if not filename:
-            files = sorted([p.name for p in self._backup_dir().glob("users_*.json")])[-10:]
+            root_files = list(self._backup_dir().glob("*.json"))
+            guild_files = list(self._guild_backup_dir(ctx.guild).glob("*.json"))
+            files = sorted({p.name for p in (root_files + guild_files)})[-10:]
             if not files:
                 return await ctx.reply("No backup files found.")
             return await ctx.reply("Available backups (latest 10):\n" + "\n".join(f"- `{n}`" for n in files))
@@ -399,13 +528,81 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
         if confirm != "confirm":
             return await ctx.reply("Run: `.cbadmin restore <filename> confirm`")
 
-        bp = self._backup_dir() / filename
-        if not bp.exists():
+        bp = self._resolve_backup_path(filename, guild=ctx.guild)
+        if not bp:
             return await ctx.reply("Backup file not found.")
 
         async with ctx.typing():
             restored = await self._restore_backup(bp, guild=ctx.guild)
         await ctx.reply(f"Restored {restored} member record(s) for this server from `{bp.name}`")
+
+    @cbadmin.command(name="files", aliases=["documents", "docs"])
+    async def cbadmin_files(self, ctx: commands.Context, scope: str = ""):
+        """List readable files bundled with this cog (source) and stored data/backups (data)."""
+        scope = (scope or "").strip().lower()
+        if scope and scope not in ("source", "data", "storage", "backups", "backup"):
+            return await ctx.reply("Scopes: `source`, `data` (aka `storage`), `backups`. Example: `.cbadmin files data`")
+
+        blocks: list[str] = []
+
+        def add_block(title: str, root: Path, max_items: int = 40):
+            items = self._list_files_under(root, max_items=max_items)
+            if not items:
+                return
+            lines = [f"**{title}:**"]
+            for x in items:
+                lines.append(f"- {x}")
+            blocks.append("\n".join(lines))
+
+        if not scope or scope == "source":
+            add_block("source (use: .cbadmin getfile source <path>)", self._source_dir())
+        if not scope or scope in ("data", "storage"):
+            add_block("data/storage (use: .cbadmin getfile data <path>)", cog_data_path(self))
+        if not scope or scope in ("backups", "backup"):
+            add_block("backups (use: .cbadmin getfile backups <path>)", self._backup_dir())
+
+        if not blocks:
+            return await ctx.reply("No files found for that scope.")
+
+        msg = "\n\n".join(blocks)
+        if len(msg) > 1800:
+            msg = msg[:1800] + "\n…(truncated)"
+        await ctx.reply(msg)
+
+    @cbadmin.command(name="getfile", aliases=["file", "pullfile"])
+    async def cbadmin_getfile(self, ctx: commands.Context, scope: str, *, path: str):
+        """Send a file from this cog as an attachment for reading/safekeeping."""
+        scope = (scope or "").strip().lower()
+        path = (path or "").strip()
+        if not scope or not path:
+            return await ctx.reply("Usage: `.cbadmin getfile <source|data|backups> <path>`")
+
+        # Special-case backups: allow passing just a filename (we'll search guild/root)
+        if scope in ("backup", "backups") and "/" not in path and "\\" not in path:
+            bp = self._resolve_backup_path(path, guild=ctx.guild)
+            if bp:
+                file_path = bp
+            else:
+                file_path = None
+        else:
+            file_path = self._resolve_scoped_path(scope, path, guild=ctx.guild)
+
+        if not file_path:
+            return await ctx.reply("File not found (or path not allowed). Use `.cbadmin files` to browse.")
+
+        try:
+            size = file_path.stat().st_size
+        except Exception:
+            size = 0
+
+        # Keep a little under the common 8MB upload cap.
+        if size and size > 7_500_000:
+            return await ctx.reply(f"That file is too large to send here ({size:,} bytes).")
+
+        try:
+            await ctx.reply(file=discord.File(str(file_path), filename=file_path.name))
+        except Exception as e:
+            await ctx.reply(f"Could not send file: {e}")
 
     @cbadmin.command(name="storedcounts")
     async def cbadmin_storedcounts(self, ctx: commands.Context):
