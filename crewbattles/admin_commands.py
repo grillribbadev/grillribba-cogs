@@ -100,6 +100,19 @@ class AdminCommandsMixin:
         slug = slug.strip("_")
         return slug[:limit]
 
+    def _note_slug_base(self, note: str) -> str:
+        """Derive a short label for filenames from a longer meta note."""
+        note = " ".join((note or "").strip().split())
+        if not note:
+            return ""
+        low = note.lower()
+        if low.startswith("periodic"):
+            return "periodic"
+        if low.startswith("manual by") and ":" in note:
+            tail = note.split(":", 1)[1].strip()
+            return tail or "manual"
+        return note
+
     def _resolve_backup_path(self, filename: str, guild: discord.Guild) -> Path | None:
         if not filename:
             return None
@@ -128,7 +141,7 @@ class AdminCommandsMixin:
 
         ts = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
         note = " ".join((note or "").strip().split())
-        slug = self._safe_slug(note)
+        slug = self._safe_slug(self._note_slug_base(note))
 
         members = await self.config.all_members(guild)
         payload = {
@@ -143,9 +156,8 @@ class AdminCommandsMixin:
             },
             "members": members or {},
         }
-        gid = int(getattr(guild, "id", 0) or 0)
         suffix = f"__{slug}" if slug else ""
-        fname = f"users_g{gid}_{ts}{suffix}.json"
+        fname = f"users_{ts}{suffix}.json"
         path = self._guild_backup_dir(guild) / fname
 
         def _sync_write():

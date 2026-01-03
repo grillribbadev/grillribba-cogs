@@ -162,6 +162,20 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
         slug = slug.strip("_")
         return slug[:limit]
 
+    def _note_slug_base(self, note: str) -> str:
+        """Derive a short, human-ish label for filenames from a longer meta note."""
+        note = " ".join((note or "").strip().split())
+        if not note:
+            return ""
+        low = note.lower()
+        if low.startswith("periodic"):
+            return "periodic"
+        if low.startswith("manual by") and ":" in note:
+            # Prefer the user-provided part after the first ':'
+            tail = note.split(":", 1)[1].strip()
+            return tail or "manual"
+        return note
+
     def _resolve_backup_path(self, filename: str, guild: discord.Guild | None = None) -> Path | None:
         """Resolve a backup filename safely from root or this guild's backup folder."""
         if not filename:
@@ -193,7 +207,7 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
         """Write a backup of member-scoped data (per guild). If no guild provided, backs up all guilds."""
         ts = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
         note = " ".join((note or "").strip().split())
-        slug = self._safe_slug(note)
+        slug = self._safe_slug(self._note_slug_base(note))
 
         payload = {
             "meta": {
@@ -227,9 +241,8 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
             payload["users_legacy"] = {}
 
         if guild:
-            gid = int(getattr(guild, "id", 0) or 0)
             suffix = f"__{slug}" if slug else ""
-            fname = f"users_g{gid}_{ts}{suffix}.json"
+            fname = f"users_{ts}{suffix}.json"
             path = self._guild_backup_dir(guild) / fname
         else:
             fname = f"users_allguilds_{ts}.json"
