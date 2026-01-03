@@ -296,13 +296,54 @@ class AdminCommandsMixin:
                     return 0
 
             paths = sorted(paths, key=key, reverse=True)[:10]
-            names: list[str] = []
-            for p in paths:
+
+            def display_note(note: str) -> str:
+                note = " ".join((note or "").strip().split())
+                if not note:
+                    return "—"
+                low = note.lower()
+                if low.startswith("manual by") and ":" in note:
+                    tail = note.split(":", 1)[1].strip()
+                    return tail or note
+                return note
+
+            def read_meta(p: Path) -> dict:
                 try:
-                    names.append(str(p.relative_to(root)).replace("\\", "/"))
+                    with open(p, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    meta = (data or {}).get("meta")
+                    return meta if isinstance(meta, dict) else {}
                 except Exception:
-                    names.append(p.name)
-            return await ctx.reply("Available backups (latest 10):\n" + "\n".join(f"- `{n}`" for n in names))
+                    return {}
+
+            metas = await self.bot.loop.run_in_executor(None, lambda: [read_meta(p) for p in paths])
+
+            e = discord.Embed(
+                title="CrewBattles Backups (latest 10)",
+                description="Use `.cbadmin restore <path> confirm` to restore.",
+                color=discord.Color.blurple(),
+            )
+            for i, (p, meta) in enumerate(zip(paths, metas), start=1):
+                try:
+                    rel = str(p.relative_to(root)).replace("\\", "/")
+                except Exception:
+                    rel = p.name
+
+                ts = str((meta or {}).get("ts") or "")
+                note = display_note(str((meta or {}).get("note") or ""))
+                if len(note) > 180:
+                    note = note[:177] + "..."
+
+                value = "\n".join(
+                    [
+                        f"**File:** `{rel}`",
+                        f"**Time (UTC):** `{ts or '—'}`",
+                        f"**Description:** {note}",
+                    ]
+                )
+                e.add_field(name=f"#{i}", value=value, inline=False)
+
+            return await ctx.reply(embed=e)
         if confirm != "confirm":
             return await ctx.reply("Add `confirm` to proceed: `.cbadmin restore <filename> confirm`")
 
