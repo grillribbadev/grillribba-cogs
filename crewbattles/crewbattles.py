@@ -1347,6 +1347,8 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
         if not ctx.guild:
             return await ctx.reply("This command can only be used in a server.")
 
+        author_team = await self._team_of(ctx.guild, ctx.author)
+
         all_users = await self.players.all(ctx.guild)
         candidates: list[discord.Member] = []
         for uid, pdata in (all_users or {}).items():
@@ -1362,10 +1364,19 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
             m = ctx.guild.get_member(uid_int)
             if not m or m.bot:
                 continue
+
+            # Enforce the existing rule: you cannot battle crewmates/teammates.
+            if author_team is not None:
+                try:
+                    m_team = await self._team_of(ctx.guild, m)
+                except Exception:
+                    m_team = None
+                if m_team is not None and m_team == author_team:
+                    continue
             candidates.append(m)
 
         if not candidates:
-            return await ctx.reply("No eligible players found in the player pool.")
+            return await ctx.reply("No eligible players found in the player pool (excluding bots, yourself, and teammates).")
 
         opponent = random.choice(candidates)
         return await self._run_battle(ctx, opponent)
