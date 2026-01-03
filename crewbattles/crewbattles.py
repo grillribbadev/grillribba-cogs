@@ -20,7 +20,7 @@ from .fruits import FruitManager
 from .battle_engine import simulate
 from .teams_bridge import TeamsBridge
 from .embeds import battle_embed
-from .utils import exp_to_next
+from .utils import exp_to_next, format_duration
 from .admin_commands import AdminCommandsMixin
 from .player_commands import PlayerCommandsMixin  # already present in your file
 
@@ -1332,7 +1332,7 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
         last = int(ts_map.get(haki_type, 0) or 0)
         remaining = (last + cooldown) - now
         if remaining > 0:
-            return await ctx.reply(f"⏳ You must wait `{remaining}s` before training **{haki_type}** again.")
+            return await ctx.reply(f"⏳ You must wait `{format_duration(remaining)}` before training **{haki_type}** again.")
 
         # cost (per-type, falls back to haki_cost)
         base_cost = int(g.get("haki_cost", HAKI_TRAIN_COST) or HAKI_TRAIN_COST)

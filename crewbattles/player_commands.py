@@ -8,6 +8,7 @@ import discord
 from redbot.core import commands
 
 from .constants import BASE_HP, DEFAULT_USER
+from .utils import format_duration
 
 
 class PlayerCommandsMixin:
@@ -572,7 +573,7 @@ class PlayerCommandsMixin:
         last = int(ts_map.get(haki_type, 0) or 0)
         rem = (last + cooldown) - now
         if rem > 0:
-            return await ctx.reply(f"⏳ Wait `{rem}s` before training **{haki_type}** again.")
+            return await ctx.reply(f"⏳ Wait `{format_duration(rem)}` before training **{haki_type}** again.")
 
         # per-type cost (falls back to haki_cost)
         base_cost = int(g.get("haki_cost", 500) or 500)
