@@ -283,12 +283,26 @@ class AdminCommandsMixin:
     @cbadmin.command(name="restore")
     async def cbadmin_restore(self, ctx: commands.Context, filename: str = None, confirm: str = None):
         if not filename:
-            root_files = list(self._backup_dir().glob("*.json"))
-            guild_files = list(self._guild_backup_dir(ctx.guild).glob("*.json"))
-            files = sorted({p.name for p in (root_files + guild_files)})[-10:]
-            if not files:
+            root = self._backup_dir()
+            gdir = self._guild_backup_dir(ctx.guild)
+            paths = [p for p in (list(root.glob("*.json")) + list(gdir.glob("*.json"))) if p.exists() and p.is_file()]
+            if not paths:
                 return await ctx.reply("No backup files found.")
-            return await ctx.reply("Available backups (latest 10):\n" + "\n".join(f"- `{n}`" for n in files))
+
+            def key(p: Path):
+                try:
+                    return p.stat().st_mtime
+                except Exception:
+                    return 0
+
+            paths = sorted(paths, key=key, reverse=True)[:10]
+            names: list[str] = []
+            for p in paths:
+                try:
+                    names.append(str(p.relative_to(root)).replace("\\", "/"))
+                except Exception:
+                    names.append(p.name)
+            return await ctx.reply("Available backups (latest 10):\n" + "\n".join(f"- `{n}`" for n in names))
         if confirm != "confirm":
             return await ctx.reply("Add `confirm` to proceed: `.cbadmin restore <filename> confirm`")
 
