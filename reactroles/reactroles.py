@@ -26,6 +26,24 @@ class ReactRoles(commands.Cog):
             return False
         return bool(perms.administrator or perms.manage_guild)
 
+    async def _maybe_sync_crew_for_role(
+        self,
+        guild: discord.Guild,
+        member: discord.Member,
+        role: discord.Role,
+    ) -> Tuple[bool, str, Optional[str]]:
+        """If the CrewTournament cog is loaded and this role is a crew member role, ensure membership.
+
+        Returns (matched, status, info) mirroring CrewTournament.ensure_member_for_crew_role.
+        """
+        crew_cog = self.bot.get_cog("CrewTournament")
+        if not crew_cog:
+            return False, "no_cog", None
+        try:
+            return await crew_cog.ensure_member_for_crew_role(guild, member, role.id)
+        except Exception:
+            return False, "error", None
+
     def _resolve_role(self, guild: discord.Guild, raw: str) -> Tuple[Optional[discord.Role], List[discord.Role]]:
         """Resolve a role from free text; returns (best, candidates)."""
         if not raw:
@@ -906,6 +924,7 @@ class ReactRoles(commands.Cog):
 
         added = False
         removed = False
+        crew_sync = (False, "no_match", None)
         try:
             if role in member.roles:
                 await member.remove_roles(role, reason="Reaction role toggled off")
@@ -924,6 +943,14 @@ class ReactRoles(commands.Cog):
                         await member.remove_roles(*roles_to_remove, reason="Unique reaction role swap")
                 await member.add_roles(role, reason="Reaction role toggled on")
                 added = True
+                crew_sync = await self._maybe_sync_crew_for_role(guild, member, role)
+                if crew_sync[0] and crew_sync[1] == "blocked_other":
+                    # Crew system doesn't allow switching crews: undo the role grant.
+                    try:
+                        await member.remove_roles(role, reason="Blocked by crew switching rule")
+                        added = False
+                    except Exception:
+                        pass
         except Exception:
             # Still try to remove the reaction even if role change fails.
             pass
@@ -940,7 +967,27 @@ class ReactRoles(commands.Cog):
         # "Only you can see this" isn't possible from raw reaction events.
         # Best-effort DM confirmation.
         try:
-            if added:
+            if crew_sync[0] and crew_sync[1] == "blocked_other":
+                info = crew_sync[2]
+                if info:
+                    await member.send(
+                        f"You can't switch crews once you join one (currently in {info}). I removed {role.name}."
+                    )
+                else:
+                    await member.send(f"You can't switch crews once you join one. I removed {role.name}.")
+            elif added and crew_sync[0] and crew_sync[1] in {"joined", "already"}:
+                crew_name = crew_sync[2]
+                if crew_sync[1] == "joined":
+                    if crew_name:
+                        await member.send(f"You got {role.name} and joined the crew {crew_name}.")
+                    else:
+                        await member.send(f"You got {role.name} and joined a crew.")
+                else:
+                    if crew_name:
+                        await member.send(f"You got {role.name}. You're already in the crew {crew_name}.")
+                    else:
+                        await member.send(f"You got {role.name}.")
+            elif added:
                 await member.send(f"You got {role.name}.")
             elif removed:
                 await member.send(f"Removed {role.name}.")
