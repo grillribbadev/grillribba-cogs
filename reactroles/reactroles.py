@@ -26,38 +26,193 @@ class ReactRoles(commands.Cog):
             return False
         return bool(perms.administrator or perms.manage_guild)
 
-    def _parse_role(self, guild: discord.Guild, raw: str) -> Optional[discord.Role]:
+    def _resolve_role(self, guild: discord.Guild, raw: str) -> Tuple[Optional[discord.Role], List[discord.Role]]:
+        """Resolve a role from free text; returns (best, candidates)."""
         if not raw:
-            return None
+            return None, []
         s = raw.strip()
+        # Allow user to type @RoleName
+        if s.startswith("@"):  # not a mention, just a convenience
+            s = s[1:].strip()
         # <@&123>
         if s.startswith("<@&") and s.endswith(">"):
             s = s[3:-1]
         # plain id
         if s.isdigit():
-            return guild.get_role(int(s))
-        # by name (best-effort exact)
-        lower = s.lower()
-        for r in guild.roles:
-            if r.name.lower() == lower:
-                return r
-        return None
+            r = guild.get_role(int(s))
+            return (r, [r] if r else [])
 
-    def _parse_channel(self, guild: discord.Guild, raw: str) -> Optional[discord.TextChannel]:
+        q = s.lower()
+        # exact name match first
+        exact = [r for r in guild.roles if r.name.lower() == q]
+        if exact:
+            return exact[0], exact
+
+        # contains / startswith matches
+        starts = [r for r in guild.roles if r.name.lower().startswith(q)]
+        contains = [r for r in guild.roles if q in r.name.lower()]
+        cands = starts + [r for r in contains if r not in starts]
+
+        # Fuzzy fallback (best-effort)
+        if not cands:
+            import difflib
+
+            names = {r.name.lower(): r for r in guild.roles}
+            close = difflib.get_close_matches(q, list(names.keys()), n=5, cutoff=0.55)
+            cands = [names[n] for n in close]
+
+        if not cands:
+            return None, []
+
+        # If there are multiple, only auto-pick if there's a clear best.
+        if len(cands) == 1:
+            return cands[0], cands
+
+        import difflib
+
+        scored = sorted(
+            ((difflib.SequenceMatcher(None, q, r.name.lower()).ratio(), r) for r in cands),
+            key=lambda x: x[0],
+            reverse=True,
+        )
+        best_score, best_role = scored[0]
+        second_score = scored[1][0] if len(scored) > 1 else 0.0
+        if best_score >= 0.72 and (best_score - second_score) >= 0.10:
+            return best_role, [r for _, r in scored]
+        return None, [r for _, r in scored]
+
+    def _parse_role(self, guild: discord.Guild, raw: str) -> Optional[discord.Role]:
+        role, _ = self._resolve_role(guild, raw)
+        return role
+
+    def _resolve_channel(self, guild: discord.Guild, raw: str) -> Tuple[Optional[discord.TextChannel], List[discord.TextChannel]]:
+        """Resolve a text channel from free text; returns (best, candidates)."""
         if not raw:
-            return None
+            return None, []
         s = raw.strip()
         # <#123>
         if s.startswith("<#") and s.endswith(">"):
             s = s[2:-1]
         if s.isdigit():
             ch = guild.get_channel(int(s))
-            return ch if isinstance(ch, discord.TextChannel) else None
-        lower = s.lstrip("#").lower()
-        for ch in guild.text_channels:
-            if ch.name.lower() == lower:
-                return ch
-        return None
+            return ((ch if isinstance(ch, discord.TextChannel) else None), [ch] if isinstance(ch, discord.TextChannel) else [])
+
+        q = s.lstrip("#").lower()
+        exact = [ch for ch in guild.text_channels if ch.name.lower() == q]
+        if exact:
+            return exact[0], exact
+
+        starts = [ch for ch in guild.text_channels if ch.name.lower().startswith(q)]
+        contains = [ch for ch in guild.text_channels if q in ch.name.lower()]
+        cands = starts + [ch for ch in contains if ch not in starts]
+
+        if not cands:
+            import difflib
+
+            names = {ch.name.lower(): ch for ch in guild.text_channels}
+            close = difflib.get_close_matches(q, list(names.keys()), n=5, cutoff=0.55)
+            cands = [names[n] for n in close]
+
+        if not cands:
+            return None, []
+        if len(cands) == 1:
+            return cands[0], cands
+
+        import difflib
+
+        scored = sorted(
+            ((difflib.SequenceMatcher(None, q, ch.name.lower()).ratio(), ch) for ch in cands),
+            key=lambda x: x[0],
+            reverse=True,
+        )
+        best_score, best_ch = scored[0]
+        second_score = scored[1][0] if len(scored) > 1 else 0.0
+        if best_score >= 0.72 and (best_score - second_score) >= 0.10:
+            return best_ch, [ch for _, ch in scored]
+        return None, [ch for _, ch in scored]
+
+    def _parse_channel(self, guild: discord.Guild, raw: str) -> Optional[discord.TextChannel]:
+        ch, _ = self._resolve_channel(guild, raw)
+        return ch
+
+    def _strip_mapping_block(self, description: str) -> str:
+        if not description:
+            return ""
+        marker = "\n\n__React to get:__\n"
+        if marker in description:
+            return description.split(marker, 1)[0].rstrip()
+        return description
+
+    def _format_mapping_lines(self, guild: discord.Guild, binds: Dict[str, Any]) -> List[str]:
+        lines: List[str] = []
+        for emoji, info in binds.items():
+            if emoji == "_meta":
+                continue
+            if not isinstance(info, dict):
+                continue
+            role = guild.get_role(int(info.get("role_id", 0))) if info.get("role_id") else None
+            if not role:
+                continue
+            txt = f"{emoji} → {role.mention}"
+            if info.get("booster_only"):
+                txt += " *(Nitro only)*"
+            lines.append(txt)
+        return lines
+
+    def _build_post_embed(self, *, title: str, description: str, mapping_lines: List[str], show_roles: bool) -> discord.Embed:
+        base_desc = self._strip_mapping_block(description or "")
+        if show_roles and mapping_lines:
+            base_desc = (base_desc.rstrip() + "\n\n__React to get:__\n" + "\n".join(mapping_lines)).strip()
+        emb = discord.Embed(title=(title or "React for Roles")[:256], description=(base_desc or "")[:4000], color=EMBED_OK)
+        return emb
+
+    async def _sync_post_embed(self, guild: discord.Guild, message_id: int) -> None:
+        posts = await self.config.guild(guild).posts()
+        data = posts.get(str(message_id))
+        if not data:
+            return
+
+        meta = data.get("_meta", {}) if isinstance(data.get("_meta"), dict) else {}
+        channel_id = meta.get("channel_id")
+        channel = guild.get_channel(channel_id) if channel_id else None
+        if not isinstance(channel, discord.TextChannel):
+            return
+
+        try:
+            msg = await channel.fetch_message(message_id)
+        except Exception:
+            return
+
+        # Base title/desc come from meta; fall back to current embed.
+        base_title = meta.get("base_title")
+        base_desc = meta.get("base_desc")
+        show_roles = meta.get("show_roles", True)
+
+        if (base_title is None or base_desc is None) and msg.embeds:
+            e = msg.embeds[0]
+            if base_title is None:
+                base_title = e.title or "React for Roles"
+            if base_desc is None:
+                base_desc = self._strip_mapping_block(e.description or "")
+            # Persist derived base for future edits
+            meta["base_title"] = base_title
+            meta["base_desc"] = base_desc
+            meta.setdefault("show_roles", True)
+            data["_meta"] = meta
+            await self.config.guild(guild).posts.set_raw(str(message_id), value=data)
+
+        mapping_lines = self._format_mapping_lines(guild, data)
+        emb = self._build_post_embed(
+            title=str(base_title or "React for Roles"),
+            description=str(base_desc or ""),
+            mapping_lines=mapping_lines,
+            show_roles=bool(show_roles),
+        )
+
+        try:
+            await msg.edit(embed=emb)
+        except Exception:
+            return
 
     async def _get_post_options(self, guild: discord.Guild) -> List[discord.SelectOption]:
         posts = await self.config.guild(guild).posts()
@@ -99,13 +254,24 @@ class ReactRoles(commands.Cog):
 
         async def on_submit(self, interaction: discord.Interaction):
             assert interaction.guild is not None
-            ch = self.cog._parse_channel(interaction.guild, str(self.channel.value))
+            ch, candidates = self.cog._resolve_channel(interaction.guild, str(self.channel.value))
             if not ch:
-                return await interaction.response.send_message("Couldn't find that text channel.", ephemeral=True)
+                hint = ""
+                if candidates:
+                    hint = "\nDid you mean: " + ", ".join(f"#{c.name}" for c in candidates[:5])
+                return await interaction.response.send_message("Couldn't find that text channel." + hint, ephemeral=True)
             emb = discord.Embed(title=str(self.title_in.value)[:256], description=str(self.desc_in.value)[:2000], color=EMBED_OK)
             msg = await ch.send(embed=emb)
             await self.cog.config.guild(interaction.guild).posts.set_raw(
-                str(msg.id), value={"_meta": {"channel_id": ch.id}}
+                str(msg.id),
+                value={
+                    "_meta": {
+                        "channel_id": ch.id,
+                        "base_title": str(self.title_in.value)[:256],
+                        "base_desc": str(self.desc_in.value)[:2000],
+                        "show_roles": True,
+                    }
+                },
             )
             await interaction.response.send_message(f"Created post in {ch.mention}.", ephemeral=True)
 
@@ -132,9 +298,12 @@ class ReactRoles(commands.Cog):
             if not isinstance(channel, discord.TextChannel):
                 return await interaction.response.send_message("Channel for that post is missing.", ephemeral=True)
 
-            role_obj = self.cog._parse_role(interaction.guild, str(self.role.value))
+            role_obj, candidates = self.cog._resolve_role(interaction.guild, str(self.role.value))
             if not role_obj:
-                return await interaction.response.send_message("Couldn't resolve that role.", ephemeral=True)
+                hint = ""
+                if candidates:
+                    hint = "\nDid you mean: " + ", ".join(r.name for r in candidates[:5])
+                return await interaction.response.send_message("Couldn't resolve that role." + hint, ephemeral=True)
 
             booster_raw = (str(self.booster.value or "").strip().lower() if self.booster.value is not None else "")
             booster_only = booster_raw in {"y", "yes", "true", "1"}
@@ -147,6 +316,7 @@ class ReactRoles(commands.Cog):
 
             data[str(self.emoji.value)] = {"role_id": role_obj.id, "booster_only": booster_only}
             await self.cog.config.guild(interaction.guild).posts.set_raw(str(self.message_id), value=data)
+            await self.cog._sync_post_embed(interaction.guild, self.message_id)
             await interaction.response.send_message(f"Added mapping {self.emoji.value} → {role_obj.mention}.", ephemeral=True)
 
     class _RemoveMappingModal(discord.ui.Modal):
@@ -169,6 +339,7 @@ class ReactRoles(commands.Cog):
 
             del data[emoji]
             await self.cog.config.guild(interaction.guild).posts.set_raw(str(self.message_id), value=data)
+            await self.cog._sync_post_embed(interaction.guild, self.message_id)
 
             channel_id = data.get("_meta", {}).get("channel_id")
             channel = interaction.guild.get_channel(channel_id) if channel_id else None
@@ -201,9 +372,12 @@ class ReactRoles(commands.Cog):
         async def on_submit(self, interaction: discord.Interaction):
             assert interaction.guild is not None
 
-            target = self.cog._parse_channel(interaction.guild, str(self.channel.value))
+            target, candidates = self.cog._resolve_channel(interaction.guild, str(self.channel.value))
             if not target:
-                return await interaction.response.send_message("Couldn't find that text channel.", ephemeral=True)
+                hint = ""
+                if candidates:
+                    hint = "\nDid you mean: " + ", ".join(f"#{c.name}" for c in candidates[:5])
+                return await interaction.response.send_message("Couldn't find that text channel." + hint, ephemeral=True)
 
             posts = await self.cog.config.guild(interaction.guild).posts()
             binds = posts.get(str(self.message_id))
@@ -232,12 +406,18 @@ class ReactRoles(commands.Cog):
             title = title or orig_title
             desc = desc or orig_desc
 
-            emb = discord.Embed(title=title[:256], description=desc[:2000], color=EMBED_OK)
+            mapping_lines = self.cog._format_mapping_lines(interaction.guild, binds)
+            emb = self.cog._build_post_embed(title=title, description=desc, mapping_lines=mapping_lines, show_roles=True)
             new_msg = await target.send(embed=emb)
 
             # Copy mappings (not _meta), track new post.
             new_data = {k: v for k, v in binds.items() if k != "_meta"}
-            new_data["_meta"] = {"channel_id": target.id}
+            new_data["_meta"] = {
+                "channel_id": target.id,
+                "base_title": title[:256],
+                "base_desc": desc[:2000],
+                "show_roles": True,
+            }
             await self.cog.config.guild(interaction.guild).posts.set_raw(str(new_msg.id), value=new_data)
 
             # Add reactions
@@ -425,7 +605,17 @@ class ReactRoles(commands.Cog):
         """Create a reaction-role embed in the target channel."""
         emb = discord.Embed(title=title[:256], description=description[:2000], color=EMBED_OK)
         msg = await channel.send(embed=emb)
-        await self.config.guild(ctx.guild).posts.set_raw(str(msg.id), value={"_meta": {"channel_id": channel.id}})
+        await self.config.guild(ctx.guild).posts.set_raw(
+            str(msg.id),
+            value={
+                "_meta": {
+                    "channel_id": channel.id,
+                    "base_title": title[:256],
+                    "base_desc": description[:2000],
+                    "show_roles": True,
+                }
+            },
+        )
         await ctx.send(f"Created new reaction-role embed in {channel.mention} (ID: `{msg.id}`).")
 
     @rr.command(name="add")
@@ -446,6 +636,7 @@ class ReactRoles(commands.Cog):
 
         data[str(emoji)] = {"role_id": role.id, "booster_only": booster_only}
         await self.config.guild(ctx.guild).posts.set_raw(str(message_id), value=data)
+        await self._sync_post_embed(ctx.guild, message_id)
         await ctx.send(f"Added mapping: {emoji} → {role.mention} (Nitro only: `{booster_only}`)")
 
     @rr.command(name="remove")
@@ -462,6 +653,7 @@ class ReactRoles(commands.Cog):
         # Remove from config
         del data[emoji]
         await self.config.guild(ctx.guild).posts.set_raw(str(message_id), value=data)
+        await self._sync_post_embed(ctx.guild, message_id)
 
         # Remove emoji from message
         channel_id = data.get("_meta", {}).get("channel_id")
@@ -559,20 +751,17 @@ class ReactRoles(commands.Cog):
         title = title or old.title or "React for Roles"
         desc = description or old.description or ""
 
-        if include_roles:
-            desc = desc.strip() + "\n\n"
-            for emoji, info in binds.items():
-                if emoji == "_meta":
-                    continue
-                role = ctx.guild.get_role(info["role_id"])
-                if role:
-                    txt = f"{emoji} → {role.name}"
-                    if info.get("booster_only"):
-                        txt += " *(Nitro only)*"
-                    desc += txt + "\n"
+        # Persist base title/desc and show_roles preference.
+        async with self.config.guild(ctx.guild).posts() as posts:
+            data = posts.get(str(message_id)) or {}
+            meta = data.get("_meta", {}) if isinstance(data.get("_meta"), dict) else {}
+            meta["base_title"] = title[:256]
+            meta["base_desc"] = self._strip_mapping_block(desc)[:2000]
+            meta["show_roles"] = bool(include_roles)
+            data["_meta"] = meta
+            posts[str(message_id)] = data
 
-        emb = discord.Embed(title=title[:256], description=desc[:4000], color=EMBED_OK)
-        await msg.edit(embed=emb)
+        await self._sync_post_embed(ctx.guild, message_id)
         await ctx.send("Embed updated!")
 
     @rr.command(name="post")
@@ -582,10 +771,11 @@ class ReactRoles(commands.Cog):
         binds = posts.get(str(source_message_id))
         if not binds:
             return await ctx.send("No bindings found for that message ID.")
-        emb = discord.Embed(title=title, description=description, color=EMBED_OK)
+        mapping_lines = self._format_mapping_lines(ctx.guild, binds)
+        emb = self._build_post_embed(title=title, description=description, mapping_lines=mapping_lines, show_roles=True)
         new_msg = await channel.send(embed=emb)
         new_data = {k: v for k, v in binds.items() if k != "_meta"}
-        new_data["_meta"] = {"channel_id": channel.id}
+        new_data["_meta"] = {"channel_id": channel.id, "base_title": title[:256], "base_desc": description[:2000], "show_roles": True}
         await self.config.guild(ctx.guild).posts.set_raw(str(new_msg.id), value=new_data)
 
         for emoji in new_data:
