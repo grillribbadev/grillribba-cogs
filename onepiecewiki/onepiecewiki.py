@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import re
 import html as ihtml
+import difflib
 from typing import Any, Dict, Optional, Tuple, List
 
 import aiohttp
@@ -190,6 +191,34 @@ def _fuzzy_query(q: str) -> str:
   tokens = [t for t in re.split(r"\s+", q.strip()) if t]
   return " ".join((t if len(t) < 4 else f"{t}~") for t in tokens) or q
 
+
+def _similarity(a: str, b: str) -> float:
+  """Return a 0..1 similarity score between two strings."""
+  a_n = re.sub(r"[^a-z0-9]+", " ", (a or "").lower()).strip()
+  b_n = re.sub(r"[^a-z0-9]+", " ", (b or "").lower()).strip()
+  if not a_n or not b_n:
+    return 0.0
+
+  ratio = difflib.SequenceMatcher(None, a_n, b_n).ratio()
+  a_tokens = [t for t in a_n.split() if t]
+  b_tokens = set(t for t in b_n.split() if t)
+  token_hit = (sum(1 for t in a_tokens if t in b_tokens) / max(1, len(a_tokens)))
+
+  # Ratio catches misspellings; token_hit catches partial names.
+  return (0.65 * ratio) + (0.35 * token_hit)
+
+
+def _min_similarity_threshold(query: str) -> float:
+  """Short queries are ambiguous; require a bit more confidence."""
+  q = (query or "").strip()
+  if not q:
+    return 1.0
+  # For very short queries (e.g., "ace") a lot of pages can match;
+  # keep threshold slightly higher to avoid random picks.
+  if len(q) <= 4:
+    return 0.62
+  return 0.55
+
 # ---------- Cog ----------
 class OnePieceWiki(commands.Cog):
   """One Piece Wiki — clean card with big image, accurate bounty list, crews, and debut chapter/episode."""
@@ -228,18 +257,54 @@ class OnePieceWiki(commands.Cog):
         mode = last
         query = " ".join(parts[:-1]).strip()
 
+    try:
+      title, suggestions = await self._search(ctx.guild, query)
+      if not title:
+        em = discord.Embed(
+          title="No close match found",
+          description="I couldn't find a wiki result that closely matches your query.",
+          color=discord.Color.red(),
+        )
+        if suggestions:
+          sug = humanize_list([f"[{t}]({WIKI_BASE}{t.replace(' ', '_')})" for t in suggestions[:5]])
+          em.add_field(name="Did you mean", value=sug, inline=False)
+        em.set_footer(text="Tip: try a full name or different spelling")
+        return await ctx.reply(embed=em)
+      info, page_url, raw_html = await self._fetch_infobox(title)
+      summary, big_img = await self._fetch_summary_and_image(title)
+    except asyncio.TimeoutError:
+      em = discord.Embed(
+        title="Wiki timed out",
+        description="The One Piece Wiki didn't respond in time. Try again in a moment.",
+        color=discord.Color.orange(),
+      )
+      return await ctx.reply(embed=em)
+    except aiohttp.ClientError:
+      em = discord.Embed(
+        title="Wiki unavailable",
+        description="I couldn't reach the One Piece Wiki right now. Please try later.",
+        color=discord.Color.orange(),
+      )
+      return await ctx.reply(embed=em)
+
+    if summary and not info.get("summary"):
+      info["summary"] = summary
+    if big_img and not info.get("_image"):
+      info["_image"] = big_img
+
     # ===== mode: feats =====
     if mode == "feats":
       sections = self._extract_section_blocks(raw_html)
+      sections_norm = {k.strip().lower(): v for k, v in sections.items()}
       body_html = None
       # exact title match first
       for key in self.PREFERRED_FEATS:
-        body_html = sections.get(key)
+        body_html = sections_norm.get(key)
         if body_html:
           break
       # fuzzy title contains as fallback
       if not body_html:
-        for t, b in sections.items():
+        for t, b in sections_norm.items():
           if any(k in t for k in self.PREFERRED_FEATS):
             body_html = b
             break
@@ -268,22 +333,6 @@ class OnePieceWiki(commands.Cog):
         tiny = discord.Embed(description=f"**Did you mean:** {sug}", color=discord.Color.dark_grey())
         await ctx.send(embed=tiny)
       return
-
-    try:
-      title, suggestions = await self._search(ctx.guild, query)
-      if not title:
-        return await ctx.reply("No results found. Try another name or spelling.")
-      info, page_url, raw_html = await self._fetch_infobox(title)
-      summary, big_img = await self._fetch_summary_and_image(title)
-    except asyncio.TimeoutError:
-      return await ctx.reply("The wiki timed out. Try again in a moment.")
-    except aiohttp.ClientError:
-      return await ctx.reply("I couldn't reach the wiki right now. Please try later.")
-
-    if summary and not info.get("summary"):
-      info["summary"] = summary
-    if big_img and not info.get("_image"):
-      info["_image"] = big_img
 
     # Bounties straight from HTML (fallback to text value)
     bounty_amounts = _extract_bounties_from_html(raw_html)
@@ -458,8 +507,12 @@ class OnePieceWiki(commands.Cog):
         osj = await resp.json()
       if len(osj) >= 2 and osj[1]:
         suggestions = list(map(str, osj[1]))
-        first = await self._title_exists(suggestions[0])
-        return (first or suggestions[0]), suggestions[1:4]
+        # Don't auto-pick a weak match from opensearch; enforce closeness.
+        best = suggestions[0]
+        if _similarity(q, best) < _min_similarity_threshold(q):
+          return None, suggestions[:4]
+        first = await self._title_exists(best)
+        return (first or best), suggestions[1:4]
       return None, []
 
     tokens = [t for t in re.split(r"\s+", q.lower()) if t]
@@ -474,6 +527,11 @@ class OnePieceWiki(commands.Cog):
     hits.sort(key=score, reverse=True)
     top = hits[0]["title"]
     suggestions = [h["title"] for h in hits[1:6]]
+
+    # If the best match isn't close to the user's query, refuse to guess.
+    if _similarity(q, top) < _min_similarity_threshold(q):
+      return None, [top] + suggestions
+
     canonical = await self._title_exists(top)
     return (canonical or top), suggestions
 
