@@ -326,7 +326,7 @@ class ReactRoles(commands.Cog):
         """Reaction role manager."""
         await ctx.send_help()
 
-    @rr.hybrid_command(name="menu")
+    @rr.command(name="menu")
     async def rr_menu(self, ctx: commands.Context):
         """Open an interactive menu to manage reaction-role posts."""
         if not ctx.guild:
