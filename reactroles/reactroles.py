@@ -135,6 +135,39 @@ class ReactRoles(commands.Cog):
         ch, _ = self._resolve_channel(guild, raw)
         return ch
 
+    def _resolve_emoji(self, guild: discord.Guild, raw: str) -> Tuple[Optional[str], Optional[object], Optional[str]]:
+        """Resolve an emoji input into a stable config key and a reaction payload.
+
+        Returns (key, reaction, error_message).
+        - key: what we store in config and compare against str(payload.emoji)
+        - reaction: what we pass to Message.add_reaction
+        """
+        s = (raw or "").strip()
+        if not s:
+            return None, None, "Emoji is required."
+
+        try:
+            pe = discord.PartialEmoji.from_str(s)
+        except Exception:
+            pe = None
+
+        # Fallback: treat as unicode if it's a single grapheme-ish string.
+        if pe is None:
+            return s, s, None
+
+        # Custom emoji (has id)
+        if pe.id:
+            # Make sure the bot can actually use this emoji (must be from a guild it can see).
+            if guild.get_emoji(pe.id) is None:
+                return None, None, "That custom emoji isn't from this server (or I can't use it). Use an emoji from this server or a normal emoji."
+            return str(pe), pe, None
+
+        # Unicode emoji
+        if pe.name:
+            return pe.name, pe.name, None
+
+        return None, None, "Couldn't parse that emoji."
+
     def _strip_mapping_block(self, description: str) -> str:
         if not description:
             return ""
@@ -156,6 +189,8 @@ class ReactRoles(commands.Cog):
             txt = f"{emoji} → {role.mention}"
             if info.get("booster_only"):
                 txt += " *(Nitro only)*"
+            if info.get("unique"):
+                txt += " *(unique)*"
             lines.append(txt)
         return lines
 
@@ -283,9 +318,11 @@ class ReactRoles(commands.Cog):
             self.emoji = discord.ui.TextInput(label="Emoji", placeholder="😀 or <:name:id>", max_length=64)
             self.role = discord.ui.TextInput(label="Role (@role, id, or exact name)", placeholder="@Member", max_length=128)
             self.booster = discord.ui.TextInput(label="Nitro booster only? (yes/no)", placeholder="no", max_length=8, required=False)
+            self.unique = discord.ui.TextInput(label="Unique? (yes/no)", placeholder="no", max_length=8, required=False)
             self.add_item(self.emoji)
             self.add_item(self.role)
             self.add_item(self.booster)
+            self.add_item(self.unique)
 
         async def on_submit(self, interaction: discord.Interaction):
             assert interaction.guild is not None
@@ -308,16 +345,24 @@ class ReactRoles(commands.Cog):
             booster_raw = (str(self.booster.value or "").strip().lower() if self.booster.value is not None else "")
             booster_only = booster_raw in {"y", "yes", "true", "1"}
 
+            unique_raw = (str(self.unique.value or "").strip().lower() if self.unique.value is not None else "")
+            unique = unique_raw in {"y", "yes", "true", "1"}
+
+            key, reaction, err = self.cog._resolve_emoji(interaction.guild, str(self.emoji.value))
+            if err:
+                return await interaction.response.send_message(err, ephemeral=True)
+
             try:
                 msg = await channel.fetch_message(self.message_id)
-                await msg.add_reaction(str(self.emoji.value))
+                await msg.add_reaction(reaction)
             except Exception:
                 return await interaction.response.send_message("Failed to add reaction (bad emoji or missing perms).", ephemeral=True)
 
-            data[str(self.emoji.value)] = {"role_id": role_obj.id, "booster_only": booster_only}
+            assert key is not None
+            data[key] = {"role_id": role_obj.id, "booster_only": booster_only, "unique": unique}
             await self.cog.config.guild(interaction.guild).posts.set_raw(str(self.message_id), value=data)
             await self.cog._sync_post_embed(interaction.guild, self.message_id)
-            await interaction.response.send_message(f"Added mapping {self.emoji.value} → {role_obj.mention}.", ephemeral=True)
+            await interaction.response.send_message(f"Added mapping {key} → {role_obj.mention}.", ephemeral=True)
 
     class _RemoveMappingModal(discord.ui.Modal):
         def __init__(self, cog: "ReactRoles", message_id: int):
@@ -333,8 +378,11 @@ class ReactRoles(commands.Cog):
             data = posts.get(str(self.message_id))
             if not data:
                 return await interaction.response.send_message("That post isn't tracked anymore.", ephemeral=True)
-            emoji = str(self.emoji.value)
-            if emoji not in data:
+            key, _, err = self.cog._resolve_emoji(interaction.guild, str(self.emoji.value))
+            if err:
+                return await interaction.response.send_message(err, ephemeral=True)
+            emoji = key
+            if not emoji or emoji not in data:
                 return await interaction.response.send_message("That emoji isn't mapped.", ephemeral=True)
 
             del data[emoji]
@@ -619,7 +667,15 @@ class ReactRoles(commands.Cog):
         await ctx.send(f"Created new reaction-role embed in {channel.mention} (ID: `{msg.id}`).")
 
     @rr.command(name="add")
-    async def rr_add(self, ctx, message_id: int, emoji: str, role: discord.Role, booster_only: Optional[bool] = False):
+    async def rr_add(
+        self,
+        ctx,
+        message_id: int,
+        emoji: str,
+        role: discord.Role,
+        booster_only: Optional[bool] = False,
+        unique: Optional[bool] = False,
+    ):
         """Add a reaction-role binding."""
         posts = await self.config.guild(ctx.guild).posts()
         data = posts.get(str(message_id))
@@ -628,16 +684,21 @@ class ReactRoles(commands.Cog):
 
         channel_id = data.get("_meta", {}).get("channel_id")
         channel = ctx.guild.get_channel(channel_id)
+
+        key, reaction, err = self._resolve_emoji(ctx.guild, emoji)
+        if err:
+            return await ctx.send(err)
         try:
             msg = await channel.fetch_message(message_id)
-            await msg.add_reaction(emoji)
+            await msg.add_reaction(reaction)
         except Exception:
             return await ctx.send("Failed to add reaction. Invalid emoji or missing perms?")
 
-        data[str(emoji)] = {"role_id": role.id, "booster_only": booster_only}
+        assert key is not None
+        data[key] = {"role_id": role.id, "booster_only": booster_only, "unique": bool(unique)}
         await self.config.guild(ctx.guild).posts.set_raw(str(message_id), value=data)
         await self._sync_post_embed(ctx.guild, message_id)
-        await ctx.send(f"Added mapping: {emoji} → {role.mention} (Nitro only: `{booster_only}`)")
+        await ctx.send(f"Added mapping: {key} → {role.mention} (Nitro only: `{booster_only}` • Unique: `{bool(unique)}`)")
 
     @rr.command(name="remove")
     async def rr_remove(self, ctx, message_id: int, emoji: str):
@@ -834,6 +895,17 @@ class ReactRoles(commands.Cog):
                 await member.remove_roles(role, reason="Reaction role toggled off")
                 removed = True
             else:
+                # If this mapping is marked unique, remove other unique roles from this post first.
+                if config.get("unique"):
+                    unique_role_ids = {
+                        int(v.get("role_id"))
+                        for k, v in binds.items()
+                        if k != "_meta" and isinstance(v, dict) and v.get("unique") and v.get("role_id")
+                    }
+                    unique_role_ids.discard(role.id)
+                    roles_to_remove = [r for r in member.roles if r.id in unique_role_ids]
+                    if roles_to_remove:
+                        await member.remove_roles(*roles_to_remove, reason="Unique reaction role swap")
                 await member.add_roles(role, reason="Reaction role toggled on")
                 added = True
         except Exception:
