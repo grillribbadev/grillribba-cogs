@@ -475,6 +475,46 @@ class OnePieceWiki(commands.Cog):
       return None
     return page.get("title")
 
+  async def _is_disambiguation_page(self, title: str) -> bool:
+    """Best-effort disambiguation detection using MediaWiki metadata."""
+    assert self.session is not None
+    if not title:
+      return False
+    # Quick lexical check.
+    if "disambiguation" in title.lower():
+      return True
+
+    params = {
+      "action": "query",
+      "titles": title,
+      "prop": "pageprops|categories",
+      "cllimit": 50,
+      "format": "json",
+      "redirects": 1,
+      "utf8": 1,
+    }
+    async with self.session.get(API_BASE, params=params) as resp:
+      data = await resp.json()
+    pages = data.get("query", {}).get("pages", {})
+    if not pages:
+      return False
+    page = next(iter(pages.values()))
+    if page.get("missing"):
+      return False
+
+    props = page.get("pageprops") or {}
+    if isinstance(props, dict) and ("disambiguation" in props or "disambig" in props):
+      return True
+
+    cats = page.get("categories") or []
+    for c in cats:
+      if not isinstance(c, dict):
+        continue
+      name = (c.get("title") or c.get("*") or "").lower()
+      if "disambiguation" in name or "disambiguation pages" in name:
+        return True
+    return False
+
   async def _search(self, guild: Optional[discord.Guild], query: str) -> Tuple[Optional[str], List[str]]:
     assert self.session is not None
     q = (query or "").strip()
@@ -521,19 +561,41 @@ class OnePieceWiki(commands.Cog):
       tlow = title.lower()
       base = hit.get("score", 0) if "score" in hit else 0
       token_bonus = sum(1 for t in tokens if t in tlow) * 10
-      paren_bonus = 5 if any(k in tlow for k in ("(", ")")) else 0
-      return base + token_bonus + paren_bonus
+
+      # Parentheses often indicate disambiguation/episode pages; penalize instead of boost.
+      paren_penalty = -8 if ("(" in tlow or ")" in tlow) else 0
+      disambig_penalty = -50 if "disambiguation" in tlow else 0
+      return base + token_bonus + paren_penalty + disambig_penalty
 
     hits.sort(key=score, reverse=True)
-    top = hits[0]["title"]
-    suggestions = [h["title"] for h in hits[1:6]]
+    ordered_titles = [h.get("title", "") for h in hits if h.get("title")]
+    suggestions = ordered_titles[1:6]
 
-    # If the best match isn't close to the user's query, refuse to guess.
-    if _similarity(q, top) < _min_similarity_threshold(q):
-      return None, [top] + suggestions
+    # Prefer the first non-disambiguation title that is still a close match.
+    threshold = _min_similarity_threshold(q)
+    best_candidate: Optional[str] = None
+    for candidate in ordered_titles[:6]:
+      if not candidate:
+        continue
+      if _similarity(q, candidate) < threshold:
+        continue
+      # Avoid disambiguation pages without hardcoding character names.
+      try:
+        if await self._is_disambiguation_page(candidate):
+          continue
+      except aiohttp.ClientError:
+        # If we can't check, fall back to lexical avoidance only.
+        if "disambiguation" in candidate.lower():
+          continue
+      best_candidate = candidate
+      break
 
-    canonical = await self._title_exists(top)
-    return (canonical or top), suggestions
+    if not best_candidate:
+      # Nothing close enough (or all close matches were disambiguation pages).
+      return None, ordered_titles[:5]
+
+    canonical = await self._title_exists(best_candidate)
+    return (canonical or best_candidate), suggestions
 
   async def _fetch_summary_and_image(self, title: str) -> Tuple[str, Optional[str]]:
     assert self.session is not None
