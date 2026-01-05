@@ -180,6 +180,77 @@ class ReactRoles(commands.Cog):
                     pass
             await interaction.response.send_message("Mapping removed.", ephemeral=True)
 
+    class _PostToChannelModal(discord.ui.Modal):
+        def __init__(self, cog: "ReactRoles", message_id: int):
+            super().__init__(title="Post to channel")
+            self.cog = cog
+            self.message_id = message_id
+            self.channel = discord.ui.TextInput(label="Target channel (#channel or id)", placeholder="#roles", max_length=100)
+            self.title_in = discord.ui.TextInput(label="Title (optional)", placeholder="(leave blank to keep original)", max_length=256, required=False)
+            self.desc_in = discord.ui.TextInput(
+                label="Description (optional)",
+                placeholder="(leave blank to keep original)",
+                style=discord.TextStyle.paragraph,
+                max_length=2000,
+                required=False,
+            )
+            self.add_item(self.channel)
+            self.add_item(self.title_in)
+            self.add_item(self.desc_in)
+
+        async def on_submit(self, interaction: discord.Interaction):
+            assert interaction.guild is not None
+
+            target = self.cog._parse_channel(interaction.guild, str(self.channel.value))
+            if not target:
+                return await interaction.response.send_message("Couldn't find that text channel.", ephemeral=True)
+
+            posts = await self.cog.config.guild(interaction.guild).posts()
+            binds = posts.get(str(self.message_id))
+            if not binds:
+                return await interaction.response.send_message("That post isn't tracked anymore.", ephemeral=True)
+
+            # Pull original embed title/description if possible.
+            orig_title = "React for Roles"
+            orig_desc = "React below to get roles."
+            src_channel_id = binds.get("_meta", {}).get("channel_id")
+            src_channel = interaction.guild.get_channel(src_channel_id) if src_channel_id else None
+            if isinstance(src_channel, discord.TextChannel):
+                try:
+                    src_msg = await src_channel.fetch_message(self.message_id)
+                    if src_msg.embeds:
+                        e = src_msg.embeds[0]
+                        if e.title:
+                            orig_title = e.title
+                        if e.description:
+                            orig_desc = e.description
+                except Exception:
+                    pass
+
+            title = (str(self.title_in.value).strip() if self.title_in.value is not None else "")
+            desc = (str(self.desc_in.value).strip() if self.desc_in.value is not None else "")
+            title = title or orig_title
+            desc = desc or orig_desc
+
+            emb = discord.Embed(title=title[:256], description=desc[:2000], color=EMBED_OK)
+            new_msg = await target.send(embed=emb)
+
+            # Copy mappings (not _meta), track new post.
+            new_data = {k: v for k, v in binds.items() if k != "_meta"}
+            new_data["_meta"] = {"channel_id": target.id}
+            await self.cog.config.guild(interaction.guild).posts.set_raw(str(new_msg.id), value=new_data)
+
+            # Add reactions
+            for emoji in new_data:
+                if emoji == "_meta":
+                    continue
+                try:
+                    await new_msg.add_reaction(emoji)
+                except Exception:
+                    pass
+
+            await interaction.response.send_message(f"Posted to {target.mention}.", ephemeral=True)
+
     class _MenuView(discord.ui.View):
         def __init__(self, cog: "ReactRoles", author_id: int, guild: discord.Guild):
             super().__init__(timeout=300)
@@ -281,6 +352,12 @@ class ReactRoles(commands.Cog):
             self.selected_message_id = None
             await self.refresh_options()
             await interaction.response.edit_message(embed=await self._render_embed(), view=self)
+
+        @discord.ui.button(label="Post to channel", style=discord.ButtonStyle.primary)
+        async def post_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if not self.selected_message_id:
+                return await interaction.response.send_message("Select a post first.", ephemeral=True)
+            await interaction.response.send_modal(ReactRoles._PostToChannelModal(self.cog, self.selected_message_id))
 
         @discord.ui.button(label="Refresh", style=discord.ButtonStyle.secondary)
         async def refresh_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
