@@ -146,6 +146,24 @@ class ReactRoles(commands.Cog):
         if not s:
             return None, None, "Emoji is required."
 
+        # Allow name-style input like :tdk: (and also plain tdk)
+        name_match = None
+        if s.startswith(":") and s.endswith(":") and len(s) >= 3:
+            name_match = s.strip(":")
+        elif s.replace("_", "").isalnum() and len(s) <= 32:
+            # best-effort: plain name (letters/numbers/underscores)
+            name_match = s
+
+        if name_match:
+            matches = [e for e in getattr(guild, "emojis", []) if e and e.name and e.name.lower() == name_match.lower()]
+            if len(matches) == 1:
+                e = matches[0]
+                # Store the canonical string form (<:name:id> or <a:name:id>)
+                return str(e), e, None
+            if len(matches) > 1:
+                opts = ", ".join(str(e) for e in matches[:5])
+                return None, None, f"Multiple emojis named `{name_match}` found. Use one of these: {opts}"
+
         try:
             pe = discord.PartialEmoji.from_str(s)
         except Exception:
