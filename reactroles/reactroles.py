@@ -326,22 +326,22 @@ class ReactRoles(commands.Cog):
         """Reaction role manager."""
         await ctx.send_help()
 
-    @rr.command(name="menu")
+    @rr.hybrid_command(name="menu")
     async def rr_menu(self, ctx: commands.Context):
-        """Open an interactive menu to manage reaction-role posts (slash recommended)."""
-        if ctx.interaction is None:
-            emb = discord.Embed(
-                title="Use the slash menu",
-                description="For the interactive UI, run **/rr menu** (it uses buttons + modals).",
-                color=EMBED_ERR,
-            )
-            return await ctx.send(embed=emb)
+        """Open an interactive menu to manage reaction-role posts."""
+        if not ctx.guild:
+            return await ctx.send("Use this in a server.")
 
-        assert ctx.guild is not None
         view = ReactRoles._MenuView(self, ctx.author.id, ctx.guild)
         await view.refresh_options()
         emb = await view._render_embed()
-        await ctx.interaction.response.send_message(embed=emb, view=view, ephemeral=True)
+
+        # If invoked as a slash command, respond ephemerally.
+        if ctx.interaction is not None:
+            await ctx.interaction.response.send_message(embed=emb, view=view, ephemeral=True)
+        else:
+            # Prefix invocation still works: send a normal message with components.
+            await ctx.send(embed=emb, view=view)
 
     @rr.command(name="create")
     async def rr_create(self, ctx, channel: discord.TextChannel, title: str, *, description: str):
