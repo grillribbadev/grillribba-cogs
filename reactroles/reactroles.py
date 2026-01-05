@@ -207,8 +207,6 @@ class ReactRoles(commands.Cog):
             txt = f"{emoji} → {role.mention}"
             if info.get("booster_only"):
                 txt += " *(Nitro only)*"
-            if info.get("unique"):
-                txt += " *(unique)*"
             lines.append(txt)
         return lines
 
