@@ -603,6 +603,10 @@ class ReactRoles(commands.Cog):
         if not payload.guild_id:
             return
         guild = self.bot.get_guild(payload.guild_id)
+        if not guild:
+            return
+        if payload.user_id == self.bot.user.id:
+            return
         posts = await self.config.guild(guild).posts()
         binds = posts.get(str(payload.message_id))
         if not binds:
@@ -615,31 +619,57 @@ class ReactRoles(commands.Cog):
         role = guild.get_role(config["role_id"])
         if not member or member.bot or not role:
             return
-        if config.get("booster_only") and not member.premium_since:
+
+        # Toggle behavior: react = add if missing else remove.
+        booster_only = bool(config.get("booster_only"))
+        if booster_only and not member.premium_since:
+            # Remove reaction to keep the message clean.
+            try:
+                channel = guild.get_channel(payload.channel_id)
+                if isinstance(channel, discord.TextChannel):
+                    msg = await channel.fetch_message(payload.message_id)
+                    await msg.remove_reaction(payload.emoji, member)
+            except Exception:
+                pass
+            try:
+                await member.send(f"That role is Nitro-booster only: {role.name}")
+            except Exception:
+                pass
             return
+
+        added = False
+        removed = False
         try:
-            await member.add_roles(role, reason="Reaction role added")
-        except:
+            if role in member.roles:
+                await member.remove_roles(role, reason="Reaction role toggled off")
+                removed = True
+            else:
+                await member.add_roles(role, reason="Reaction role toggled on")
+                added = True
+        except Exception:
+            # Still try to remove the reaction even if role change fails.
+            pass
+
+        # Always remove the user's reaction after handling so they can tap again.
+        try:
+            channel = guild.get_channel(payload.channel_id)
+            if isinstance(channel, discord.TextChannel):
+                msg = await channel.fetch_message(payload.message_id)
+                await msg.remove_reaction(payload.emoji, member)
+        except Exception:
+            pass
+
+        # "Only you can see this" isn't possible from raw reaction events.
+        # Best-effort DM confirmation.
+        try:
+            if added:
+                await member.send(f"You got {role.name}.")
+            elif removed:
+                await member.send(f"Removed {role.name}.")
+        except Exception:
             pass
 
     @commands.Cog.listener()
     async def on_raw_reaction_remove(self, payload):
-        if not payload.guild_id:
-            return
-        guild = self.bot.get_guild(payload.guild_id)
-        posts = await self.config.guild(guild).posts()
-        binds = posts.get(str(payload.message_id))
-        if not binds:
-            return
-        emoji = str(payload.emoji)
-        config = binds.get(emoji)
-        if not config:
-            return
-        member = guild.get_member(payload.user_id)
-        role = guild.get_role(config["role_id"])
-        if not member or not role:
-            return
-        try:
-            await member.remove_roles(role, reason="Reaction role removed")
-        except:
-            pass
+        # Disabled: roles now toggle on reaction add and the bot auto-removes reactions.
+        return
