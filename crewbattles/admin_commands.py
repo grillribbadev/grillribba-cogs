@@ -734,6 +734,156 @@ class AdminCommandsMixin:
         b = json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8")
         await ctx.reply(file=discord.File(fp=io.BytesIO(b), filename=fname))
 
+    @cbadmin_fruits.command(name="owners", aliases=["owned", "equipped", "holders"])
+    async def cbadmin_fruits_owners(self, ctx: commands.Context):
+        """Show which users have which devil fruits (grouped by fruit)."""
+
+        # Load all player records and group by equipped fruit
+        try:
+            all_players = await self.players.all(ctx.guild)
+        except Exception:
+            all_players = {}
+
+        fruit_to_uids: dict[str, list[int]] = {}
+        for uid_raw, pdata in (all_players or {}).items():
+            if not isinstance(pdata, dict):
+                continue
+            fruit = pdata.get("fruit")
+            if not fruit:
+                continue
+            fruit_name = str(fruit).strip()
+            if not fruit_name:
+                continue
+            try:
+                uid = int(uid_raw)
+            except Exception:
+                continue
+            fruit_to_uids.setdefault(fruit_name, []).append(uid)
+
+        if not fruit_to_uids:
+            return await ctx.reply("No one has a devil fruit equipped yet.")
+
+        # Sort fruits by owner count (desc) then name.
+        fruits_sorted: list[tuple[str, list[int]]] = sorted(
+            fruit_to_uids.items(),
+            key=lambda kv: (-len(kv[1]), (kv[0] or "").lower()),
+        )
+
+        per = 10
+
+        def pages() -> int:
+            return max(1, (len(fruits_sorted) + per - 1) // per)
+
+        def page_slice(page: int) -> list[tuple[str, list[int]]]:
+            p = max(1, min(int(page), pages()))
+            start = (p - 1) * per
+            return fruits_sorted[start : start + per]
+
+        def _mention(uid: int) -> str:
+            m = ctx.guild.get_member(uid)
+            return m.mention if m else f"<@{uid}>"
+
+        def build_embed(*, page: int, selected_fruit: str | None) -> discord.Embed:
+            p = max(1, min(int(page), pages()))
+            chunk = page_slice(p)
+
+            e = discord.Embed(title="🍈 Devil Fruit Owners", color=discord.Color.gold())
+            e.description = "\n".join(
+                f"**{fruit}** • `{len(uids)}` owner(s)" for fruit, uids in chunk
+            )
+
+            total_owners = sum(len(v) for v in fruit_to_uids.values())
+            e.set_footer(text=f"Page {p}/{pages()} • {len(fruit_to_uids)} fruits • {total_owners} total owners")
+
+            if selected_fruit:
+                uids = fruit_to_uids.get(selected_fruit) or []
+                # sort owners by current display name when possible
+                def sort_key(uid: int) -> str:
+                    m = ctx.guild.get_member(uid)
+                    if m:
+                        return (m.display_name or m.name or str(uid)).lower()
+                    return str(uid)
+
+                uids_sorted = sorted(uids, key=sort_key)
+                shown = uids_sorted[:30]
+                owners_txt = " ".join(_mention(uid) for uid in shown) or "—"
+                if len(uids_sorted) > len(shown):
+                    owners_txt += f"\n…and `{len(uids_sorted) - len(shown)}` more"
+                e.add_field(name=f"Owners of {selected_fruit}", value=owners_txt[:1024], inline=False)
+
+            return e
+
+        class _OwnersView(discord.ui.View):
+            def __init__(self, *, author_id: int):
+                super().__init__(timeout=90)
+                self.author_id = author_id
+                self.page = 1
+                self.selected_fruit: str | None = None
+                self._msg: discord.Message | None = None
+                self._sync_components()
+
+            def _sync_components(self):
+                self.prev_btn.disabled = self.page <= 1
+                self.next_btn.disabled = self.page >= pages()
+
+                # Update select options from current page
+                opts: list[discord.SelectOption] = []
+                for fruit, uids in page_slice(self.page)[:25]:
+                    label = fruit if len(fruit) <= 100 else (fruit[:99] + "…")
+                    desc = f"{len(uids)} owner(s)"
+                    opts.append(discord.SelectOption(label=label, value=fruit, description=desc[:100]))
+                self.fruit_select.options = opts
+
+                if self.selected_fruit and all(o.value != self.selected_fruit for o in opts):
+                    self.selected_fruit = None
+
+            async def interaction_check(self, interaction: discord.Interaction) -> bool:
+                return interaction.user is not None and interaction.user.id == self.author_id
+
+            async def on_timeout(self) -> None:
+                for child in self.children:
+                    if isinstance(child, (discord.ui.Button, discord.ui.Select)):
+                        child.disabled = True
+                if self._msg:
+                    try:
+                        await self._msg.edit(view=self)
+                    except Exception:
+                        pass
+
+            @discord.ui.select(placeholder="Pick a fruit…", options=[])
+            async def fruit_select(self, interaction: discord.Interaction, select: discord.ui.Select):
+                self.selected_fruit = select.values[0] if select.values else None
+                self._sync_components()
+                await interaction.response.edit_message(
+                    embed=build_embed(page=self.page, selected_fruit=self.selected_fruit),
+                    view=self,
+                )
+
+            @discord.ui.button(label="◀ Prev", style=discord.ButtonStyle.secondary)
+            async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+                self.page = max(1, self.page - 1)
+                self.selected_fruit = None
+                self._sync_components()
+                await interaction.response.edit_message(
+                    embed=build_embed(page=self.page, selected_fruit=self.selected_fruit),
+                    view=self,
+                )
+
+            @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.secondary)
+            async def next_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+                self.page = min(pages(), self.page + 1)
+                self.selected_fruit = None
+                self._sync_components()
+                await interaction.response.edit_message(
+                    embed=build_embed(page=self.page, selected_fruit=self.selected_fruit),
+                    view=self,
+                )
+
+        view = _OwnersView(author_id=ctx.author.id)
+        view._sync_components()
+        msg = await ctx.send(embed=build_embed(page=view.page, selected_fruit=view.selected_fruit), view=view)
+        view._msg = msg
+
     @cbadmin_fruits.command(name="pooladd")
     async def cbadmin_fruits_pooladd(
         self,

@@ -1,6 +1,7 @@
 from redbot.core import commands, Config
 from redbot.core.data_manager import cog_data_path
 from asyncio import Lock
+from typing import Optional, Tuple
 import pathlib
 import discord
 import random
@@ -284,6 +285,94 @@ class CrewTournament(commands.Cog):
         
         async with lock:
             await self.save_data(guild)
+
+    def _find_crew_name_by_role_id(self, guild_id: str, role_id: int) -> Optional[str]:
+        crews = self.crews.get(guild_id, {})
+        for crew_name, crew in crews.items():
+            try:
+                if int(crew.get("crew_role") or 0) == int(role_id):
+                    return crew_name
+            except Exception:
+                continue
+        return None
+
+    def _find_member_crew(self, guild_id: str, member_id: int) -> Optional[str]:
+        crews = self.crews.get(guild_id, {})
+        for crew_name, crew in crews.items():
+            try:
+                if int(member_id) in (crew.get("members") or []):
+                    return crew_name
+            except Exception:
+                continue
+        return None
+
+    async def ensure_member_for_crew_role(
+        self,
+        guild: discord.Guild,
+        member: discord.Member,
+        role_id: int,
+        *,
+        reason: str = "Reaction-role crew sync",
+    ) -> Tuple[bool, str, Optional[str]]:
+        """If role_id matches a configured crew member role, ensure the member is in that crew.
+
+        Returns (matched, status, info)
+        - matched: whether this role_id corresponds to any crew member role
+        - status: one of: not_setup, already, joined, blocked_other
+        - info: crew name (or the crew they're already in for blocked_other)
+        """
+        if not guild or not member:
+            return False, "not_setup", None
+
+        finished_setup = await self.config.guild(guild).finished_setup()
+        if not finished_setup:
+            return False, "not_setup", None
+
+        guild_id = str(guild.id)
+        crew_name = self._find_crew_name_by_role_id(guild_id, int(role_id))
+        if not crew_name:
+            return False, "no_match", None
+
+        crews = self.crews.get(guild_id, {})
+        crew = crews.get(crew_name)
+        if not crew:
+            return False, "no_match", None
+
+        # Already in this crew
+        if member.id in (crew.get("members") or []):
+            return True, "already", crew_name
+
+        # Block switching crews
+        existing_crew = self._find_member_crew(guild_id, member.id)
+        if existing_crew and existing_crew != crew_name:
+            return True, "blocked_other", existing_crew
+
+        # Join
+        try:
+            crew.setdefault("members", []).append(member.id)
+        except Exception:
+            return True, "not_setup", crew_name
+
+        crew_role = guild.get_role(int(crew.get("crew_role") or 0))
+        if crew_role and crew_role not in member.roles:
+            try:
+                await member.add_roles(crew_role, reason=reason)
+            except discord.Forbidden:
+                pass
+            except Exception:
+                pass
+
+        # Update nickname with crew emoji (best-effort)
+        try:
+            original_nick = member.display_name
+            emoji = str(crew.get("emoji") or "")
+            if emoji and not original_nick.startswith(emoji):
+                await self.set_nickname_safely(member, emoji, original_nick)
+        except Exception:
+            pass
+
+        await self.save_crews(guild)
+        return True, "joined", crew_name
 
     def truncate_nickname(self, original_name, emoji_prefix):
         """
