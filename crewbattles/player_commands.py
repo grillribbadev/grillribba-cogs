@@ -546,11 +546,14 @@ class PlayerCommandsMixin:
 
     @commands.command(name="cbtrainhaki")
     async def cbtrainhaki(self, ctx: commands.Context, haki_type: str, *rest: str):
+        haki_type = (haki_type or "").lower().strip()
+        if haki_type in {"menu", "ui", "select"}:
+            return await self._cbtrain_menu(ctx)
+
         p = await self.players.get(ctx.author)
         if not p.get("started"):
             return await ctx.reply("You must `.startcb` first.")
 
-        haki_type = (haki_type or "").lower().strip()
         if haki_type in ("conq", "conquerors"):
             haki_type = "conqueror"
         if haki_type not in ("armament", "observation", "conqueror"):
@@ -604,8 +607,227 @@ class PlayerCommandsMixin:
         return await ctx.reply(f"✅ Trained **{haki_type}**: `{cur}` → `{new}` (spent `{total_cost:,}` Beri).")
 
     @commands.command(name="cbtrain")
-    async def cbtrain(self, ctx: commands.Context, haki_type: str, *rest: str):
-        return await self.cbtrainhaki(ctx, haki_type, *rest)
+    async def cbtrain(self, ctx: commands.Context, haki_type: str = None, *rest: str):
+        """Train haki.
+
+        Usage:
+          .cbtrain                 -> interactive menu (pick 1/2/3 trainings)
+          .cbtrain menu            -> interactive menu
+          .cbtrain armament        -> legacy single-train
+          .cbtrain observation
+          .cbtrain conqueror
+        """
+        if not haki_type or not str(haki_type).strip():
+            return await self._cbtrain_menu(ctx)
+        return await self.cbtrainhaki(ctx, str(haki_type), *rest)
+
+    async def _cbtrain_menu(self, ctx: commands.Context):
+        p = await self.players.get(ctx.author)
+        if not p.get("started"):
+            return await ctx.reply("You must `.startcb` first.")
+
+        haki = p.get("haki", {}) or {}
+        g = await self.config.guild(ctx.guild).all()
+
+        base_cost = int(g.get("haki_cost", 500) or 500)
+        cooldown = int(g.get("haki_cooldown", 60 * 60) or 60 * 60)
+        if cooldown < 0:
+            cooldown = 0
+
+        def cost_for(haki_type: str) -> int:
+            type_cost_key = {
+                "armament": "haki_cost_armament",
+                "observation": "haki_cost_observation",
+                "conqueror": "haki_cost_conqueror",
+            }.get(haki_type, "haki_cost")
+            raw_cost = g.get(type_cost_key, None)
+            cost_per = base_cost if raw_cost is None else int(raw_cost or 0)
+            return max(0, int(cost_per))
+
+        def get_ts_map(player: dict) -> dict:
+            ts = player.get("haki_train_ts") or {}
+            return ts if isinstance(ts, dict) else {}
+
+        def can_train(player: dict, haki_type: str, now: int) -> tuple[bool, str]:
+            hk = player.get("haki", {}) or {}
+            if haki_type == "conqueror" and not bool(hk.get("conquerors")):
+                return False, "Locked"
+            key = "conqueror" if haki_type == "conqueror" else haki_type
+            cur = int(hk.get(key, 0) or 0)
+            if cur >= 100:
+                return False, "Maxed"
+
+            ts_map = get_ts_map(player)
+            last = int(ts_map.get(haki_type, 0) or 0)
+            rem = (last + cooldown) - now
+            if rem > 0:
+                return False, f"CD {format_duration(rem)}"
+            return True, "OK"
+
+        def build_embed(*, selected: set[str]) -> discord.Embed:
+            now = self._now()
+            hk = p.get("haki", {}) or {}
+            arm = int(hk.get("armament", 0) or 0)
+            obs = int(hk.get("observation", 0) or 0)
+            conq_unlocked = bool(hk.get("conquerors"))
+            conq_lvl = int(hk.get("conqueror", 0) or 0)
+
+            e = discord.Embed(title="🌊 Train Haki", color=discord.Color.purple())
+            e.description = (
+                "Pick 1–3 types to train (+1 each).\n"
+                "This keeps the same cooldown/cost rules as `.cbtrain armament|...`."
+            )
+
+            lines: list[str] = []
+            for t, label in (
+                ("armament", "🛡️ Armament"),
+                ("observation", "👁️ Observation"),
+                ("conqueror", "👑 Conqueror"),
+            ):
+                ok, status = can_train(p, t, now)
+                cost = cost_for(t)
+                is_sel = t in selected
+                cur = arm if t == "armament" else obs if t == "observation" else conq_lvl
+                lock_note = "" if (t != "conqueror" or conq_unlocked) else " (locked)"
+                mark = "✅" if is_sel else "▫️"
+                state = status if ok else status
+                lines.append(f"{mark} {label}{lock_note}: `{cur}/100` • `{cost:,}` • {state}")
+
+            total = sum(cost_for(t) for t in selected)
+            if total < 0:
+                total = 0
+            e.add_field(name="Options", value="\n".join(lines), inline=False)
+            e.add_field(name="Total cost", value=f"`{total:,}` Beri", inline=False)
+            e.set_footer(text="Use the buttons to select, then Train")
+            return e
+
+        class _HakiTrainView(discord.ui.View):
+            def __init__(self, *, author_id: int):
+                super().__init__(timeout=90)
+                self.author_id = author_id
+                self.selected: set[str] = set()
+                self._msg: discord.Message | None = None
+                self._sync_buttons()
+
+            async def interaction_check(self, interaction: discord.Interaction) -> bool:
+                return interaction.user is not None and interaction.user.id == self.author_id
+
+            def _sync_buttons(self):
+                now = self._outer._now()  # type: ignore
+                # disable options that cannot be trained
+                for t, btn in (
+                    ("armament", self.arm_btn),
+                    ("observation", self.obs_btn),
+                    ("conqueror", self.conq_btn),
+                ):
+                    ok, _ = can_train(p, t, now)
+                    btn.disabled = not ok
+                    btn.style = discord.ButtonStyle.success if t in self.selected else discord.ButtonStyle.secondary
+                self.train_btn.disabled = len(self.selected) == 0
+
+            async def on_timeout(self) -> None:
+                for child in self.children:
+                    if isinstance(child, (discord.ui.Button, discord.ui.Select)):
+                        child.disabled = True
+                if self._msg:
+                    try:
+                        await self._msg.edit(view=self)
+                    except Exception:
+                        pass
+
+            def _toggle(self, t: str):
+                if t in self.selected:
+                    self.selected.remove(t)
+                else:
+                    self.selected.add(t)
+
+            @discord.ui.button(label="Armament", style=discord.ButtonStyle.secondary)
+            async def arm_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+                self._toggle("armament")
+                self._sync_buttons()
+                await interaction.response.edit_message(embed=build_embed(selected=self.selected), view=self)
+
+            @discord.ui.button(label="Observation", style=discord.ButtonStyle.secondary)
+            async def obs_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+                self._toggle("observation")
+                self._sync_buttons()
+                await interaction.response.edit_message(embed=build_embed(selected=self.selected), view=self)
+
+            @discord.ui.button(label="Conqueror", style=discord.ButtonStyle.secondary)
+            async def conq_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+                self._toggle("conqueror")
+                self._sync_buttons()
+                await interaction.response.edit_message(embed=build_embed(selected=self.selected), view=self)
+
+            @discord.ui.button(label="Train", style=discord.ButtonStyle.primary)
+            async def train_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+                if not self.selected:
+                    return await interaction.response.send_message("Pick at least one type.", ephemeral=True)
+
+                now = self._outer._now()  # type: ignore
+
+                # Re-validate eligibility at click time.
+                blocked = []
+                for t in sorted(self.selected):
+                    ok, status = can_train(p, t, now)
+                    if not ok:
+                        blocked.append(f"{t}: {status}")
+                if blocked:
+                    self.selected = {t for t in self.selected if can_train(p, t, now)[0]}
+                    self._sync_buttons()
+                    await interaction.response.edit_message(embed=build_embed(selected=self.selected), view=self)
+                    return await interaction.followup.send(
+                        "Some selections can't be trained right now:\n" + "\n".join(blocked),
+                        ephemeral=True,
+                    )
+
+                total_cost = sum(cost_for(t) for t in self.selected)
+                ok = await self._outer._spend_money(interaction.user, total_cost, reason="crew_battles:train_haki")  # type: ignore
+                if not ok:
+                    bal = await self._outer._get_money(interaction.user)  # type: ignore
+                    return await interaction.response.send_message(
+                        f"Not enough Beri. Cost `{total_cost:,}`, you have `{bal:,}`.",
+                        ephemeral=True,
+                    )
+
+                # Apply training
+                hk = p.get("haki", {}) or {}
+                ts_map = get_ts_map(p)
+
+                results = []
+                for t in sorted(self.selected):
+                    key = "conqueror" if t == "conqueror" else t
+                    cur = int(hk.get(key, 0) or 0)
+                    new = min(100, cur + 1)
+                    hk[key] = new
+                    if t == "conqueror":
+                        hk["conquerors"] = True
+                    ts_map[t] = now
+                    results.append(f"**{t}** `{cur}` → `{new}`")
+
+                p["haki"] = hk
+                p["haki_train_ts"] = ts_map
+                await self._outer.players.save(interaction.user, p)  # type: ignore
+
+                # Disable view after training (cooldowns start now)
+                for child in self.children:
+                    if isinstance(child, (discord.ui.Button, discord.ui.Select)):
+                        child.disabled = True
+                await interaction.response.edit_message(embed=build_embed(selected=set()), view=self)
+                try:
+                    await interaction.followup.send(
+                        "✅ Trained:\n" + "\n".join(results) + f"\nSpent `{total_cost:,}` Beri.",
+                        ephemeral=True,
+                    )
+                except Exception:
+                    pass
+
+        # Bind outer self so inner view can call mixin helpers.
+        _HakiTrainView._outer = self  # type: ignore
+
+        view = _HakiTrainView(author_id=ctx.author.id)
+        msg = await ctx.send(embed=build_embed(selected=set()), view=view)
+        view._msg = msg
 
     @commands.command(name="cbleaderboard", aliases=["cblb", "cbtop"])
     async def cbleaderboard(self, ctx: commands.Context, *args: str):

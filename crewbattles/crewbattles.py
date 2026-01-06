@@ -1305,80 +1305,15 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
 
     @commands.command(name="cbtrainhaki")
     async def cbtrainhaki(self, ctx: commands.Context, haki_type: str, *rest: str):
-        """
-        Train Haki for Beri.
-        Usage: .cbtrainhaki armament|observation|conqueror
-        """
-        p = await self.players.get(ctx.author)
-        if not p.get("started"):
-            return await ctx.reply("You must start Crew Battles first (`.startcb`).")
-
-        haki_type = (haki_type or "").lower().strip()
-        if haki_type in ("conq", "conquerors"):
-            haki_type = "conqueror"
-        if haki_type not in ("armament", "observation", "conqueror"):
-            return await ctx.reply("Type must be: `armament`, `observation`, or `conqueror`.")
-
-        # 1 point per train (extra args ignored for back-compat)
-        points = 1
-
-        haki = p.get("haki", {}) or {}
-
-        # Conqueror requires unlock
-        if haki_type == "conqueror" and not bool(haki.get("conquerors")):
-            return await ctx.reply("👑 Conqueror is locked. Unlock it at level 10 with `.cbunlockconqueror`.")
-
-        # cooldown (per haki type)
-        now = self._now()
-        ts_map = p.get("haki_train_ts") or {}
-        if not isinstance(ts_map, dict):
-            ts_map = {}
-
-        g = await self.config.guild(ctx.guild).all()
-        cooldown = int(g.get("haki_cooldown", HAKI_TRAIN_COOLDOWN) or HAKI_TRAIN_COOLDOWN)
-        last = int(ts_map.get(haki_type, 0) or 0)
-        remaining = (last + cooldown) - now
-        if remaining > 0:
-            return await ctx.reply(f"⏳ You must wait `{format_duration(remaining)}` before training **{haki_type}** again.")
-
-        # cost (per-type, falls back to haki_cost)
-        base_cost = int(g.get("haki_cost", HAKI_TRAIN_COST) or HAKI_TRAIN_COST)
-        type_cost_key = {
-            "armament": "haki_cost_armament",
-            "observation": "haki_cost_observation",
-            "conqueror": "haki_cost_conqueror",
-        }.get(haki_type, "haki_cost")
-        raw_cost = g.get(type_cost_key, None)
-        cost_per = base_cost if raw_cost is None else int(raw_cost or 0)
-        total_cost = max(0, cost_per)
-
-        ok = await self._spend_money(ctx.author, total_cost, reason="crew_battles:train_haki")
-        if not ok:
-            bal = await self._get_money(ctx.author)
-            return await ctx.reply(f"Not enough Beri. Cost `{total_cost:,}`, you have `{bal:,}`.")
-
-        # apply training
-        key = "conqueror" if haki_type == "conqueror" else haki_type
-        cur = int(haki.get(key, 0) or 0)
-        new = min(100, cur + points)
-        haki[key] = new
-
-        # ensure conqueror flag stays consistent
-        if haki_type == "conqueror":
-            haki["conquerors"] = True
-
-        p["haki"] = haki
-        ts_map[haki_type] = now
-        p["haki_train_ts"] = ts_map
-        await self.players.save(ctx.author, p)
-
-        await ctx.reply(
-            f"✅ Trained **{haki_type}**: `{cur}` → `{new}` (spent `{total_cost:,}` Beri)."
-        )
+        # Delegate to the shared implementation in PlayerCommandsMixin.
+        # This enforces +1 per selected type per train, and supports training all
+        # three types in one action via the interactive menu when Conqueror is unlocked.
+        return await PlayerCommandsMixin.cbtrainhaki(self, ctx, haki_type, *rest)
 
     @commands.command(name="cbtrain")
-    async def cbtrain(self, ctx, haki_type: str, *rest: str):
-        return await self.cbtrainhaki(ctx, haki_type, *rest)
+    async def cbtrain(self, ctx, haki_type: str = None, *rest: str):
+        # No args -> interactive menu (can train arm/obs/conq together, +1 each)
+        return await PlayerCommandsMixin.cbtrain(self, ctx, haki_type, *rest)
 
     async def _run_battle(self, ctx: commands.Context, opponent: discord.Member):
         """Start a Crew Battle with animated embed + results screen."""
