@@ -58,6 +58,7 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
             exp_loss_min=0,
             exp_loss_max=0,
             price_rules=DEFAULT_PRICE_RULES,
+            beri_log_channel=None,  # Channel ID for beri logs
         )
         # ...existing code...
 
@@ -361,21 +362,53 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
             return True
 
         core = self._beri()
+        success = False
         if core:
             try:
                 await core.add_beri(member, amount, reason=reason or "crew_battles:add", bypass_cap=True)
-                return True
+                success = True
             except Exception:
                 pass
 
+        if not success:
+            try:
+                if amount > 0:
+                    await bank.deposit_credits(member, amount)
+                    success = True
+                else:
+                    await bank.withdraw_credits(member, abs(amount))
+                    success = True
+            except Exception:
+                return False
+
+        # Emit beri log to configured channel
         try:
-            if amount > 0:
-                await bank.deposit_credits(member, amount)
-                return True
-            await bank.withdraw_credits(member, abs(amount))
-            return True
+            if hasattr(member, "guild") and member.guild:
+                guild = member.guild
+            elif hasattr(member, "guild_id"):
+                guild = self.bot.get_guild(member.guild_id)
+            else:
+                guild = None
+            if guild:
+                chan_id = await self.config.guild(guild).beri_log_channel()
+                if chan_id:
+                    channel = guild.get_channel(chan_id)
+                    if channel:
+                        user = member
+                        embed = discord.Embed(
+                            title=("Beri Gained" if amount > 0 else "Beri Spent"),
+                            color=discord.Color.green() if amount > 0 else discord.Color.red(),
+                            timestamp=datetime.now(timezone.utc),
+                        )
+                        embed.add_field(name="User", value=f"{user.mention}\n`{user}`\n(ID: `{user.id}`)", inline=False)
+                        embed.add_field(name="Amount", value=f"{'+' if amount > 0 else '-'}{abs(amount):,} beri", inline=True)
+                        embed.add_field(name="Reason", value=reason or "-", inline=True)
+                        embed.set_footer(text=f"User: {user}")
+                        await channel.send(embed=embed)
         except Exception:
-            return False
+            pass
+
+        return success
 
     async def _spend_money(self, member: discord.abc.User, amount: int, *, reason: str = "") -> bool:
         amount = int(amount or 0)

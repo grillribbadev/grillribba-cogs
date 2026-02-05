@@ -14,6 +14,111 @@ from .utils import exp_to_next
 
 
 class AdminCommandsMixin:
+            @cbadmin.command(name="setberilogchannel", aliases=["setberilog", "setberichan"])
+            async def cbadmin_setberilogchannel(self, ctx: commands.Context, channel: discord.TextChannel = None):
+                """Set the channel where beri gain/spend logs will be sent. Use no argument to clear."""
+                if channel is None:
+                    await self.config.guild(ctx.guild).beri_log_channel.clear()
+                    await ctx.send("✅ Beri log channel cleared.")
+                    return
+                await self.config.guild(ctx.guild).beri_log_channel.set(channel.id)
+                await ctx.send(f"✅ Beri log channel set to {channel.mention}")
+        @cbadmin.command(name="berilogs", aliases=["berilog", "berihistory"])
+        async def cbadmin_berilogs(self, ctx: commands.Context, user: discord.User):
+            """Retrieve and display beri transaction logs for a user, categorized by spent/gained."""
+            import discord
+            beri_cog = ctx.bot.get_cog("BeriCore")
+            if not beri_cog:
+                await ctx.send("❌ BeriCore cog not found. Make sure it's loaded.")
+                return
+
+            # Try to get transaction logs from BeriCore
+            try:
+                # Attempt to retrieve logs from BeriCore's config
+                if hasattr(beri_cog, "config"):
+                    user_logs = await beri_cog.config.user(user).ledger()
+                else:
+                    await ctx.send("❌ Could not access BeriCore logs.")
+                    return
+
+                if not user_logs:
+                    await ctx.send(f"📊 No beri transaction logs found for {user.mention}.")
+                    return
+
+                # Categorize logs
+                gained = []
+                spent = []
+
+                for log_entry in user_logs:
+                    if isinstance(log_entry, dict):
+                        amount = log_entry.get("amount", 0)
+                        reason = log_entry.get("reason", "Unknown")
+                        timestamp = log_entry.get("timestamp", "Unknown")
+                    else:
+                        continue
+
+                    if amount > 0:
+                        gained.append((amount, reason, timestamp))
+                    elif amount < 0:
+                        spent.append((abs(amount), reason, timestamp))
+
+                # Build embed
+                embed = discord.Embed(
+                    title=f"💰 Beri Logs for {user.display_name}",
+                    color=discord.Color.gold(),
+                )
+
+                # Gained section
+                if gained:
+                    gained_text = "\n".join(
+                        f"• **+{amt:,}** beri - {reason}"
+                        for amt, reason, _ in gained[:10]  # Show last 10
+                    )
+                    embed.add_field(
+                        name=f"📈 Gained ({len(gained)} total)",
+                        value=gained_text or "No entries",
+                        inline=False,
+                    )
+                    total_gained = sum(amt for amt, _, _ in gained)
+                    embed.add_field(
+                        name="Total Gained",
+                        value=f"**{total_gained:,}** beri",
+                        inline=True,
+                    )
+
+                # Spent section
+                if spent:
+                    spent_text = "\n".join(
+                        f"• **-{amt:,}** beri - {reason}"
+                        for amt, reason, _ in spent[:10]  # Show last 10
+                    )
+                    embed.add_field(
+                        name=f"📉 Spent ({len(spent)} total)",
+                        value=spent_text or "No entries",
+                        inline=False,
+                    )
+                    total_spent = sum(amt for amt, _, _ in spent)
+                    embed.add_field(
+                        name="Total Spent",
+                        value=f"**{total_spent:,}** beri",
+                        inline=True,
+                    )
+
+                # Net balance
+                net = sum(amt for amt, _, _ in gained) - sum(amt for amt, _, _ in spent)
+                embed.add_field(
+                    name="Net Change",
+                    value=f"**{net:+,}** beri",
+                    inline=False,
+                )
+
+                await ctx.send(embed=embed)
+
+            except Exception as e:
+                await ctx.send(
+                    f"❌ Error retrieving logs: {str(e)}\n"
+                    f"(BeriCore may not store transaction history in the expected format)"
+                )
     # -----------------------------
     # Backups (users)
     # -----------------------------
@@ -261,6 +366,7 @@ class AdminCommandsMixin:
     # =========================================================
     # Admin commands
     # =========================================================
+
     @commands.group(name="cbadmin", invoke_without_command=True)
     @commands.admin_or_permissions(administrator=True)
     async def cbadmin(self, ctx: commands.Context):
