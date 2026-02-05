@@ -292,6 +292,26 @@ class AdminCommandsMixin:
         await self.config.guild(ctx.guild).beri_log_channel.set(channel.id)
         await ctx.send(f"✅ Beri log channel set to {channel.mention}")
 
+    @cbadmin.command(name="setberiwinchannel", aliases=["setberiwins", "setberiwinch"])
+    async def cbadmin_setberiwinchannel(self, ctx: commands.Context, channel: discord.TextChannel = None):
+        """Set the channel where beri win logs will be sent. Use no argument to clear."""
+        if channel is None:
+            await self.config.guild(ctx.guild).beri_win_channel.clear()
+            await ctx.send("✅ Beri win channel cleared.")
+            return
+        await self.config.guild(ctx.guild).beri_win_channel.set(channel.id)
+        await ctx.send(f"✅ Beri win channel set to {channel.mention}")
+
+    @cbadmin.command(name="setberiloschannel", aliases=["setberiloss", "setberilosss"])
+    async def cbadmin_setberilosschannel(self, ctx: commands.Context, channel: discord.TextChannel = None):
+        """Set the channel where beri loss logs will be sent. Use no argument to clear."""
+        if channel is None:
+            await self.config.guild(ctx.guild).beri_loss_channel.clear()
+            await ctx.send("✅ Beri loss channel cleared.")
+            return
+        await self.config.guild(ctx.guild).beri_loss_channel.set(channel.id)
+        await ctx.send(f"✅ Beri loss channel set to {channel.mention}")
+
     @cbadmin.command(name="berilogs", aliases=["berilog", "berihistory"])
     async def cbadmin_berilogs(self, ctx: commands.Context, user: discord.User):
         """Retrieve and display beri transaction logs for a user, categorized by spent/gained."""
@@ -301,35 +321,67 @@ class AdminCommandsMixin:
             await ctx.send("❌ BeriCore cog not found. Make sure it's loaded.")
             return
 
-        # Try to get transaction logs from BeriCore
+        # Try to get transaction logs from BeriCore; if unavailable, fall back to local logs
+        user_logs = None
         try:
-            # Attempt to retrieve logs from BeriCore's config
             if hasattr(beri_cog, "config"):
-                user_logs = await beri_cog.config.user(user).ledger()
-            else:
-                await ctx.send("❌ Could not access BeriCore logs.")
-                return
+                try:
+                    user_logs = await beri_cog.config.user(user).ledger()
+                except Exception:
+                    user_logs = None
+        except Exception:
+            user_logs = None
 
-            if not user_logs:
-                await ctx.send(f"📊 No beri transaction logs found for {user.mention}.")
-                return
+        if not user_logs:
+            # try local persisted logs stored in this cog (member-scoped)
+            try:
+                gid = getattr(ctx.guild, "id", None)
+                uid = getattr(user, "id", None)
+                if gid and uid:
+                    mconf = self.config.member_from_ids(gid, uid)
+                    try:
+                        local_logs = await mconf.beri_logs()
+                    except Exception:
+                        allm = await mconf.all()
+                        local_logs = allm.get("beri_logs") if isinstance(allm, dict) else None
+                    user_logs = local_logs or []
+            except Exception:
+                user_logs = []
 
-            # Categorize logs
+        if not user_logs:
+            return await ctx.send(f"📊 No beri transaction logs found for {user.mention}.")
+
+        try:
+            # Categorize logs (support both BeriCore format and our local entries)
             gained = []
             spent = []
 
             for log_entry in user_logs:
+                amount = 0
+                reason = "Unknown"
+                timestamp = ""
+                channel = None
+
                 if isinstance(log_entry, dict):
-                    amount = log_entry.get("amount", 0)
-                    reason = log_entry.get("reason", "Unknown")
-                    timestamp = log_entry.get("timestamp", "Unknown")
+                    # local entries use keys: amount, reason, ts or timestamp, channel
+                    amount = int(log_entry.get("amount", 0) or 0)
+                    reason = str(log_entry.get("reason") or log_entry.get("note") or "Unknown")
+                    timestamp = log_entry.get("ts") or log_entry.get("timestamp") or log_entry.get("date") or ""
+                    channel = log_entry.get("channel")
                 else:
-                    continue
+                    # try common tuple/list formats
+                    try:
+                        if isinstance(log_entry, (list, tuple)) and len(log_entry) >= 1:
+                            amount = int(log_entry[0] or 0)
+                            reason = str(log_entry[1]) if len(log_entry) > 1 else ""
+                            timestamp = log_entry[2] if len(log_entry) > 2 else ""
+                    except Exception:
+                        continue
 
                 if amount > 0:
-                    gained.append((amount, reason, timestamp))
+                    gained.append((amount, reason, timestamp, channel))
                 elif amount < 0:
-                    spent.append((abs(amount), reason, timestamp))
+                    spent.append((abs(amount), reason, timestamp, channel))
 
             # Build embed
             embed = discord.Embed(
@@ -337,52 +389,42 @@ class AdminCommandsMixin:
                 color=discord.Color.gold(),
             )
 
+            def fmt_entry(amt, reason, ts, ch):
+                extra = f" — {reason}" if reason else ""
+                chpart = f" (<#{ch}>)" if ch else ""
+                return f"• **{amt:+,}** beri{extra}{chpart}"
+
             # Gained section
             if gained:
                 gained_text = "\n".join(
-                    f"• **+{amt:,}** beri - {reason}"
-                    for amt, reason, _ in gained[:10]  # Show last 10
+                    fmt_entry(a, r, t, c).replace('+', '+') for a, r, t, c in gained[-10:]
                 )
                 embed.add_field(
                     name=f"📈 Gained ({len(gained)} total)",
                     value=gained_text or "No entries",
                     inline=False,
                 )
-                total_gained = sum(amt for amt, _, _ in gained)
-                embed.add_field(
-                    name="Total Gained",
-                    value=f"**{total_gained:,}** beri",
-                    inline=True,
-                )
+                total_gained = sum(a for a, _, _, _ in gained)
+                embed.add_field(name="Total Gained", value=f"**{total_gained:,}** beri", inline=True)
 
             # Spent section
             if spent:
                 spent_text = "\n".join(
-                    f"• **-{amt:,}** beri - {reason}"
-                    for amt, reason, _ in spent[:10]  # Show last 10
+                    fmt_entry(-a, r, t, c) for a, r, t, c in spent[-10:]
                 )
                 embed.add_field(
                     name=f"📉 Spent ({len(spent)} total)",
                     value=spent_text or "No entries",
                     inline=False,
                 )
-                total_spent = sum(amt for amt, _, _ in spent)
-                embed.add_field(
-                    name="Total Spent",
-                    value=f"**{total_spent:,}** beri",
-                    inline=True,
-                )
+                total_spent = sum(a for a, _, _, _ in spent)
+                embed.add_field(name="Total Spent", value=f"**{total_spent:,}** beri", inline=True)
 
             # Net balance
-            net = sum(amt for amt, _, _ in gained) - sum(amt for amt, _, _ in spent)
-            embed.add_field(
-                name="Net Change",
-                value=f"**{net:+,}** beri",
-                inline=False,
-            )
+            net = sum(a for a, _, _, _ in gained) - sum(a for a, _, _, _ in spent)
+            embed.add_field(name="Net Change", value=f"**{net:+,}** beri", inline=False)
 
             await ctx.send(embed=embed)
-
         except Exception as e:
             await ctx.send(
                 f"❌ Error retrieving logs: {str(e)}\n"

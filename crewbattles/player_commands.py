@@ -193,7 +193,7 @@ class PlayerCommandsMixin:
             e.set_footer(text=f"Page {page}/{pages} • Select a type, pick a fruit, then press Buy")
             return e
 
-        async def do_buy(*, buyer: discord.Member, fruit_name: str) -> tuple[bool, str]:
+        async def do_buy(*, buyer: discord.Member, fruit_name: str, channel_id: int = None) -> tuple[bool, str]:
             p = await self.players.get(buyer)
             if not p.get("started"):
                 return False, "You must `.startcb` first."
@@ -209,7 +209,7 @@ class PlayerCommandsMixin:
                 return False, "That fruit is out of stock."
 
             price = int(fruit.get("price", 0) or 0)
-            ok = await self._spend_money(buyer, price, reason="crew_battles:buy_fruit")
+            ok = await self._spend_money(buyer, price, reason="crew_battles:buy_fruit", source_channel=channel_id)
             if not ok:
                 bal = await self._get_money(buyer)
                 return False, f"Not enough Beri. Cost `{price:,}`, you have `{bal:,}`."
@@ -311,7 +311,7 @@ class PlayerCommandsMixin:
             async def buy_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
                 if not self.selected_name:
                     return await interaction.response.send_message("Pick a fruit first.", ephemeral=True)
-                ok, msg_text = await do_buy(buyer=interaction.user, fruit_name=self.selected_name)
+                ok, msg_text = await do_buy(buyer=interaction.user, fruit_name=self.selected_name, channel_id=getattr(interaction, 'channel_id', None))
                 # Refresh list (stock may change)
                 self._sync_components()
                 try:
@@ -372,7 +372,7 @@ class PlayerCommandsMixin:
             return await ctx.reply("That fruit is out of stock.")
 
         price = int(fruit.get("price", 0) or 0)
-        ok = await self._spend_money(ctx.author, price, reason="crew_battles:buy_fruit")
+        ok = await self._spend_money(ctx.author, price, reason="crew_battles:buy_fruit", source_channel=getattr(ctx.channel, 'id', None))
         if not ok:
             bal = await self._get_money(ctx.author)
             return await ctx.reply(f"Not enough Beri. Cost `{price:,}`, you have `{bal:,}`.")
@@ -397,7 +397,7 @@ class PlayerCommandsMixin:
         g = await self.config.guild(ctx.guild).all()
         cost = int(g.get("remove_fruit_cost", 0) or 0)
         if cost > 0:
-            ok = await self._spend_money(ctx.author, cost, reason="crew_battles:remove_fruit")
+            ok = await self._spend_money(ctx.author, cost, reason="crew_battles:remove_fruit", source_channel=getattr(ctx.channel, 'id', None))
             if not ok:
                 bal = await self._get_money(ctx.author)
                 return await ctx.reply(f"Not enough Beri. Cost `{cost:,}`, you have `{bal:,}`.")
@@ -520,7 +520,7 @@ class PlayerCommandsMixin:
             cost = 0
 
         if cost > 0:
-            ok = await self._spend_money(ctx.author, cost, reason="crew_battles:unlock_conqueror")
+            ok = await self._spend_money(ctx.author, cost, reason="crew_battles:unlock_conqueror", source_channel=getattr(ctx.channel, 'id', None))
             if not ok:
                 bal = await self._get_money(ctx.author)
                 return await ctx.reply(f"Not enough Beri. Cost `{cost:,}`, you have `{bal:,}`.")
@@ -588,7 +588,7 @@ class PlayerCommandsMixin:
         raw_cost = g.get(type_cost_key, None)
         cost_per = base_cost if raw_cost is None else int(raw_cost or 0)
         total_cost = max(0, cost_per)
-        ok = await self._spend_money(ctx.author, total_cost, reason="crew_battles:train_haki")
+        ok = await self._spend_money(ctx.author, total_cost, reason="crew_battles:train_haki", source_channel=getattr(ctx.channel, 'id', None))
         if not ok:
             bal = await self._get_money(ctx.author)
             return await ctx.reply(f"Not enough Beri. Cost `{total_cost:,}`, you have `{bal:,}`.")
@@ -782,7 +782,7 @@ class PlayerCommandsMixin:
                     )
 
                 total_cost = sum(cost_for(t) for t in self.selected)
-                ok = await self._outer._spend_money(interaction.user, total_cost, reason="crew_battles:train_haki")  # type: ignore
+                ok = await self._outer._spend_money(interaction.user, total_cost, reason="crew_battles:train_haki", source_channel=getattr(interaction, 'channel_id', None))  # type: ignore
                 if not ok:
                     bal = await self._outer._get_money(interaction.user)  # type: ignore
                     return await interaction.response.send_message(

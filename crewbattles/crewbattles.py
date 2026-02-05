@@ -58,7 +58,9 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
             exp_loss_min=0,
             exp_loss_max=0,
             price_rules=DEFAULT_PRICE_RULES,
-            beri_log_channel=None,  # Channel ID for beri logs
+            beri_log_channel=None,  # Channel ID for general beri logs
+            beri_win_channel=None,  # Channel ID for win beri logs
+            beri_loss_channel=None,  # Channel ID for loss beri logs
         )
         # ...existing code...
 
@@ -356,7 +358,7 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
         except Exception:
             return 0
 
-    async def _add_money(self, member: discord.abc.User, amount: int, *, reason: str = "") -> bool:
+    async def _add_money(self, member: discord.abc.User, amount: int, *, reason: str = "", source_channel: int = None) -> bool:
         amount = int(amount or 0)
         if amount == 0:
             return True
@@ -381,7 +383,7 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
             except Exception:
                 return False
 
-        # Emit beri log to configured channel
+        # Emit beri log to configured channel and persist a local log copy
         try:
             if hasattr(member, "guild") and member.guild:
                 guild = member.guild
@@ -390,11 +392,36 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
             else:
                 guild = None
             if guild:
-                chan_id = await self.config.guild(guild).beri_log_channel()
+                # build log entry
+                user = member
+                entry = {
+                    "ts": int(datetime.now(timezone.utc).timestamp()),
+                    "amount": int(amount),
+                    "reason": reason or "",
+                    "channel": int(source_channel) if source_channel is not None else None,
+                }
+
+                # choose which configured channel to send the log to
+                # prefer specific win/loss channels when reason indicates a battle result
+                chan_id = None
+                try:
+                    if isinstance(reason, str) and ":win" in reason:
+                        chan_id = await self.config.guild(guild).beri_win_channel()
+                    elif isinstance(reason, str) and ":loss" in reason:
+                        chan_id = await self.config.guild(guild).beri_loss_channel()
+                except Exception:
+                    chan_id = None
+
+                # fallback to general beri log channel
+                if not chan_id:
+                    try:
+                        chan_id = await self.config.guild(guild).beri_log_channel()
+                    except Exception:
+                        chan_id = None
+
                 if chan_id:
                     channel = guild.get_channel(chan_id)
                     if channel:
-                        user = member
                         embed = discord.Embed(
                             title=("Beri Gained" if amount > 0 else "Beri Spent"),
                             color=discord.Color.green() if amount > 0 else discord.Color.red(),
@@ -402,26 +429,56 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
                         )
                         embed.add_field(name="User", value=f"{user.mention}\n`{user}`\n(ID: `{user.id}`)", inline=False)
                         embed.add_field(name="Amount", value=f"{'+' if amount > 0 else '-'}{abs(amount):,} beri", inline=True)
-                        embed.add_field(name="Reason", value=reason or "-", inline=True)
+                        ch_str = f"<#{entry['channel']}>" if entry.get("channel") else "-"
+                        embed.add_field(name="Channel", value=ch_str, inline=True)
+                        embed.add_field(name="Reason", value=reason or "-", inline=False)
                         embed.set_footer(text=f"User: {user}")
-                        await channel.send(embed=embed)
-        except Exception:
-            pass
+                        try:
+                            await channel.send(embed=embed)
+                        except Exception:
+                            pass
+
+                # persist to member-scoped logs (cap to 200 entries)
+                try:
+                    gid = getattr(guild, "id", None)
+                    uid = getattr(user, "id", None)
+                    if gid and uid:
+                        mconf = self.config.member_from_ids(gid, uid)
+                        try:
+                            existing = await mconf.beri_logs()
+                        except Exception:
+                            allm = await mconf.all()
+                            existing = allm.get("beri_logs") if isinstance(allm, dict) else None
+                        if not isinstance(existing, list):
+                            existing = []
+                        existing.append(entry)
+                        # cap
+                        if len(existing) > 200:
+                            existing = existing[-200:]
+                        try:
+                            await mconf.set_raw("beri_logs", value=existing)
+                        except Exception:
+                            try:
+                                await mconf.beri_logs.set(existing)
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
 
         return success
 
-    async def _spend_money(self, member: discord.abc.User, amount: int, *, reason: str = "") -> bool:
+    async def _spend_money(self, member: discord.abc.User, amount: int, *, reason: str = "", source_channel: int = None) -> bool:
         amount = int(amount or 0)
         if amount <= 0:
             return True
         bal = await self._get_money(member)
         if bal < amount:
             return False
-        return await self._add_money(member, -amount, reason=reason or "crew_battles:spend")
+        return await self._add_money(member, -amount, reason=reason or "crew_battles:spend", source_channel=source_channel)
 
-    async def _add_beri(self, member: discord.abc.User, amount: int, *, reason: str = "") -> bool:
+    async def _add_beri(self, member: discord.abc.User, amount: int, *, reason: str = "", source_channel: int = None) -> bool:
         # backwards-compatible alias used elsewhere in this file
-        return await self._add_money(member, amount, reason=reason)
+        return await self._add_money(member, amount, reason=reason, source_channel=source_channel)
 
     async def _team_of(self, guild: discord.Guild, member: discord.Member):
         try:
@@ -1090,7 +1147,7 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
             return await ctx.send("That fruit is out of stock.")
 
         price = int(fruit.get("price", 0) or 0)
-        ok = await self._spend_money(ctx.author, price, reason="crew_battles:buy_fruit")
+        ok = await self._spend_money(ctx.author, price, reason="crew_battles:buy_fruit", source_channel=getattr(ctx.channel, 'id', None))
         if not ok:
             bal = await self._get_money(ctx.author)
             return await ctx.send(f"Not enough Beri. Price {price:,}, you have {bal:,}.")
@@ -1118,7 +1175,7 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
         g = await self.config.guild(ctx.guild).all()
         cost = int(g.get("remove_fruit_cost", 0) or 0)
         if cost > 0:
-            ok = await self._spend_money(ctx.author, cost, reason="crew_battles:remove_fruit")
+            ok = await self._spend_money(ctx.author, cost, reason="crew_battles:remove_fruit", source_channel=getattr(ctx.channel, 'id', None))
             if not ok:
                 bal = await self._get_money(ctx.author)
                 return await ctx.send(f"Not enough Beri to remove fruit. Cost {cost:,}, you have {bal:,}.")
@@ -1305,7 +1362,7 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
             return await ctx.reply("👑 You already unlocked Conqueror's Haki.")
 
         if cost > 0:
-            ok = await self._spend_money(ctx.author, cost, reason="crew_battles:unlock_conqueror")
+            ok = await self._spend_money(ctx.author, cost, reason="crew_battles:unlock_conqueror", source_channel=getattr(ctx.channel, 'id', None))
             if not ok:
                 bal = await self._get_money(ctx.author)
                 e = discord.Embed(
@@ -1511,9 +1568,9 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
             beri_win = int(g.get("beri_win", 0) or 0)
             beri_loss = int(g.get("beri_loss", 0) or 0)
             if beri_win:
-                await self._add_beri(winner_user, beri_win, reason="crew_battle:win")
+                await self._add_beri(winner_user, beri_win, reason="crew_battle:win", source_channel=getattr(ctx.channel, 'id', None))
             if beri_loss:
-                await self._add_beri(loser_user, beri_loss, reason="crew_battle:loss")
+                await self._add_beri(loser_user, beri_loss, reason="crew_battle:loss", source_channel=getattr(ctx.channel, 'id', None))
 
             raw_crew_points = g.get("crew_points_win", 1)
             crew_points = int(raw_crew_points) if raw_crew_points is not None else 1
