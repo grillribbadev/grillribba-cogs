@@ -11,64 +11,9 @@ import json
 import os
 
 # --- Helper Classes for UI Elements ---
-"""class CrewButton(discord.ui.Button):
-    def __init__(self, crew_name, crew_emoji, cog):
-        super().__init__(label=f"Join {crew_name}", style=discord.ButtonStyle.primary, custom_id=f"crew_join_{crew_name}")
-        self.crew_name = crew_name
-        self.crew_emoji = crew_emoji
-        self.cog = cog
-
-    async def callback(self, interaction: discord.Interaction):
-        member = interaction.user
-        guild_id = str(interaction.guild_id)
-        crew = self.cog.crews.get(guild_id, {}).get(self.crew_name)
-        
-        if not crew:
-            await interaction.response.send_message("❌ This crew no longer exists.", ephemeral=True)
-            return
-    
-        if member.id in crew["members"]:
-            await interaction.response.send_message("❌ You are already in this crew.", ephemeral=True)
-            return
-    
-        # Check if already in another crew
-        for other_name, other_crew in self.cog.crews.get(guild_id, {}).items():
-            if member.id in other_crew["members"]:
-                await interaction.response.send_message("❌ You cannot switch crews once you join one.", ephemeral=True)
-                return
-    
-        # Add to crew
-        crew["members"].append(member.id)
-        
-        # Assign crew role
-        crew_role = interaction.guild.get_role(crew["crew_role"])
-        if crew_role:
-            try:
-                await member.add_roles(crew_role)
-            except discord.Forbidden:
-                await interaction.response.send_message(f"✅ You have joined the crew `{self.crew_name}`! Note: I couldn't assign you the crew role due to permission issues.", ephemeral=True)
-                await self.cog.save_crews(interaction.guild)
-                return """
-        
-        # Update nickname with truncation
-        """try:
-            original_nick = member.display_name
-            # Make sure we don't add the emoji twice
-            if not original_nick.startswith(self.crew_emoji):
-                truncated_name = self.cog.truncate_nickname(original_nick, self.crew_emoji)
-                await member.edit(nick=f"{self.crew_emoji} {truncated_name}")
-        except discord.Forbidden:
-            await interaction.response.send_message(f"✅ You have joined the crew `{self.crew_name}`! Note: I couldn't update your nickname due to permission issues.", ephemeral=True)
-            await self.cog.save_crews(interaction.guild)
-            return
-            
-        await self.cog.save_crews(interaction.guild)
-        await interaction.response.send_message(f"✅ You have joined the crew `{self.crew_name}`!", ephemeral=True)
-
-"""""""class CrewView(discord.ui.View):
-    def __init__(self, crew_name, crew_emoji, cog):
-        super().__init__(timeout=None)
-        self.add_item(CrewButton(crew_name, crew_emoji, cog))"""
+# Helper UI element classes (CrewButton, CrewView) removed —
+# original inline examples/commented code caused parsing/indentation issues.
+# If you want these UI helpers restored, I can re-add clean implementations.
 
 
 class JoinTournamentButton(discord.ui.Button):

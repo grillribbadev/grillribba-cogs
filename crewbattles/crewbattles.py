@@ -370,7 +370,7 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
                 await core.add_beri(member, amount, reason=reason or "crew_battles:add", bypass_cap=True)
                 success = True
             except Exception:
-                pass
+                success = False
 
         if not success:
             try:
@@ -383,7 +383,7 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
             except Exception:
                 return False
 
-        # Emit beri log to configured channel and persist a local log copy
+        # Emit beri log and persist local copy
         try:
             if hasattr(member, "guild") and member.guild:
                 guild = member.guild
@@ -391,8 +391,8 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
                 guild = self.bot.get_guild(member.guild_id)
             else:
                 guild = None
+
             if guild:
-                # build log entry
                 user = member
                 entry = {
                     "ts": int(datetime.now(timezone.utc).timestamp()),
@@ -401,19 +401,19 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
                     "channel": int(source_channel) if source_channel is not None else None,
                 }
 
-                # choose which configured channel to send the log to
-                # prefer specific win/loss channels when reason indicates a battle result
+                # pick channel: win/loss-specific or general
                 chan_id = None
                 try:
                     if isinstance(reason, str) and ":win" in reason:
                         chan_id = await self.config.guild(guild).beri_win_channel()
-                    elif isinstance(reason, str) and ":loss" in reason:
-                        chan_id = await self.config.guild(guild).beri_loss_channel()
                 except Exception:
                     chan_id = None
-
-                # fallback to general beri log channel
-                if not chan_id:
+                try:
+                    if chan_id is None and isinstance(reason, str) and ":loss" in reason:
+                        chan_id = await self.config.guild(guild).beri_loss_channel()
+                except Exception:
+                    chan_id = chan_id
+                if chan_id is None:
                     try:
                         chan_id = await self.config.guild(guild).beri_log_channel()
                     except Exception:
@@ -429,7 +429,7 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
                         )
                         embed.add_field(name="User", value=f"{user.mention}\n`{user}`\n(ID: `{user.id}`)", inline=False)
                         embed.add_field(name="Amount", value=f"{'+' if amount > 0 else '-'}{abs(amount):,} beri", inline=True)
-                        ch_str = f"<#{entry['channel']}>" if entry.get("channel") else "-"
+                        ch_str = f"<#{entry['channel']}" + ">" if entry.get("channel") else "-"
                         embed.add_field(name="Channel", value=ch_str, inline=True)
                         embed.add_field(name="Reason", value=reason or "-", inline=False)
                         embed.set_footer(text=f"User: {user}")
@@ -452,7 +452,6 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
                         if not isinstance(existing, list):
                             existing = []
                         existing.append(entry)
-                        # cap
                         if len(existing) > 200:
                             existing = existing[-200:]
                         try:
@@ -464,6 +463,8 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
                                 pass
                 except Exception:
                     pass
+        except Exception:
+            pass
 
         return success
 
