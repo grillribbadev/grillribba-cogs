@@ -91,6 +91,26 @@ class MutedActionView(discord.ui.View):
         except Exception:
             return None
 
+    async def _safe_defer(self, interaction: discord.Interaction) -> None:
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer()
+        except Exception:
+            # swallow; we'll attempt to send messages below
+            return
+
+    async def _send_response(self, interaction: discord.Interaction, content: str, *, ephemeral: bool = False) -> None:
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(content, ephemeral=ephemeral)
+            else:
+                await interaction.followup.send(content, ephemeral=ephemeral)
+        except Exception:
+            try:
+                await interaction.followup.send(content, ephemeral=ephemeral)
+            except Exception:
+                log.exception("Failed to send interaction message")
+
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.invoker.id:
             await interaction.response.send_message("Only the command invoker may use this menu.", ephemeral=True)
