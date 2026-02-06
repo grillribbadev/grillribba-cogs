@@ -40,10 +40,10 @@ class _MemberActionViews:
                     return
                 # defer then send followup with action buttons to avoid timing out
                 try:
-                    await interaction.response.defer(ephemeral=True)
+                    await interaction.response.defer()
                 except Exception:
                     pass
-                await interaction.followup.send(f"Selected **{member}**. Choose an action:", view=_MemberActionViews.ActionButtons(self.parent_view, member), ephemeral=True)
+                await interaction.followup.send(f"Selected **{member}**. Choose an action:", view=_MemberActionViews.ActionButtons(self.parent_view, member), ephemeral=False)
             except Exception as e:
                 log.exception("MemberSelect callback failed: %r", e)
                 try:
@@ -67,18 +67,18 @@ class _MemberActionViews:
             if guild is None:
                 await interaction.response.send_message("Guild context lost.", ephemeral=True)
                 return
-            try:
-                await self.parent_view.cog.set_reason(guild, self.member.id, self.reason.value)
-                await interaction.response.send_message(f"Set reason for {self.member}.", ephemeral=True)
-            except Exception as e:
-                log.exception("ReasonModal submit failed: %r", e)
                 try:
-                    if not interaction.response.is_done():
-                        await interaction.response.send_message("Failed to set reason.", ephemeral=True)
-                    else:
-                        await interaction.followup.send("Failed to set reason.", ephemeral=True)
-                except Exception:
-                    pass
+                    await self.parent_view.cog.set_reason(guild, self.member.id, self.reason.value)
+                    await interaction.response.send_message(f"Set reason for {self.member}.", ephemeral=False)
+                except Exception as e:
+                    log.exception("ReasonModal submit failed: %r", e)
+                    try:
+                        if not interaction.response.is_done():
+                            await interaction.response.send_message("Failed to set reason.", ephemeral=False)
+                        else:
+                            await interaction.followup.send("Failed to set reason.", ephemeral=False)
+                    except Exception:
+                        pass
 
     class ActionButtons(discord.ui.View):
         def __init__(self, parent_view: "_MemberActionViews.ActionView", member: discord.Member) -> None:
@@ -100,18 +100,18 @@ class _MemberActionViews:
                 guild = interaction.guild
                 assert guild is not None
                 try:
-                    await interaction.response.defer(ephemeral=True)
+                    await interaction.response.defer()
                 except Exception:
                     pass
                 # remove configured mute roles
                 role_ids = set(await self.parent_view.cog.config.guild(guild).roles())
                 to_remove = [r for r in self.member.roles if r.id in role_ids]
                 if not to_remove:
-                    await interaction.followup.send(f"{self.member} has no configured mute roles.", ephemeral=True)
+                    await interaction.followup.send(f"{self.member} has no configured mute roles.", ephemeral=False)
                     return
                 await self.member.remove_roles(*to_remove, reason=f"Unmuted by {interaction.user}")
                 await self.parent_view.cog.clear_mute(guild, self.member.id)
-                await interaction.followup.send(f"Removed mute roles from {self.member}.", ephemeral=True)
+                await interaction.followup.send(f"Removed mute roles from {self.member}.", ephemeral=False)
             except discord.Forbidden:
                 await interaction.response.send_message("I do not have permission to remove those roles.", ephemeral=True)
             except Exception as e:
@@ -132,7 +132,7 @@ class _MemberActionViews:
                 guild = interaction.guild
                 assert guild is not None
                 try:
-                    await interaction.response.defer(ephemeral=True)
+                    await interaction.response.defer()
                 except Exception:
                     pass
                 if not interaction.user.guild_permissions.kick_members:
@@ -146,7 +146,7 @@ class _MemberActionViews:
                     return
                 await guild.kick(self.member, reason=f"Kicked by {interaction.user}")
                 await self.parent_view.cog.clear_mute(guild, self.member.id)
-                await interaction.followup.send(f"Kicked {self.member}.", ephemeral=True)
+                await interaction.followup.send(f"Kicked {self.member}.", ephemeral=False)
             except discord.Forbidden:
                 await interaction.response.send_message("I do not have permission to kick that member.", ephemeral=True)
             except Exception as e:
@@ -167,7 +167,7 @@ class _MemberActionViews:
                 guild = interaction.guild
                 assert guild is not None
                 try:
-                    await interaction.response.defer(ephemeral=True)
+                    await interaction.response.defer()
                 except Exception:
                     pass
                 if not interaction.user.guild_permissions.ban_members:
@@ -181,7 +181,7 @@ class _MemberActionViews:
                     return
                 await guild.ban(self.member, reason=f"Banned by {interaction.user}")
                 await self.parent_view.cog.clear_mute(guild, self.member.id)
-                await interaction.followup.send(f"Banned {self.member}.", ephemeral=True)
+                await interaction.followup.send(f"Banned {self.member}.", ephemeral=False)
             except discord.Forbidden:
                 await interaction.response.send_message("I do not have permission to ban that member.", ephemeral=True)
             except Exception as e:
@@ -196,41 +196,41 @@ class _MemberActionViews:
 
         @discord.ui.button(label="Set Reason", style=discord.ButtonStyle.secondary)
         async def setreason(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
-            try:
-                if not await self._check_invoker(interaction):
-                    return
-                # open modal to capture reason
-                modal = _MemberActionViews.ReasonModal(self.parent_view, self.member)
-                await interaction.response.send_modal(modal)
-            except Exception as e:
-                log.exception("SetReason button failed: %r", e)
                 try:
-                    if not interaction.response.is_done():
-                        await interaction.response.send_message("Failed to open reason modal.", ephemeral=True)
-                    else:
-                        await interaction.followup.send("Failed to open reason modal.", ephemeral=True)
-                except Exception:
-                    pass
+                    if not await self._check_invoker(interaction):
+                        return
+                    # open modal to capture reason
+                    modal = _MemberActionViews.ReasonModal(self.parent_view, self.member)
+                    await interaction.response.send_modal(modal)
+                except Exception as e:
+                    log.exception("SetReason button failed: %r", e)
+                    try:
+                        if not interaction.response.is_done():
+                            await interaction.response.send_message("Failed to open reason modal.", ephemeral=True)
+                        else:
+                            await interaction.followup.send("Failed to open reason modal.", ephemeral=True)
+                    except Exception:
+                        pass
 
         @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
         async def cancel(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
-            try:
-                if not await self._check_invoker(interaction):
-                    return
                 try:
-                    await interaction.response.defer(ephemeral=True)
-                except Exception:
-                    pass
-                await interaction.followup.send("Action cancelled.", ephemeral=True)
-            except Exception as e:
-                log.exception("Cancel button failed: %r", e)
-                try:
-                    if not interaction.response.is_done():
-                        await interaction.response.send_message("Failed to cancel.", ephemeral=True)
-                    else:
-                        await interaction.followup.send("Failed to cancel.", ephemeral=True)
-                except Exception:
-                    pass
+                    if not await self._check_invoker(interaction):
+                        return
+                    try:
+                        await interaction.response.defer()
+                    except Exception:
+                        pass
+                    await interaction.followup.send("Action cancelled.", ephemeral=False)
+                except Exception as e:
+                    log.exception("Cancel button failed: %r", e)
+                    try:
+                        if not interaction.response.is_done():
+                            await interaction.response.send_message("Failed to cancel.", ephemeral=True)
+                        else:
+                            await interaction.followup.send("Failed to cancel.", ephemeral=True)
+                    except Exception:
+                        pass
 
     class ActionView(discord.ui.View):
         def __init__(self, cog: "MuteList", ctx: commands.Context, guild: discord.Guild, members: list[discord.Member]) -> None:
