@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Optional, List
+from typing import Optional, List, Tuple
 
 import discord
 from redbot.core import commands, Config
@@ -32,7 +32,10 @@ class MemberReasonModal(discord.ui.Modal, title="Set mute reason"):
             await interaction.response.send_message("Reason saved.", ephemeral=False)
         except Exception:
             log.exception("Failed to save reason")
-            await interaction.response.send_message("Failed to save reason.", ephemeral=True)
+            try:
+                await interaction.response.send_message("Failed to save reason.", ephemeral=True)
+            except Exception:
+                pass
 
 
 class MemberSelect(discord.ui.Select):
@@ -50,13 +53,24 @@ class MemberSelect(discord.ui.Select):
             guild = interaction.guild
             member = guild.get_member(member_id) if guild else None
             name = str(member) if member else f"ID {member_id}"
-            await interaction.response.send_message(f"Selected {name}. Now choose an action.", ephemeral=True)
+            # send ephemeral confirmation so original message remains with the view
+            try:
+                await interaction.response.send_message(f"Selected {name}. Now choose an action.", ephemeral=True)
+            except Exception:
+                # fallback to followup
+                try:
+                    await interaction.followup.send(f"Selected {name}. Now choose an action.", ephemeral=True)
+                except Exception:
+                    pass
         except Exception:
             log.exception("MemberSelect callback failed")
             try:
                 await interaction.response.send_message("Selection failed.", ephemeral=True)
             except Exception:
-                pass
+                try:
+                    await interaction.followup.send("Selection failed.", ephemeral=True)
+                except Exception:
+                    pass
 
 
 class MutedActionView(discord.ui.View):
@@ -78,7 +92,6 @@ class MutedActionView(discord.ui.View):
             self.add_item(MemberSelect(self, options))
 
     async def _resolve_member(self, member_id: int) -> Optional[discord.Member]:
-        """Return a Member, trying cache then API fetch as fallback."""
         guild = self.guild
         if guild is None:
             return None
@@ -96,7 +109,6 @@ class MutedActionView(discord.ui.View):
             if not interaction.response.is_done():
                 await interaction.response.defer()
         except Exception:
-            # swallow; we'll attempt to send messages below
             return
 
     async def _send_response(self, interaction: discord.Interaction, content: str, *, ephemeral: bool = False) -> None:
@@ -113,7 +125,13 @@ class MutedActionView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.invoker.id:
-            await interaction.response.send_message("Only the command invoker may use this menu.", ephemeral=True)
+            try:
+                await interaction.response.send_message("Only the command invoker may use this menu.", ephemeral=True)
+            except Exception:
+                try:
+                    await interaction.followup.send("Only the command invoker may use this menu.", ephemeral=True)
+                except Exception:
+                    pass
             return False
         return True
 
@@ -220,34 +238,57 @@ class MutedActionView(discord.ui.View):
 
     @discord.ui.button(label="Set Reason", style=discord.ButtonStyle.secondary)
     async def setreason(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
-        if not self.selected_member_id:
-            await interaction.response.send_message("Select a member first.", ephemeral=True)
-            return
-        guild = interaction.guild
-        if guild is None:
-            await interaction.response.send_message("Guild context missing.", ephemeral=True)
-            return
-        modal = MemberReasonModal(self.cog, guild, self.selected_member_id)
         try:
-            await interaction.response.send_modal(modal)
+            if not self.selected_member_id:
+                await self._send_response(interaction, "Select a member first.", ephemeral=True)
+                return
+            guild = interaction.guild
+            if guild is None:
+                await self._send_response(interaction, "Guild context missing.", ephemeral=True)
+                return
+            modal = MemberReasonModal(self.cog, guild, self.selected_member_id)
+            try:
+                await interaction.response.send_modal(modal)
+            except Exception:
+                await self._send_response(interaction, "Could not open modal.", ephemeral=True)
         except Exception:
-            await interaction.response.send_message("Could not open modal.", ephemeral=True)
+            log.exception("Unhandled error in setreason button")
+            await self._send_response(interaction, "An internal error occurred.", ephemeral=True)
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
     async def cancel(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
         try:
-            await interaction.response.send_message("Menu closed.", ephemeral=False)
+            try:
+                await interaction.response.send_message("Menu closed.", ephemeral=False)
+            except Exception:
+                try:
+                    await interaction.followup.send("Menu closed.", ephemeral=False)
+                except Exception:
+                    pass
             self.stop()
             try:
-                await interaction.message.edit(view=self)
+                if interaction.message:
+                    await interaction.message.edit(view=self)
             except Exception:
                 pass
         except Exception:
-            pass
+            log.exception("Unhandled error in cancel button")
 
     async def on_timeout(self) -> None:
         for child in self.children:
             child.disabled = True
+        # best-effort edit to show disabled view
+        try:
+            # interaction.message may be None; attempt to edit via ctx message if available
+            if self.ctx and getattr(self.ctx, "message", None):
+                await self.ctx.message.edit(view=self)
+        except Exception:
+            try:
+                # if view was sent via interaction, edit that message
+                if getattr(self.ctx, "interaction", None) and getattr(self.ctx.interaction, "message", None):
+                    await self.ctx.interaction.message.edit(view=self)
+            except Exception:
+                pass
 
 
 class MuteList(commands.Cog):
@@ -387,12 +428,13 @@ class MuteList(commands.Cog):
         if cur:
             chunks.append(cur)
         emb = discord.Embed(title=f"Muted members ({len(members)})", description=chunks[0], color=EMBED_COLOR)
+        view = MutedActionView(self, ctx, members)
         if getattr(ctx, "interaction", None):
-            await ctx.interaction.response.send_message(embed=emb, view=MutedActionView(self, ctx, members), ephemeral=False)
+            await ctx.interaction.response.send_message(embed=emb, view=view, ephemeral=False)
         else:
-            await ctx.reply(embed=emb, view=MutedActionView(self, ctx, members), mention_author=False)
+            await ctx.reply(embed=emb, view=view, mention_author=False)
 
-    async def _audit_reason_for_mute(self, guild: discord.Guild, member: discord.Member, role_ids: set[int], *, fallback: tuple[str, int, int | None]) -> tuple[str, int, int | None]:
+    async def _audit_reason_for_mute(self, guild: discord.Guild, member: discord.Member, role_ids: set[int], *, fallback: Tuple[str, int, int | None]) -> Tuple[str, int, int | None]:
         try:
             async for entry in guild.audit_logs(limit=25, action=discord.AuditLogAction.member_role_update):
                 if entry.target.id != member.id:
@@ -408,4 +450,5 @@ class MuteList(commands.Cog):
         except Exception as e:
             log.debug("Audit log scan failed in %s: %r", guild.id, e)
         return fallback
+
 
