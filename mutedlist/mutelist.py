@@ -35,6 +35,30 @@ class MemberReasonModal(discord.ui.Modal, title="Set mute reason"):
             await interaction.response.send_message("Failed to save reason.", ephemeral=True)
 
 
+class MemberSelect(discord.ui.Select):
+    def __init__(self, parent_view: "MutedActionView", options: List[discord.SelectOption]):
+        super().__init__(placeholder="Select a muted member...", min_values=1, max_values=1, options=options)
+        self.parent_view = parent_view
+
+    async def callback(self, interaction: discord.Interaction) -> None:  # type: ignore[override]
+        try:
+            if interaction.user.id != self.parent_view.invoker.id:
+                await interaction.response.send_message("Only the command invoker may use this menu.", ephemeral=True)
+                return
+            member_id = int(self.values[0])
+            self.parent_view.selected_member_id = member_id
+            guild = interaction.guild
+            member = guild.get_member(member_id) if guild else None
+            name = str(member) if member else f"ID {member_id}"
+            await interaction.response.send_message(f"Selected {name}. Now choose an action.", ephemeral=True)
+        except Exception:
+            log.exception("MemberSelect callback failed")
+            try:
+                await interaction.response.send_message("Selection failed.", ephemeral=True)
+            except Exception:
+                pass
+
+
 class MutedActionView(discord.ui.View):
     def __init__(self, cog: "MuteList", ctx: commands.Context, members: List[discord.Member]):
         super().__init__(timeout=300)
@@ -51,7 +75,7 @@ class MutedActionView(discord.ui.View):
             desc = f"{m} — id:{m.id}"
             options.append(discord.SelectOption(label=label, description=desc, value=str(m.id)))
         if options:
-            self.add_item(discord.ui.Select(placeholder="Select a muted member...", min_values=1, max_values=1, options=options))
+            self.add_item(MemberSelect(self, options))
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.invoker.id:
