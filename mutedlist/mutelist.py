@@ -136,7 +136,7 @@ class MutedActionView(discord.ui.View):
         return True
 
     @discord.ui.button(label="Unmute", style=discord.ButtonStyle.green)
-    async def unmute(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
+    async def unmute(self, interaction: discord.Interaction) -> None:
         try:
             if not self.selected_member_id:
                 await self._send_response(interaction, "Select a member first.", ephemeral=True)
@@ -169,7 +169,7 @@ class MutedActionView(discord.ui.View):
             await self._send_response(interaction, "An internal error occurred.", ephemeral=True)
 
     @discord.ui.button(label="Kick", style=discord.ButtonStyle.blurple)
-    async def kick(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
+    async def kick(self, interaction: discord.Interaction) -> None:
         try:
             if not self.selected_member_id:
                 await self._send_response(interaction, "Select a member first.", ephemeral=True)
@@ -203,7 +203,7 @@ class MutedActionView(discord.ui.View):
             await self._send_response(interaction, "An internal error occurred.", ephemeral=True)
 
     @discord.ui.button(label="Ban", style=discord.ButtonStyle.danger)
-    async def ban(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
+    async def ban(self, interaction: discord.Interaction) -> None:
         try:
             if not self.selected_member_id:
                 await self._send_response(interaction, "Select a member first.", ephemeral=True)
@@ -237,7 +237,7 @@ class MutedActionView(discord.ui.View):
             await self._send_response(interaction, "An internal error occurred.", ephemeral=True)
 
     @discord.ui.button(label="Set Reason", style=discord.ButtonStyle.secondary)
-    async def setreason(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
+    async def setreason(self, interaction: discord.Interaction) -> None:
         try:
             if not self.selected_member_id:
                 await self._send_response(interaction, "Select a member first.", ephemeral=True)
@@ -256,7 +256,7 @@ class MutedActionView(discord.ui.View):
             await self._send_response(interaction, "An internal error occurred.", ephemeral=True)
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
-    async def cancel(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
+    async def cancel(self, interaction: discord.Interaction) -> None:
         try:
             try:
                 await interaction.response.send_message("Menu closed.", ephemeral=False)
