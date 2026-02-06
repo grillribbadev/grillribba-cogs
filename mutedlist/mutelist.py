@@ -120,100 +120,91 @@ class MutedActionView(discord.ui.View):
     @discord.ui.button(label="Unmute", style=discord.ButtonStyle.green)
     async def unmute(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
         if not self.selected_member_id:
-            await interaction.response.send_message("Select a member first.", ephemeral=True)
+            await self._send_response(interaction, "Select a member first.", ephemeral=True)
             return
         guild = interaction.guild
         if guild is None:
-            await interaction.response.send_message("Guild context missing.", ephemeral=True)
+            await self._send_response(interaction, "Guild context missing.", ephemeral=True)
             return
-        try:
-            await interaction.response.defer()
-        except Exception:
-            pass
+        await self._safe_defer(interaction)
         member = await self._resolve_member(self.selected_member_id)
         if member is None:
-            await interaction.followup.send("Member not found.", ephemeral=False)
+            await self._send_response(interaction, "Member not found.", ephemeral=False)
             return
         role_ids = set(await self.cog.config.guild(guild).roles())
         to_remove = [r for r in member.roles if r.id in role_ids]
         if not to_remove:
-            await interaction.followup.send(f"{member} has no configured mute roles.", ephemeral=False)
+            await self._send_response(interaction, f"{member} has no configured mute roles.", ephemeral=False)
             return
         try:
             await member.remove_roles(*to_remove, reason=f"Unmuted by {interaction.user}")
             await self.cog.clear_mute(guild, member.id)
-            await interaction.followup.send(f"Removed mute roles from {member}.", ephemeral=False)
+            await self._send_response(interaction, f"Removed mute roles from {member}.", ephemeral=False)
         except discord.Forbidden:
-            await interaction.followup.send("I don't have permission to remove roles.", ephemeral=True)
+            await self._send_response(interaction, "I don't have permission to remove roles.", ephemeral=True)
         except Exception:
             log.exception("Unmute failed")
-            await interaction.followup.send("Failed to unmute.", ephemeral=True)
+            await self._send_response(interaction, "Failed to unmute.", ephemeral=True)
 
     @discord.ui.button(label="Kick", style=discord.ButtonStyle.blurple)
     async def kick(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
         if not self.selected_member_id:
-            await interaction.response.send_message("Select a member first.", ephemeral=True)
+            await self._send_response(interaction, "Select a member first.", ephemeral=True)
             return
         guild = interaction.guild
         if guild is None:
-            await interaction.response.send_message("Guild context missing.", ephemeral=True)
+            await self._send_response(interaction, "Guild context missing.", ephemeral=True)
             return
-        try:
-            await interaction.response.defer()
-        except Exception:
-            pass
+        await self._safe_defer(interaction)
         if not interaction.user.guild_permissions.kick_members:
-            await interaction.followup.send("You lack `Kick Members` permission.", ephemeral=True)
+            await self._send_response(interaction, "You lack `Kick Members` permission.", ephemeral=True)
             return
         if guild.me is None or not guild.me.guild_permissions.kick_members:
-            await interaction.followup.send("I lack `Kick Members` permission or Members intent.", ephemeral=True)
+            await self._send_response(interaction, "I lack `Kick Members` permission or Members intent.", ephemeral=True)
             return
         member = await self._resolve_member(self.selected_member_id)
         if member is None:
-            await interaction.followup.send("Member not found.", ephemeral=False)
+            await self._send_response(interaction, "Member not found.", ephemeral=False)
             return
         try:
             await guild.kick(member, reason=f"Kicked by {interaction.user}")
             await self.cog.clear_mute(guild, member.id)
-            await interaction.followup.send(f"Kicked {member}.", ephemeral=False)
+            await self._send_response(interaction, f"Kicked {member}.", ephemeral=False)
         except discord.Forbidden:
-            await interaction.followup.send("I don't have permission to kick that member.", ephemeral=True)
+            await self._send_response(interaction, "I don't have permission to kick that member.", ephemeral=True)
         except Exception:
             log.exception("Kick failed")
-            await interaction.followup.send("Failed to kick.", ephemeral=True)
+            await self._send_response(interaction, "Failed to kick.", ephemeral=True)
 
     @discord.ui.button(label="Ban", style=discord.ButtonStyle.danger)
     async def ban(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
         if not self.selected_member_id:
-            await interaction.response.send_message("Select a member first.", ephemeral=True)
+            await self._send_response(interaction, "Select a member first.", ephemeral=True)
             return
         guild = interaction.guild
         if guild is None:
-            await interaction.response.send_message("Guild context missing.", ephemeral=True)
+            await self._send_response(interaction, "Guild context missing.", ephemeral=True)
             return
-        try:
-            await interaction.response.defer()
-        except Exception:
-            pass
+        await self._safe_defer(interaction)
         if not interaction.user.guild_permissions.ban_members:
-            await interaction.followup.send("You lack `Ban Members` permission.", ephemeral=True)
+            await self._send_response(interaction, "You lack `Ban Members` permission.", ephemeral=True)
             return
         if guild.me is None or not guild.me.guild_permissions.ban_members:
-            await interaction.followup.send("I lack `Ban Members` permission or Members intent.", ephemeral=True)
+            await self._send_response(interaction, "I lack `Ban Members` permission or Members intent.", ephemeral=True)
             return
         member = await self._resolve_member(self.selected_member_id)
         if member is None:
-            await interaction.followup.send("Member not found.", ephemeral=False)
+            await self._send_response(interaction, "Member not found.", ephemeral=False)
             return
         try:
             await guild.ban(member, reason=f"Banned by {interaction.user}")
             await self.cog.clear_mute(guild, member.id)
-            await interaction.followup.send(f"Banned {member}.", ephemeral=False)
+            await self._send_response(interaction, f"Banned {member}.", ephemeral=False)
         except discord.Forbidden:
-            await interaction.followup.send("I don't have permission to ban that member.", ephemeral=True)
+            await self._send_response(interaction, "I don't have permission to ban that member.", ephemeral=True)
         except Exception:
             log.exception("Ban failed")
-            await interaction.followup.send("Failed to ban.", ephemeral=True)
+            await self._send_response(interaction, "Failed to ban.", ephemeral=True)
 
     @discord.ui.button(label="Set Reason", style=discord.ButtonStyle.secondary)
     async def setreason(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
