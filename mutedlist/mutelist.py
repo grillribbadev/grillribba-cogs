@@ -77,6 +77,20 @@ class MutedActionView(discord.ui.View):
         if options:
             self.add_item(MemberSelect(self, options))
 
+    async def _resolve_member(self, member_id: int) -> Optional[discord.Member]:
+        """Return a Member, trying cache then API fetch as fallback."""
+        guild = self.guild
+        if guild is None:
+            return None
+        member = guild.get_member(member_id)
+        if member is not None:
+            return member
+        try:
+            member = await guild.fetch_member(member_id)
+            return member
+        except Exception:
+            return None
+
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.invoker.id:
             await interaction.response.send_message("Only the command invoker may use this menu.", ephemeral=True)
@@ -96,7 +110,7 @@ class MutedActionView(discord.ui.View):
             await interaction.response.defer()
         except Exception:
             pass
-        member = guild.get_member(self.selected_member_id)
+        member = await self._resolve_member(self.selected_member_id)
         if member is None:
             await interaction.followup.send("Member not found.", ephemeral=False)
             return
@@ -134,7 +148,7 @@ class MutedActionView(discord.ui.View):
         if guild.me is None or not guild.me.guild_permissions.kick_members:
             await interaction.followup.send("I lack `Kick Members` permission or Members intent.", ephemeral=True)
             return
-        member = guild.get_member(self.selected_member_id)
+        member = await self._resolve_member(self.selected_member_id)
         if member is None:
             await interaction.followup.send("Member not found.", ephemeral=False)
             return
@@ -167,7 +181,7 @@ class MutedActionView(discord.ui.View):
         if guild.me is None or not guild.me.guild_permissions.ban_members:
             await interaction.followup.send("I lack `Ban Members` permission or Members intent.", ephemeral=True)
             return
-        member = guild.get_member(self.selected_member_id)
+        member = await self._resolve_member(self.selected_member_id)
         if member is None:
             await interaction.followup.send("Member not found.", ephemeral=False)
             return
