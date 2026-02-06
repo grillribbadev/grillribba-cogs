@@ -13,6 +13,130 @@ from .utils import member_has_any_role, format_user_line
 
 log = logging.getLogger(__name__)
 
+
+class _MemberActionViews:
+    """Helper container for UI views used by `mutedlist` to avoid polluting the cog namespace.
+
+    This groups the Select and action Buttons used to pick a member and perform
+    moderation actions (unmute/kick/ban). Views send ephemeral followups to the
+    invoking staff member and verify the clicker is the original invoker.
+    """
+
+    class MemberSelect(discord.ui.Select):
+        def __init__(self, options: list[discord.SelectOption], parent_view: "_MemberActionViews.ActionView") -> None:
+            super().__init__(placeholder="Select a muted member...", min_values=1, max_values=1, options=options)
+            self.parent_view = parent_view
+
+        async def callback(self, interaction: discord.Interaction) -> None:  # type: ignore[override]
+            if interaction.user.id != self.parent_view.invoker.id:
+                await interaction.response.send_message("Only the command invoker may use this menu.", ephemeral=True)
+                return
+            sel = int(self.values[0])
+            member = self.parent_view.guild.get_member(sel)
+            if member is None:
+                await interaction.response.send_message("That member is no longer in the guild.", ephemeral=True)
+                return
+            # show action buttons as an ephemeral followup
+            await interaction.response.send_message(f"Selected **{member}**. Choose an action:", view=_MemberActionViews.ActionButtons(self.parent_view, member), ephemeral=True)
+
+    class ActionButtons(discord.ui.View):
+        def __init__(self, parent_view: "_MemberActionViews.ActionView", member: discord.Member) -> None:
+            super().__init__(timeout=60)
+            self.parent_view = parent_view
+            self.member = member
+
+        async def _check_invoker(self, interaction: discord.Interaction) -> bool:
+            if interaction.user.id != self.parent_view.invoker.id:
+                await interaction.response.send_message("Only the command invoker may perform actions.", ephemeral=True)
+                return False
+            return True
+
+        @discord.ui.button(label="Unmute", style=discord.ButtonStyle.green)
+        async def unmute(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
+            if not await self._check_invoker(interaction):
+                return
+            guild = interaction.guild
+            assert guild is not None
+            # remove configured mute roles
+            role_ids = set(await self.parent_view.cog.config.guild(guild).roles())
+            to_remove = [r for r in self.member.roles if r.id in role_ids]
+            if not to_remove:
+                await interaction.response.send_message(f"{self.member} has no configured mute roles.", ephemeral=True)
+                return
+            try:
+                await self.member.remove_roles(*to_remove, reason=f"Unmuted by {interaction.user}")
+                await self.parent_view.cog.clear_mute(guild, self.member.id)
+                await interaction.response.send_message(f"Removed mute roles from {self.member}.", ephemeral=True)
+            except discord.Forbidden:
+                await interaction.response.send_message("I do not have permission to remove those roles.", ephemeral=True)
+            except Exception as e:
+                await interaction.response.send_message(f"Failed to unmute: {e}", ephemeral=True)
+
+        @discord.ui.button(label="Kick", style=discord.ButtonStyle.blurple)
+        async def kick(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
+            if not await self._check_invoker(interaction):
+                return
+            guild = interaction.guild
+            assert guild is not None
+            if not interaction.user.guild_permissions.kick_members:
+                await interaction.response.send_message("You lack `Kick Members` permission.", ephemeral=True)
+                return
+            if not guild.me.guild_permissions.kick_members:
+                await interaction.response.send_message("I lack `Kick Members` permission.", ephemeral=True)
+                return
+            try:
+                await guild.kick(self.member, reason=f"Kicked by {interaction.user}")
+                await self.parent_view.cog.clear_mute(guild, self.member.id)
+                await interaction.response.send_message(f"Kicked {self.member}.", ephemeral=True)
+            except discord.Forbidden:
+                await interaction.response.send_message("I do not have permission to kick that member.", ephemeral=True)
+            except Exception as e:
+                await interaction.response.send_message(f"Failed to kick: {e}", ephemeral=True)
+
+        @discord.ui.button(label="Ban", style=discord.ButtonStyle.danger)
+        async def ban(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
+            if not await self._check_invoker(interaction):
+                return
+            guild = interaction.guild
+            assert guild is not None
+            if not interaction.user.guild_permissions.ban_members:
+                await interaction.response.send_message("You lack `Ban Members` permission.", ephemeral=True)
+                return
+            if not guild.me.guild_permissions.ban_members:
+                await interaction.response.send_message("I lack `Ban Members` permission.", ephemeral=True)
+                return
+            try:
+                await guild.ban(self.member, reason=f"Banned by {interaction.user}")
+                await self.parent_view.cog.clear_mute(guild, self.member.id)
+                await interaction.response.send_message(f"Banned {self.member}.", ephemeral=True)
+            except discord.Forbidden:
+                await interaction.response.send_message("I do not have permission to ban that member.", ephemeral=True)
+            except Exception as e:
+                await interaction.response.send_message(f"Failed to ban: {e}", ephemeral=True)
+
+        @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+        async def cancel(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
+            if not await self._check_invoker(interaction):
+                return
+            await interaction.response.send_message("Action cancelled.", ephemeral=True)
+
+    class ActionView(discord.ui.View):
+        def __init__(self, cog: "MuteList", ctx: commands.Context, guild: discord.Guild, members: list[discord.Member]) -> None:
+            super().__init__(timeout=120)
+            self.cog = cog
+            self.invoker = ctx.author
+            self.guild = guild
+            # build select options (max 25)
+            opts: list[discord.SelectOption] = []
+            for m in members[:25]:
+                label = (m.display_name or str(m))[:100]
+                desc = f"id: {m.id}"
+                opts.append(discord.SelectOption(label=label, description=desc, value=str(m.id)))
+            if not opts:
+                return
+            self.add_item(_MemberActionViews.MemberSelect(opts, self))
+
+
 # Config schema:
 # guild:
 #   roles: list[int]        # role IDs that count as 'muted'
@@ -214,18 +338,25 @@ class MuteList(commands.Cog):
         if cur:
             chunks.append(cur)
 
+        # create action view (selection + action buttons). view limits to first 25 members.
+        action_view = _MemberActionViews.ActionView(self, ctx, guild, members)
+
         # send
         if getattr(ctx, "interaction", None):
-            # first page via initial response (ephemeral), rest via followups
+            # first page via initial response (ephemeral), attach view to first message
             emb = discord.Embed(title=f"Muted members ({len(members)}) — page 1/{len(chunks)}", description=chunks[0], color=EMBED_COLOR)
-            await ctx.interaction.response.send_message(embed=emb, ephemeral=True)
+            await ctx.interaction.response.send_message(embed=emb, view=action_view, ephemeral=True)
             for i, chunk in enumerate(chunks[1:], start=2):
                 emb2 = discord.Embed(title=f"Muted members — page {i}/{len(chunks)}", description=chunk, color=EMBED_COLOR)
                 await ctx.interaction.followup.send(embed=emb2, ephemeral=True)
         else:
+            # attach view to first message; subsequent pages are plain
             for i, chunk in enumerate(chunks, start=1):
                 emb = discord.Embed(title=f"Muted members ({len(members)}) — page {i}/{len(chunks)}", description=chunk, color=EMBED_COLOR)
-                await ctx.send(embed=emb)
+                if i == 1:
+                    await ctx.reply(embed=emb, view=action_view, mention_author=False)
+                else:
+                    await ctx.send(embed=emb)
 
     async def _audit_reason_for_mute(
         self,
