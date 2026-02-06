@@ -39,6 +39,25 @@ class _MemberActionViews:
             # show action buttons as an ephemeral followup
             await interaction.response.send_message(f"Selected **{member}**. Choose an action:", view=_MemberActionViews.ActionButtons(self.parent_view, member), ephemeral=True)
 
+    class ReasonModal(discord.ui.Modal, title="Set mute reason"):
+        reason = discord.ui.TextInput(label="Reason", style=discord.TextStyle.long, required=True, max_length=400)
+
+        def __init__(self, parent_view: "_MemberActionViews.ActionView", member: discord.Member) -> None:
+            super().__init__()
+            self.parent_view = parent_view
+            self.member = member
+
+        async def on_submit(self, interaction: discord.Interaction) -> None:  # type: ignore[override]
+            guild = interaction.guild
+            if guild is None:
+                await interaction.response.send_message("Guild context lost.", ephemeral=True)
+                return
+            try:
+                await self.parent_view.cog.set_reason(guild, self.member.id, self.reason.value)
+                await interaction.response.send_message(f"Set reason for {self.member}.", ephemeral=True)
+            except Exception as e:
+                await interaction.response.send_message(f"Failed to set reason: {e}", ephemeral=True)
+
     class ActionButtons(discord.ui.View):
         def __init__(self, parent_view: "_MemberActionViews.ActionView", member: discord.Member) -> None:
             super().__init__(timeout=60)
@@ -113,6 +132,14 @@ class _MemberActionViews:
                 await interaction.response.send_message("I do not have permission to ban that member.", ephemeral=True)
             except Exception as e:
                 await interaction.response.send_message(f"Failed to ban: {e}", ephemeral=True)
+
+        @discord.ui.button(label="Set Reason", style=discord.ButtonStyle.secondary)
+        async def setreason(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
+            if not await self._check_invoker(interaction):
+                return
+            # open modal to capture reason
+            modal = _MemberActionViews.ReasonModal(self.parent_view, self.member)
+            await interaction.response.send_modal(modal)
 
         @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
         async def cancel(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
