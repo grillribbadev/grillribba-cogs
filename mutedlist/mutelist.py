@@ -28,16 +28,26 @@ class _MemberActionViews:
             self.parent_view = parent_view
 
         async def callback(self, interaction: discord.Interaction) -> None:  # type: ignore[override]
-            if interaction.user.id != self.parent_view.invoker.id:
-                await interaction.response.send_message("Only the command invoker may use this menu.", ephemeral=True)
-                return
-            sel = int(self.values[0])
-            member = self.parent_view.guild.get_member(sel)
-            if member is None:
-                await interaction.response.send_message("That member is no longer in the guild.", ephemeral=True)
-                return
-            # show action buttons as an ephemeral followup
-            await interaction.response.send_message(f"Selected **{member}**. Choose an action:", view=_MemberActionViews.ActionButtons(self.parent_view, member), ephemeral=True)
+            try:
+                if interaction.user.id != self.parent_view.invoker.id:
+                    await interaction.response.send_message("Only the command invoker may use this menu.", ephemeral=True)
+                    return
+                sel = int(self.values[0])
+                member = self.parent_view.guild.get_member(sel)
+                if member is None:
+                    await interaction.response.send_message("That member is no longer in the guild.", ephemeral=True)
+                    return
+                # show action buttons as an ephemeral followup
+                await interaction.response.send_message(f"Selected **{member}**. Choose an action:", view=_MemberActionViews.ActionButtons(self.parent_view, member), ephemeral=True)
+            except Exception as e:
+                log.exception("MemberSelect callback failed: %r", e)
+                try:
+                    if not interaction.response.is_done():
+                        await interaction.response.send_message("An internal error occurred.", ephemeral=True)
+                    else:
+                        await interaction.followup.send("An internal error occurred.", ephemeral=True)
+                except Exception:
+                    pass
 
     class ReasonModal(discord.ui.Modal, title="Set mute reason"):
         reason = discord.ui.TextInput(label="Reason", style=discord.TextStyle.long, required=True, max_length=400)
@@ -56,7 +66,14 @@ class _MemberActionViews:
                 await self.parent_view.cog.set_reason(guild, self.member.id, self.reason.value)
                 await interaction.response.send_message(f"Set reason for {self.member}.", ephemeral=True)
             except Exception as e:
-                await interaction.response.send_message(f"Failed to set reason: {e}", ephemeral=True)
+                log.exception("ReasonModal submit failed: %r", e)
+                try:
+                    if not interaction.response.is_done():
+                        await interaction.response.send_message("Failed to set reason.", ephemeral=True)
+                    else:
+                        await interaction.followup.send("Failed to set reason.", ephemeral=True)
+                except Exception:
+                    pass
 
     class ActionButtons(discord.ui.View):
         def __init__(self, parent_view: "_MemberActionViews.ActionView", member: discord.Member) -> None:
@@ -72,80 +89,127 @@ class _MemberActionViews:
 
         @discord.ui.button(label="Unmute", style=discord.ButtonStyle.green)
         async def unmute(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
-            if not await self._check_invoker(interaction):
-                return
-            guild = interaction.guild
-            assert guild is not None
-            # remove configured mute roles
-            role_ids = set(await self.parent_view.cog.config.guild(guild).roles())
-            to_remove = [r for r in self.member.roles if r.id in role_ids]
-            if not to_remove:
-                await interaction.response.send_message(f"{self.member} has no configured mute roles.", ephemeral=True)
-                return
             try:
+                if not await self._check_invoker(interaction):
+                    return
+                guild = interaction.guild
+                assert guild is not None
+                # remove configured mute roles
+                role_ids = set(await self.parent_view.cog.config.guild(guild).roles())
+                to_remove = [r for r in self.member.roles if r.id in role_ids]
+                if not to_remove:
+                    await interaction.response.send_message(f"{self.member} has no configured mute roles.", ephemeral=True)
+                    return
                 await self.member.remove_roles(*to_remove, reason=f"Unmuted by {interaction.user}")
                 await self.parent_view.cog.clear_mute(guild, self.member.id)
                 await interaction.response.send_message(f"Removed mute roles from {self.member}.", ephemeral=True)
             except discord.Forbidden:
                 await interaction.response.send_message("I do not have permission to remove those roles.", ephemeral=True)
             except Exception as e:
-                await interaction.response.send_message(f"Failed to unmute: {e}", ephemeral=True)
+                log.exception("Unmute button failed: %r", e)
+                try:
+                    if not interaction.response.is_done():
+                        await interaction.response.send_message("Failed to unmute.", ephemeral=True)
+                    else:
+                        await interaction.followup.send("Failed to unmute.", ephemeral=True)
+                except Exception:
+                    pass
 
         @discord.ui.button(label="Kick", style=discord.ButtonStyle.blurple)
         async def kick(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
-            if not await self._check_invoker(interaction):
-                return
-            guild = interaction.guild
-            assert guild is not None
-            if not interaction.user.guild_permissions.kick_members:
-                await interaction.response.send_message("You lack `Kick Members` permission.", ephemeral=True)
-                return
-            if not guild.me.guild_permissions.kick_members:
-                await interaction.response.send_message("I lack `Kick Members` permission.", ephemeral=True)
-                return
             try:
+                if not await self._check_invoker(interaction):
+                    return
+                guild = interaction.guild
+                assert guild is not None
+                if not interaction.user.guild_permissions.kick_members:
+                    await interaction.response.send_message("You lack `Kick Members` permission.", ephemeral=True)
+                    return
+                if guild.me is None:
+                    await interaction.response.send_message("Bot member not found (missing Members intent).", ephemeral=True)
+                    return
+                if not guild.me.guild_permissions.kick_members:
+                    await interaction.response.send_message("I lack `Kick Members` permission.", ephemeral=True)
+                    return
                 await guild.kick(self.member, reason=f"Kicked by {interaction.user}")
                 await self.parent_view.cog.clear_mute(guild, self.member.id)
                 await interaction.response.send_message(f"Kicked {self.member}.", ephemeral=True)
             except discord.Forbidden:
                 await interaction.response.send_message("I do not have permission to kick that member.", ephemeral=True)
             except Exception as e:
-                await interaction.response.send_message(f"Failed to kick: {e}", ephemeral=True)
+                log.exception("Kick button failed: %r", e)
+                try:
+                    if not interaction.response.is_done():
+                        await interaction.response.send_message("Failed to kick.", ephemeral=True)
+                    else:
+                        await interaction.followup.send("Failed to kick.", ephemeral=True)
+                except Exception:
+                    pass
 
         @discord.ui.button(label="Ban", style=discord.ButtonStyle.danger)
         async def ban(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
-            if not await self._check_invoker(interaction):
-                return
-            guild = interaction.guild
-            assert guild is not None
-            if not interaction.user.guild_permissions.ban_members:
-                await interaction.response.send_message("You lack `Ban Members` permission.", ephemeral=True)
-                return
-            if not guild.me.guild_permissions.ban_members:
-                await interaction.response.send_message("I lack `Ban Members` permission.", ephemeral=True)
-                return
             try:
+                if not await self._check_invoker(interaction):
+                    return
+                guild = interaction.guild
+                assert guild is not None
+                if not interaction.user.guild_permissions.ban_members:
+                    await interaction.response.send_message("You lack `Ban Members` permission.", ephemeral=True)
+                    return
+                if guild.me is None:
+                    await interaction.response.send_message("Bot member not found (missing Members intent).", ephemeral=True)
+                    return
+                if not guild.me.guild_permissions.ban_members:
+                    await interaction.response.send_message("I lack `Ban Members` permission.", ephemeral=True)
+                    return
                 await guild.ban(self.member, reason=f"Banned by {interaction.user}")
                 await self.parent_view.cog.clear_mute(guild, self.member.id)
                 await interaction.response.send_message(f"Banned {self.member}.", ephemeral=True)
             except discord.Forbidden:
                 await interaction.response.send_message("I do not have permission to ban that member.", ephemeral=True)
             except Exception as e:
-                await interaction.response.send_message(f"Failed to ban: {e}", ephemeral=True)
+                log.exception("Ban button failed: %r", e)
+                try:
+                    if not interaction.response.is_done():
+                        await interaction.response.send_message("Failed to ban.", ephemeral=True)
+                    else:
+                        await interaction.followup.send("Failed to ban.", ephemeral=True)
+                except Exception:
+                    pass
 
         @discord.ui.button(label="Set Reason", style=discord.ButtonStyle.secondary)
         async def setreason(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
-            if not await self._check_invoker(interaction):
-                return
-            # open modal to capture reason
-            modal = _MemberActionViews.ReasonModal(self.parent_view, self.member)
-            await interaction.response.send_modal(modal)
+            try:
+                if not await self._check_invoker(interaction):
+                    return
+                # open modal to capture reason
+                modal = _MemberActionViews.ReasonModal(self.parent_view, self.member)
+                await interaction.response.send_modal(modal)
+            except Exception as e:
+                log.exception("SetReason button failed: %r", e)
+                try:
+                    if not interaction.response.is_done():
+                        await interaction.response.send_message("Failed to open reason modal.", ephemeral=True)
+                    else:
+                        await interaction.followup.send("Failed to open reason modal.", ephemeral=True)
+                except Exception:
+                    pass
 
         @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
         async def cancel(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
-            if not await self._check_invoker(interaction):
-                return
-            await interaction.response.send_message("Action cancelled.", ephemeral=True)
+            try:
+                if not await self._check_invoker(interaction):
+                    return
+                await interaction.response.send_message("Action cancelled.", ephemeral=True)
+            except Exception as e:
+                log.exception("Cancel button failed: %r", e)
+                try:
+                    if not interaction.response.is_done():
+                        await interaction.response.send_message("Failed to cancel.", ephemeral=True)
+                    else:
+                        await interaction.followup.send("Failed to cancel.", ephemeral=True)
+                except Exception:
+                    pass
 
     class ActionView(discord.ui.View):
         def __init__(self, cog: "MuteList", ctx: commands.Context, guild: discord.Guild, members: list[discord.Member]) -> None:
