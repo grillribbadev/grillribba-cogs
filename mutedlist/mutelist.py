@@ -25,7 +25,7 @@ log = logging.getLogger("red.mutelist")
 #   roles: list[int]        # role IDs that count as 'muted'
 #   use_auditlog: bool      # attempt to read reason from Audit Log
 #   log_channel: int|None   # channel to log mute/unmute events
-#   mutes: { str(member_id): {"reason": str, "moderator": int, "at": int|None, "until": int|None} }
+#   mutes: { str(member_id): {"reason": str, "moderator": int, "at": int|None, "until": int|None, "cautions": str|None} }
 DEFAULT_GUILD = {
     "roles": [],
     "use_auditlog": True,
@@ -68,6 +68,41 @@ class MemberReasonModal(discord.ui.Modal, title="Set mute reason"):
             try:
                 await interaction.response.send_message(
                     "❌ Failed to save reason.",
+                    ephemeral=True
+                )
+            except Exception:
+                pass
+
+
+class MemberCautionsModal(discord.ui.Modal, title="Set cautions/warnings"):
+    """Modal for setting/updating cautions for a muted member."""
+    
+    cautions = discord.ui.TextInput(
+        label="Cautions",
+        style=discord.TextStyle.long,
+        required=False,
+        max_length=400,
+        placeholder="Enter any cautions, warnings, or notes about this member..."
+    )
+
+    def __init__(self, cog: "MuteList", guild: discord.Guild, member_id: int) -> None:
+        super().__init__()
+        self.cog = cog
+        self.guild = guild
+        self.member_id = member_id
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        try:
+            await self.cog.set_cautions(self.guild, self.member_id, self.cautions.value)
+            await interaction.response.send_message(
+                f"✅ Cautions saved for <@{self.member_id}>.",
+                ephemeral=True
+            )
+        except Exception as e:
+            log.exception("Failed to save cautions")
+            try:
+                await interaction.response.send_message(
+                    "❌ Failed to save cautions.",
                     ephemeral=True
                 )
             except Exception:
@@ -386,16 +421,28 @@ class MutedActionView(discord.ui.View):
                 reason = mute_record.get("reason") or "No reason provided"
                 at_ts = mute_record.get("at")
                 until_ts = mute_record.get("until")
+                cautions = mute_record.get("cautions") or ""
                 
                 mute_info = f"**Reason:** {reason[:100]}\n"
                 if at_ts:
                     muted_at = datetime.fromtimestamp(at_ts, tz=timezone.utc)
                     mute_info += f"**Muted:** {discord.utils.format_dt(muted_at, 'R')}\n"
+                
+                # Fix: Check if until_ts exists and is in the future
                 if until_ts:
                     expires_at = datetime.fromtimestamp(until_ts, tz=timezone.utc)
-                    mute_info += f"**Expires:** {discord.utils.format_dt(expires_at, 'R')}"
+                    now = datetime.now(timezone.utc)
+                    if expires_at > now:
+                        # Still temporary
+                        mute_info += f"**Expires:** {discord.utils.format_dt(expires_at, 'R')}"
+                    else:
+                        # Expired but not cleaned up
+                        mute_info += f"**Expired:** {discord.utils.format_dt(expires_at, 'R')}"
                 else:
                     mute_info += "**Duration:** Permanent"
+                
+                if cautions:
+                    mute_info += f"\n**⚠️ Cautions:** {cautions[:200]}"
                 
                 embed.add_field(
                     name="🔇 Mute Info",
@@ -594,6 +641,36 @@ class MutedActionView(discord.ui.View):
             except Exception:
                 pass
 
+    @discord.ui.button(label="Set Cautions", style=discord.ButtonStyle.gray, emoji="⚠️", row=2)
+    async def set_cautions(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        """Open modal to set/update cautions."""
+        try:
+            if not self.selected_member_id:
+                await self._send_response(
+                    interaction,
+                    "❌ Select a member from the dropdown first.",
+                    ephemeral=True
+                )
+                return
+            
+            guild = interaction.guild
+            if guild is None:
+                await self._send_response(interaction, "❌ Guild context missing.", ephemeral=True)
+                return
+            
+            modal = MemberCautionsModal(self.cog, guild, self.selected_member_id)
+            await interaction.response.send_modal(modal)
+        except Exception:
+            log.exception("Unhandled error in set_cautions button")
+            try:
+                await self._send_response(
+                    interaction,
+                    "❌ Failed to open cautions modal.",
+                    ephemeral=True
+                )
+            except Exception:
+                pass
+
     async def on_timeout(self) -> None:
         """Disable all buttons when the view times out."""
         try:
@@ -652,6 +729,7 @@ class MuteList(commands.Cog):
         reason: str | None = None,
         moderator: Optional[discord.abc.User] = None,
         until: Optional[datetime] = None,
+        cautions: str | None = None,
     ) -> None:
         """Call after you apply your mute role(s).
         
@@ -661,6 +739,7 @@ class MuteList(commands.Cog):
             reason: Reason for the mute
             moderator: The moderator who applied the mute
             until: When the mute expires (None for permanent)
+            cautions: Optional cautions/warnings about the member
         """
         async with self.config.guild(guild).mutes() as m:
             m[str(member.id)] = {
@@ -668,6 +747,7 @@ class MuteList(commands.Cog):
                 "moderator": moderator.id if moderator else 0,
                 "at": int(datetime.now(tz=timezone.utc).timestamp()),
                 "until": int(until.replace(tzinfo=timezone.utc).timestamp()) if until else None,
+                "cautions": (cautions or "").strip() if cautions else None,
             }
         
         # Log to configured channel
@@ -704,10 +784,33 @@ class MuteList(commands.Cog):
                     "moderator": 0,
                     "at": int(datetime.now(tz=timezone.utc).timestamp()),
                     "until": None,
+                    "cautions": None,
                 }
                 m[str(member_id)] = rec
             else:
                 rec["reason"] = reason
+
+    async def set_cautions(self, guild: discord.Guild, member_id: int, cautions: str) -> None:
+        """Update the cautions for a muted member.
+        
+        Args:
+            guild: The guild where the mute exists
+            member_id: The muted member
+            cautions: Cautions/warnings about the member
+        """
+        async with self.config.guild(guild).mutes() as m:
+            rec = m.get(str(member_id))
+            if rec is None:
+                rec = {
+                    "reason": "",
+                    "moderator": 0,
+                    "at": int(datetime.now(tz=timezone.utc).timestamp()),
+                    "until": None,
+                    "cautions": cautions,
+                }
+                m[str(member_id)] = rec
+            else:
+                rec["cautions"] = cautions
 
     async def get_mute_record(self, guild: discord.Guild, member_id: int) -> dict | None:
         """Get the mute record for a member.
@@ -1067,6 +1170,7 @@ class MuteList(commands.Cog):
             moderator = rec.get("moderator") or 0
             at = rec.get("at")
             until = rec.get("until")
+            cautions = (rec.get("cautions") or "").strip()
 
             # Try audit log if no reason and feature enabled
             if not reason and use_auditlog:
@@ -1076,15 +1180,19 @@ class MuteList(commands.Cog):
                     moderator = audit_data[1] or moderator
                     at = audit_data[2] or at
 
-            lines.append(
-                format_user_line(
-                    m,
-                    reason=reason or None,
-                    moderator_id=moderator or None,
-                    at_ts=at,
-                    until_ts=until,
-                )
+            user_line = format_user_line(
+                m,
+                reason=reason or None,
+                moderator_id=moderator or None,
+                at_ts=at,
+                until_ts=until,
             )
+            
+            # Add cautions if present
+            if cautions:
+                user_line += f"\n   ⚠️ **Cautions:** {cautions[:150]}"
+            
+            lines.append(user_line)
 
         # Chunk for Discord's limits
         chunks: List[str] = []
