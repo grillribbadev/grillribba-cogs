@@ -51,6 +51,7 @@ def format_user_line(
     else:
         when = "unknown"
     
+    # FIX: Properly check if until_ts is in the future
     if until_ts:
         now = int(datetime.now(timezone.utc).timestamp())
         if until_ts <= now:
