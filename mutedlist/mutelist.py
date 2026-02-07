@@ -177,19 +177,29 @@ class MutedActionView(discord.ui.View):
     async def _send_response(
         self,
         interaction: discord.Interaction,
-        content: str,
+        content: str = None,
         *,
+        embed: discord.Embed = None,
         ephemeral: bool = False
     ) -> None:
         """Send a response, handling both initial and followup messages."""
         try:
             if not interaction.response.is_done():
-                await interaction.response.send_message(content, ephemeral=ephemeral)
+                if embed:
+                    await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
+                else:
+                    await interaction.response.send_message(content, ephemeral=ephemeral)
             else:
-                await interaction.followup.send(content, ephemeral=ephemeral)
+                if embed:
+                    await interaction.followup.send(embed=embed, ephemeral=ephemeral)
+                else:
+                    await interaction.followup.send(content, ephemeral=ephemeral)
         except Exception:
             try:
-                await interaction.followup.send(content, ephemeral=ephemeral)
+                if embed:
+                    await interaction.followup.send(embed=embed, ephemeral=ephemeral)
+                else:
+                    await interaction.followup.send(content, ephemeral=ephemeral)
             except Exception:
                 log.exception("Failed to send interaction message")
 
@@ -212,7 +222,200 @@ class MutedActionView(discord.ui.View):
             return False
         return True
 
-    @discord.ui.button(label="Unmute", style=discord.ButtonStyle.green, emoji="🔊")
+    @discord.ui.button(label="User Info", style=discord.ButtonStyle.blurple, emoji="📊", row=0)
+    async def user_info(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        """Show detailed user information including messages, level, join date, etc."""
+        try:
+            if not self.selected_member_id:
+                await self._send_response(
+                    interaction,
+                    "❌ Select a member from the dropdown first.",
+                    ephemeral=True
+                )
+                return
+            
+            guild = interaction.guild
+            if guild is None:
+                await self._send_response(interaction, "❌ Guild context missing.", ephemeral=True)
+                return
+            
+            await self._safe_defer(interaction)
+            member = await self._resolve_member(self.selected_member_id)
+            
+            if member is None:
+                await self._send_response(interaction, "❌ Member not found.", ephemeral=False)
+                return
+            
+            # Create comprehensive user info embed
+            embed = discord.Embed(
+                title=f"📊 User Information: {member}",
+                color=EMBED_COLOR,
+                timestamp=datetime.now(timezone.utc),
+            )
+            
+            # Set thumbnail to user's avatar
+            embed.set_thumbnail(url=member.display_avatar.url)
+            
+            # Basic Info
+            embed.add_field(
+                name="👤 User",
+                value=f"{member.mention}\n`{member.id}`",
+                inline=True
+            )
+            
+            # Account Creation
+            created_delta = datetime.now(timezone.utc) - member.created_at
+            embed.add_field(
+                name="📅 Account Created",
+                value=f"{discord.utils.format_dt(member.created_at, 'D')}\n({discord.utils.format_dt(member.created_at, 'R')})",
+                inline=True
+            )
+            
+            # Server Join Date
+            if member.joined_at:
+                join_delta = datetime.now(timezone.utc) - member.joined_at
+                embed.add_field(
+                    name="📥 Joined Server",
+                    value=f"{discord.utils.format_dt(member.joined_at, 'D')}\n({discord.utils.format_dt(member.joined_at, 'R')})",
+                    inline=True
+                )
+            
+            # Roles (excluding @everyone)
+            roles = [r.mention for r in sorted(member.roles[1:], key=lambda r: r.position, reverse=True)]
+            if roles:
+                roles_text = ", ".join(roles[:10])  # Limit to first 10 roles
+                if len(member.roles) > 11:
+                    roles_text += f" *+{len(member.roles) - 11} more*"
+                embed.add_field(
+                    name=f"🎭 Roles ({len(member.roles) - 1})",
+                    value=roles_text,
+                    inline=False
+                )
+            
+            # Try to get Leveler/LevelUp data if available
+            leveler_cog = self.cog.bot.get_cog("Leveler") or self.cog.bot.get_cog("LevelUp")
+            if leveler_cog:
+                try:
+                    # Try Leveler format
+                    if hasattr(leveler_cog, "config"):
+                        user_data = await leveler_cog.config.user(member).all()
+                        if user_data:
+                            level = user_data.get("level", 0)
+                            xp = user_data.get("xp", 0)
+                            embed.add_field(
+                                name="📈 Level",
+                                value=f"Level: **{level}**\nXP: **{xp:,}**",
+                                inline=True
+                            )
+                except Exception:
+                    pass
+            
+            # Try to get message count from various message tracking cogs
+            # MessageCounter, ActivityTracker, etc.
+            message_count = None
+            
+            # Try MessageCounter
+            msg_counter = self.cog.bot.get_cog("MessageCounter")
+            if msg_counter and hasattr(msg_counter, "config"):
+                try:
+                    count = await msg_counter.config.member(member).messages()
+                    if count:
+                        message_count = count
+                except Exception:
+                    pass
+            
+            # Try checking if there's a messages attribute directly
+            if not message_count:
+                for cog_name in ["ActivityTracker", "Stats", "ServerStats", "MemberStats"]:
+                    cog = self.cog.bot.get_cog(cog_name)
+                    if cog and hasattr(cog, "config"):
+                        try:
+                            data = await cog.config.member(member).all()
+                            if "messages" in data:
+                                message_count = data["messages"]
+                                break
+                            elif "message_count" in data:
+                                message_count = data["message_count"]
+                                break
+                        except Exception:
+                            continue
+            
+            if message_count:
+                embed.add_field(
+                    name="💬 Messages",
+                    value=f"**{message_count:,}** messages",
+                    inline=True
+                )
+            
+            # Permissions/Status
+            perms = []
+            if member.guild_permissions.administrator:
+                perms.append("👑 Administrator")
+            if member.guild_permissions.manage_guild:
+                perms.append("⚙️ Manage Server")
+            if member.guild_permissions.manage_messages:
+                perms.append("🗑️ Manage Messages")
+            if member.guild_permissions.ban_members:
+                perms.append("🔨 Ban Members")
+            if member.guild_permissions.kick_members:
+                perms.append("👢 Kick Members")
+            
+            if perms:
+                embed.add_field(
+                    name="🔑 Key Permissions",
+                    value="\n".join(perms[:5]),
+                    inline=True
+                )
+            
+            # Status
+            status_emojis = {
+                discord.Status.online: "🟢 Online",
+                discord.Status.idle: "🟡 Idle",
+                discord.Status.dnd: "🔴 Do Not Disturb",
+                discord.Status.offline: "⚫ Offline",
+            }
+            embed.add_field(
+                name="📡 Status",
+                value=status_emojis.get(member.status, "❓ Unknown"),
+                inline=True
+            )
+            
+            # Mute info
+            mute_record = await self.cog.get_mute_record(guild, member.id)
+            if mute_record:
+                reason = mute_record.get("reason") or "No reason provided"
+                at_ts = mute_record.get("at")
+                until_ts = mute_record.get("until")
+                
+                mute_info = f"**Reason:** {reason[:100]}\n"
+                if at_ts:
+                    muted_at = datetime.fromtimestamp(at_ts, tz=timezone.utc)
+                    mute_info += f"**Muted:** {discord.utils.format_dt(muted_at, 'R')}\n"
+                if until_ts:
+                    expires_at = datetime.fromtimestamp(until_ts, tz=timezone.utc)
+                    mute_info += f"**Expires:** {discord.utils.format_dt(expires_at, 'R')}"
+                else:
+                    mute_info += "**Duration:** Permanent"
+                
+                embed.add_field(
+                    name="🔇 Mute Info",
+                    value=mute_info,
+                    inline=False
+                )
+            
+            # Footer
+            embed.set_footer(
+                text=f"ID: {member.id} • Requested by {interaction.user}",
+                icon_url=interaction.user.display_avatar.url
+            )
+            
+            await self._send_response(interaction, embed=embed, ephemeral=True)
+            
+        except Exception:
+            log.exception("Unhandled error in user_info button")
+            await self._send_response(interaction, "❌ An internal error occurred.", ephemeral=True)
+
+    @discord.ui.button(label="Unmute", style=discord.ButtonStyle.green, emoji="🔊", row=1)
     async def unmute(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         """Remove mute role(s) from selected member."""
         try:
@@ -268,7 +471,7 @@ class MutedActionView(discord.ui.View):
             log.exception("Unhandled error in unmute button")
             await self._send_response(interaction, "❌ An internal error occurred.", ephemeral=True)
 
-    @discord.ui.button(label="Kick", style=discord.ButtonStyle.blurple, emoji="👢")
+    @discord.ui.button(label="Kick", style=discord.ButtonStyle.blurple, emoji="👢", row=1)
     async def kick(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         """Kick the selected member."""
         try:
@@ -313,7 +516,7 @@ class MutedActionView(discord.ui.View):
             log.exception("Unhandled error in kick button")
             await self._send_response(interaction, "❌ An internal error occurred.", ephemeral=True)
 
-    @discord.ui.button(label="Ban", style=discord.ButtonStyle.red, emoji="🔨")
+    @discord.ui.button(label="Ban", style=discord.ButtonStyle.red, emoji="🔨", row=1)
     async def ban(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         """Ban the selected member."""
         try:
@@ -361,7 +564,7 @@ class MutedActionView(discord.ui.View):
             log.exception("Unhandled error in ban button")
             await self._send_response(interaction, "❌ An internal error occurred.", ephemeral=True)
 
-    @discord.ui.button(label="Set Reason", style=discord.ButtonStyle.gray, emoji="📝")
+    @discord.ui.button(label="Set Reason", style=discord.ButtonStyle.gray, emoji="📝", row=1)
     async def set_reason(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         """Open modal to set/update mute reason."""
         try:
@@ -423,11 +626,12 @@ class MuteList(commands.Cog):
     
     This cog tracks members with configured mute roles and maintains
     a persistent record of mute reasons, moderators, and timestamps.
-    Includes interactive buttons for unmuting, kicking, banning, and updating reasons.
+    Includes interactive buttons for unmuting, kicking, banning, viewing user info,
+    and updating reasons.
     """
 
-    __version__ = "2.1.0"
-    __author__ = "AfterWorld (Enhanced with UI)"
+    __version__ = "2.2.0"
+    __author__ = "AfterWorld (Enhanced with UI & User Info)"
 
     def __init__(self, bot: Red) -> None:
         self.bot = bot
@@ -903,7 +1107,7 @@ class MuteList(commands.Cog):
             timestamp=datetime.now(timezone.utc),
         )
         embed.set_footer(
-            text=f"{guild.name}",
+            text=f"{guild.name} • Click 'User Info' to see member details",
             icon_url=guild.icon.url if guild.icon else None
         )
 
