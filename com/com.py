@@ -84,13 +84,15 @@ class ChatterOfMonth(commands.Cog):
         """List configured counting channels."""
         chs = await self.config.guild(ctx.guild).channels()
         if not chs:
-            await ctx.send("No channels configured.")
+            embed = discord.Embed(title="Counting channels", description="No channels configured.")
+            await ctx.send(embed=embed)
             return
         out = []
         for cid in chs:
             c = ctx.guild.get_channel(cid)
             out.append(c.mention if c else f"(deleted channel `{cid}`)")
-        await ctx.send("Counting channels:\n" + "\n".join(out))
+        embed = discord.Embed(title="Counting channels", description="\n".join(out))
+        await ctx.send(embed=embed)
 
     @chatter_group.group(name="announce")
     async def chatter_announce(self, ctx: commands.Context):
@@ -100,26 +102,31 @@ class ChatterOfMonth(commands.Cog):
     async def chatter_announce_set(self, ctx: commands.Context, channel: discord.TextChannel):
         """Set the channel where winners will be announced."""
         await self.config.guild(ctx.guild).announce_channel.set(channel.id)
-        await ctx.send(f"Announcements will be posted to {channel.mention}.")
+        embed = discord.Embed(title="Announce Channel Set", description=f"Announcements will be posted to {channel.mention}.")
+        await ctx.send(embed=embed)
 
     @chatter_announce.command(name="clear")
     async def chatter_announce_clear(self, ctx: commands.Context):
         """Clear the announce channel (uses command channel)."""
         await self.config.guild(ctx.guild).announce_channel.set(0)
-        await ctx.send("Cleared announce channel; announcements will use the command channel.")
+        embed = discord.Embed(title="Announce Channel Cleared", description="Announcements will use the command channel.")
+        await ctx.send(embed=embed)
 
     @chatter_announce.command(name="show")
     async def chatter_announce_show(self, ctx: commands.Context):
         """Show the announce channel."""
         cid = await self.config.guild(ctx.guild).announce_channel()
         if not cid:
-            await ctx.send("No announce channel set (will use command channel).")
+            embed = discord.Embed(title="Announce Channel", description="No announce channel set (will use command channel).")
+            await ctx.send(embed=embed)
             return
         ch = ctx.guild.get_channel(cid)
         if ch:
-            await ctx.send(f"Announcements go to {ch.mention}.")
+            embed = discord.Embed(title="Announce Channel", description=f"Announcements go to {ch.mention}.")
+            await ctx.send(embed=embed)
         else:
-            await ctx.send(f"Announce channel is set to unknown channel id `{cid}`.")
+            embed = discord.Embed(title="Announce Channel", description=f"Announce channel is set to unknown channel id `{cid}`.")
+            await ctx.send(embed=embed)
 
     @chatter_group.command(name="winner")
     async def chatter_winner(self, ctx: commands.Context, month: Optional[str] = None):
@@ -146,7 +153,8 @@ class ChatterOfMonth(commands.Cog):
         stats = await self.config.guild(ctx.guild).stats()
         month_stats = stats.get(month) or {}
         if not month_stats:
-            await ctx.send(f"No data for {month}.")
+            embed = discord.Embed(title="No Data", description=f"No data for {month}.")
+            await ctx.send(embed=embed)
             return
         # find top
         top_uid, top_count = max(month_stats.items(), key=lambda kv: kv[1])
@@ -173,7 +181,8 @@ class ChatterOfMonth(commands.Cog):
                     await ch.send(content="@everyone", embed=embed)
                 else:
                     await ch.send(embed=embed)
-                await ctx.send(f"Announced winner for {month} in {ch.mention}.")
+                done_embed = discord.Embed(title="Winner Announced", description=f"Announced winner for {month} in {ch.mention}.")
+                await ctx.send(embed=done_embed)
                 return
         # fallback to command channel
         if everyone:
@@ -224,13 +233,16 @@ class ChatterOfMonth(commands.Cog):
         top_uid_int = int(top_uid)
         member = ctx.guild.get_member(top_uid_int)
         mention = member.mention if member else f"<@{top_uid_int}>"
-        lines = [f"Current leader for {month_key}: {mention} — {top_count} messages"]
+        embed = discord.Embed(title=f"Current leader — {month_key}")
+        embed.add_field(name="Leader", value=f"{mention} — {top_count} messages", inline=False)
         sorted_top = sorted(month_stats.items(), key=lambda kv: kv[1], reverse=True)[:5]
+        desc_lines = []
         for uid, cnt in sorted_top:
             uid_i = int(uid)
             m = ctx.guild.get_member(uid_i)
-            lines.append(f"{(m.mention if m else f'<@{uid_i}>')}: {cnt}")
-        await ctx.send("\n".join(lines))
+            desc_lines.append(f"{(m.mention if m else f'<@{uid_i}>')}: {cnt}")
+        embed.add_field(name="Top 5", value="\n".join(desc_lines), inline=False)
+        await ctx.send(embed=embed)
 
     @chatter_group.group(name="backdate")
     async def chatter_backdate(self, ctx: commands.Context):
@@ -253,13 +265,15 @@ class ChatterOfMonth(commands.Cog):
             return
         normalized = parsed.strftime("%Y-%m-%d")
         await self.config.guild(ctx.guild).current_override.set(normalized)
-        await ctx.send(f"Set leader display override to {normalized}.")
+        embed = discord.Embed(title="Backdate Set", description=f"Set leader display override to {normalized}.")
+        await ctx.send(embed=embed)
 
     @chatter_backdate.command(name="clear")
     async def chatter_backdate_clear(self, ctx: commands.Context):
         """Clear the backdate override."""
         await self.config.guild(ctx.guild).current_override.set("")
-        await ctx.send("Cleared backdate override; `chatter leader` will use today's date.")
+        embed = discord.Embed(title="Backdate Cleared", description="Cleared backdate override; `chatter leader` will use today's date.")
+        await ctx.send(embed=embed)
 
     @chatter_group.command(name="show")
     async def chatter_show(self, ctx: commands.Context):
@@ -269,13 +283,17 @@ class ChatterOfMonth(commands.Cog):
         override = await self.config.guild(ctx.guild).current_override()
         everyone = await self.config.guild(ctx.guild).announce_everyone()
         stats = await self.config.guild(ctx.guild).stats()
-        lines = [f"Counting channels: {', '.join(str(ctx.guild.get_channel(c).mention) if ctx.guild.get_channel(c) else str(c) for c in chs) or 'None'}"]
-        lines.append(f"Announce channel: {ctx.guild.get_channel(ann).mention if ann and ctx.guild.get_channel(ann) else ('None' if not ann else str(ann))}")
-        lines.append(f"Backdate override: {override or 'None'}")
-        lines.append(f"Announce @everyone: {'Yes' if everyone else 'No'}")
+        embed = discord.Embed(title="Chatter Config & Stats")
+        channels_display = ', '.join(str(ctx.guild.get_channel(c).mention) if ctx.guild.get_channel(c) else str(c) for c in chs) or 'None'
+        ann_display = ctx.guild.get_channel(ann).mention if ann and ctx.guild.get_channel(ann) else ('None' if not ann else str(ann))
         months = sorted(stats.keys(), reverse=True)[:6]
-        lines.append(f"Months with data (recent): {', '.join(months) if months else 'None'}")
-        await ctx.send("\n".join(lines))
+        months_display = ', '.join(months) if months else 'None'
+        embed.add_field(name="Counting channels", value=channels_display, inline=False)
+        embed.add_field(name="Announce channel", value=ann_display, inline=False)
+        embed.add_field(name="Backdate override", value=(override or 'None'), inline=False)
+        embed.add_field(name="Announce @everyone", value=('Yes' if everyone else 'No'), inline=False)
+        embed.add_field(name="Months with data (recent)", value=months_display, inline=False)
+        await ctx.send(embed=embed)
 
     @chatter_group.command(name="rebuild")
     @commands.admin_or_permissions(manage_guild=True)
@@ -314,7 +332,8 @@ class ChatterOfMonth(commands.Cog):
             await ctx.send("No channels to scan (configured channels are empty or not visible).")
             return
 
-        await ctx.send(f"Starting rebuild for {start.strftime('%Y-%m')} across {len(scan_channels)} channel(s). This may take some time.")
+        embed = discord.Embed(title="Rebuild Started", description=f"Starting rebuild for {start.strftime('%Y-%m')} across {len(scan_channels)} channel(s). This may take some time.")
+        await ctx.send(embed=embed)
         counts: dict[str, int] = {}
         for ch in scan_channels:
             try:
@@ -325,11 +344,13 @@ class ChatterOfMonth(commands.Cog):
                     counts[uid] = counts.get(uid, 0) + 1
             except Exception as exc:
                 log.exception("Failed scanning channel %s: %s", ch.id, exc)
-                await ctx.send(f"Failed scanning {ch.mention}: {exc}")
+                err_embed = discord.Embed(title="Channel Scan Failed", description=f"Failed scanning {ch.mention}: {exc}")
+                await ctx.send(embed=err_embed)
 
         # write to config
         month_key = f"{start.year}-{start.month:02d}"
         async with self.config.guild(ctx.guild).stats() as stats:
             stats[month_key] = counts
 
-        await ctx.send(f"Rebuild complete for {month_key}. Counted messages for {len(counts)} users.")
+        done_embed = discord.Embed(title="Rebuild Complete", description=f"Rebuild complete for {month_key}. Counted messages for {len(counts)} users.")
+        await ctx.send(embed=done_embed)
