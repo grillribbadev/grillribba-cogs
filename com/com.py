@@ -11,7 +11,7 @@ from redbot.core.bot import Red
 log = logging.getLogger(__name__)
 
 
-DEFAULT_GUILD = {"channels": [], "announce_channel": 0, "stats": {}, "current_override": ""}
+DEFAULT_GUILD = {"channels": [], "announce_channel": 0, "stats": {}, "current_override": "", "announce_everyone": False}
 
 
 def _month_key_for_dt(dt: Optional[datetime] = None) -> str:
@@ -124,11 +124,25 @@ class ChatterOfMonth(commands.Cog):
     @chatter_group.command(name="winner")
     async def chatter_winner(self, ctx: commands.Context, month: Optional[str] = None):
         """Show the top chatter for a month. Month format `YYYY-MM`. Defaults to previous month."""
+        # Determine month: explicit arg wins, otherwise respect guild backdate override, else previous month
         if month is None:
-            now = datetime.utcnow()
-            first = now.replace(day=1)
-            prev = first - timedelta(days=1)
-            month = _month_key_for_dt(prev)
+            override = await self.config.guild(ctx.guild).current_override()
+            if override:
+                # override stored as YYYY-MM-DD; use its month
+                try:
+                    odt = datetime.strptime(override, "%Y-%m-%d")
+                    month = _month_key_for_dt(odt)
+                except Exception:
+                    # fallback to previous month if parsing fails
+                    now = datetime.utcnow()
+                    first = now.replace(day=1)
+                    prev = first - timedelta(days=1)
+                    month = _month_key_for_dt(prev)
+            else:
+                now = datetime.utcnow()
+                first = now.replace(day=1)
+                prev = first - timedelta(days=1)
+                month = _month_key_for_dt(prev)
         stats = await self.config.guild(ctx.guild).stats()
         month_stats = stats.get(month) or {}
         if not month_stats:
@@ -149,15 +163,23 @@ class ChatterOfMonth(commands.Cog):
             m = ctx.guild.get_member(uid_i)
             desc_lines.append(f"{(m.mention if m else f'<@{uid_i}>')}: {cnt}")
         embed.add_field(name="Top 5", value="\n".join(desc_lines), inline=False)
-        # send to announce channel if set
+        # send to announce channel if set. Always send embed; optionally mention everyone.
         ann = await self.config.guild(ctx.guild).announce_channel()
+        everyone = await self.config.guild(ctx.guild).announce_everyone()
         if ann:
             ch = ctx.guild.get_channel(ann)
             if ch:
-                await ch.send(embed=embed)
+                if everyone:
+                    await ch.send(content="@everyone", embed=embed)
+                else:
+                    await ch.send(embed=embed)
                 await ctx.send(f"Announced winner for {month} in {ch.mention}.")
                 return
-        await ctx.send(embed=embed)
+        # fallback to command channel
+        if everyone:
+            await ctx.send(content="@everyone", embed=embed)
+        else:
+            await ctx.send(embed=embed)
 
     @chatter_group.command(name="leader")
     async def chatter_leader(self, ctx: commands.Context, date: Optional[str] = None):
@@ -218,17 +240,20 @@ class ChatterOfMonth(commands.Cog):
     async def chatter_backdate_set(self, ctx: commands.Context, date: str):
         """Set a backdate override (format `YYYY-MM-DD` or `YYYY-MM`)."""
         # validate
+        parsed = None
         try:
-            # accept either YYYY-MM-DD or YYYY-MM
             try:
-                _ = datetime.strptime(date, "%Y-%m-%d")
+                parsed = datetime.strptime(date, "%Y-%m-%d")
             except Exception:
-                _ = datetime.strptime(date, "%Y-%m")
+                # if YYYY-MM provided, normalize to first day of month
+                parsed = datetime.strptime(date, "%Y-%m")
+                parsed = parsed.replace(day=1)
         except Exception:
             await ctx.send("Invalid date format. Use `YYYY-MM-DD` or `YYYY-MM`.")
             return
-        await self.config.guild(ctx.guild).current_override.set(date)
-        await ctx.send(f"Set leader display override to {date}.")
+        normalized = parsed.strftime("%Y-%m-%d")
+        await self.config.guild(ctx.guild).current_override.set(normalized)
+        await ctx.send(f"Set leader display override to {normalized}.")
 
     @chatter_backdate.command(name="clear")
     async def chatter_backdate_clear(self, ctx: commands.Context):
