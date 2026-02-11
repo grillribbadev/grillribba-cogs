@@ -321,7 +321,7 @@ class ChatterOfMonth(commands.Cog):
             next_month = start.replace(month=start.month + 1)
         end = next_month.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
-        # determine channels to scan
+        # determine channels to scan: only configured channels unless channels provided
         if channels:
             scan_channels = list(channels)
         else:
@@ -329,7 +329,11 @@ class ChatterOfMonth(commands.Cog):
             scan_channels = [ctx.guild.get_channel(cid) for cid in cfg_ch if ctx.guild.get_channel(cid)]
 
         if not scan_channels:
-            await ctx.send("No channels to scan (configured channels are empty or not visible).")
+            embed = discord.Embed(
+                title="No Configured Channels",
+                description="No configured channels to scan. Add channels with `.chatter channels add <channel>` or provide channels to the command."
+            )
+            await ctx.send(embed=embed)
             return
 
         embed = discord.Embed(title="Rebuild Started", description=f"Starting rebuild for {start.strftime('%Y-%m')} across {len(scan_channels)} channel(s). This may take some time.")
