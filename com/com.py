@@ -266,9 +266,70 @@ class ChatterOfMonth(commands.Cog):
         """Show current config and stats months available."""
         chs = await self.config.guild(ctx.guild).channels()
         ann = await self.config.guild(ctx.guild).announce_channel()
+        override = await self.config.guild(ctx.guild).current_override()
+        everyone = await self.config.guild(ctx.guild).announce_everyone()
         stats = await self.config.guild(ctx.guild).stats()
         lines = [f"Counting channels: {', '.join(str(ctx.guild.get_channel(c).mention) if ctx.guild.get_channel(c) else str(c) for c in chs) or 'None'}"]
         lines.append(f"Announce channel: {ctx.guild.get_channel(ann).mention if ann and ctx.guild.get_channel(ann) else ('None' if not ann else str(ann))}")
+        lines.append(f"Backdate override: {override or 'None'}")
+        lines.append(f"Announce @everyone: {'Yes' if everyone else 'No'}")
         months = sorted(stats.keys(), reverse=True)[:6]
         lines.append(f"Months with data (recent): {', '.join(months) if months else 'None'}")
         await ctx.send("\n".join(lines))
+
+    @chatter_group.command(name="rebuild")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def chatter_rebuild(self, ctx: commands.Context, month: str, *channels: discord.TextChannel):
+        """Rebuild counts for a month by rescanning message history.
+
+        `month` is `YYYY-MM` or `YYYY-MM-DD` (day ignored). If channels are provided,
+        those will be scanned; otherwise the cog uses configured counting channels.
+        WARNING: this can be slow for large servers.
+        """
+        # parse month -> start and end datetimes (UTC)
+        try:
+            try:
+                dt = datetime.strptime(month, "%Y-%m-%d")
+            except Exception:
+                dt = datetime.strptime(month, "%Y-%m")
+        except Exception:
+            await ctx.send("Invalid month format. Use `YYYY-MM` or `YYYY-MM-DD`.")
+            return
+        start = dt.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        # compute first day of next month
+        if start.month == 12:
+            next_month = start.replace(year=start.year + 1, month=1)
+        else:
+            next_month = start.replace(month=start.month + 1)
+        end = next_month.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+        # determine channels to scan
+        if channels:
+            scan_channels = list(channels)
+        else:
+            cfg_ch = await self.config.guild(ctx.guild).channels()
+            scan_channels = [ctx.guild.get_channel(cid) for cid in cfg_ch if ctx.guild.get_channel(cid)]
+
+        if not scan_channels:
+            await ctx.send("No channels to scan (configured channels are empty or not visible).")
+            return
+
+        await ctx.send(f"Starting rebuild for {start.strftime('%Y-%m')} across {len(scan_channels)} channel(s). This may take some time.")
+        counts: dict[str, int] = {}
+        for ch in scan_channels:
+            try:
+                async for msg in ch.history(after=start, before=end, limit=None):
+                    if msg.author.bot:
+                        continue
+                    uid = str(msg.author.id)
+                    counts[uid] = counts.get(uid, 0) + 1
+            except Exception as exc:
+                log.exception("Failed scanning channel %s: %s", ch.id, exc)
+                await ctx.send(f"Failed scanning {ch.mention}: {exc}")
+
+        # write to config
+        month_key = f"{start.year}-{start.month:02d}"
+        async with self.config.guild(ctx.guild).stats() as stats:
+            stats[month_key] = counts
+
+        await ctx.send(f"Rebuild complete for {month_key}. Counted messages for {len(counts)} users.")
