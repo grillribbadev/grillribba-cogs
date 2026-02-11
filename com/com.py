@@ -11,7 +11,7 @@ from redbot.core.bot import Red
 log = logging.getLogger(__name__)
 
 
-DEFAULT_GUILD = {"channels": [], "announce_channel": 0, "stats": {}}
+DEFAULT_GUILD = {"channels": [], "announce_channel": 0, "stats": {}, "current_override": ""}
 
 
 def _month_key_for_dt(dt: Optional[datetime] = None) -> str:
@@ -158,6 +158,83 @@ class ChatterOfMonth(commands.Cog):
                 await ctx.send(f"Announced winner for {month} in {ch.mention}.")
                 return
         await ctx.send(embed=embed)
+
+    @chatter_group.command(name="leader")
+    async def chatter_leader(self, ctx: commands.Context, date: Optional[str] = None):
+        """Show who's currently in lead for a month or a specific date.
+
+        `date` accepts `YYYY-MM-DD` or `YYYY-MM`. If omitted and an override is set
+        via `chatter backdate set`, that date will be used; otherwise today's date is used.
+        The command shows the top 5 and the current leader for the corresponding calendar month.
+        """
+        # resolve date: priority -> explicit arg -> guild override -> today
+        if date:
+            parsed = None
+            try:
+                parsed = datetime.strptime(date, "%Y-%m-%d")
+            except Exception:
+                try:
+                    parsed = datetime.strptime(date, "%Y-%m")
+                except Exception:
+                    await ctx.send("Invalid date format. Use `YYYY-MM-DD` or `YYYY-MM`.")
+                    return
+        else:
+            override = await self.config.guild(ctx.guild).current_override()
+            if override:
+                try:
+                    parsed = datetime.strptime(override, "%Y-%m-%d")
+                except Exception:
+                    try:
+                        parsed = datetime.strptime(override, "%Y-%m")
+                    except Exception:
+                        parsed = datetime.utcnow()
+            else:
+                parsed = datetime.utcnow()
+
+        month_key = f"{parsed.year}-{parsed.month:02d}"
+        stats = await self.config.guild(ctx.guild).stats()
+        month_stats = stats.get(month_key) or {}
+        if not month_stats:
+            await ctx.send(f"No data for {month_key}.")
+            return
+        # compute top and top 5
+        top_uid, top_count = max(month_stats.items(), key=lambda kv: kv[1])
+        top_uid_int = int(top_uid)
+        member = ctx.guild.get_member(top_uid_int)
+        mention = member.mention if member else f"<@{top_uid_int}>"
+        lines = [f"Current leader for {month_key}: {mention} — {top_count} messages"]
+        sorted_top = sorted(month_stats.items(), key=lambda kv: kv[1], reverse=True)[:5]
+        for uid, cnt in sorted_top:
+            uid_i = int(uid)
+            m = ctx.guild.get_member(uid_i)
+            lines.append(f"{(m.mention if m else f'<@{uid_i}>')}: {cnt}")
+        await ctx.send("\n".join(lines))
+
+    @chatter_group.group(name="backdate")
+    async def chatter_backdate(self, ctx: commands.Context):
+        """Manage a display backdate override used by `chatter leader` when no date is provided."""
+
+    @chatter_backdate.command(name="set")
+    async def chatter_backdate_set(self, ctx: commands.Context, date: str):
+        """Set a backdate override (format `YYYY-MM-DD` or `YYYY-MM`)."""
+        # validate
+        try:
+            # accept either YYYY-MM-DD or YYYY-MM
+            try:
+                _ = datetime.strptime(date, "%Y-%m-%d")
+            except Exception:
+                _ = datetime.strptime(date, "%Y-%m")
+        except Exception:
+            await ctx.send("Invalid date format. Use `YYYY-MM-DD` or `YYYY-MM`.")
+            return
+        await self.config.guild(ctx.guild).current_override.set(date)
+        await ctx.send(f"Set leader display override to {date}.")
+
+    @chatter_backdate.command(name="clear")
+    async def chatter_backdate_clear(self, ctx: commands.Context):
+        """Clear the backdate override."""
+        await self.config.guild(ctx.guild).current_override.set("")
+        await ctx.send("Cleared backdate override; `chatter leader` will use today's date.")
 
     @chatter_group.command(name="show")
     async def chatter_show(self, ctx: commands.Context):
