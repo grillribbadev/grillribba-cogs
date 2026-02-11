@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timedelta
 from typing import Optional
@@ -11,7 +12,7 @@ from redbot.core.bot import Red
 log = logging.getLogger(__name__)
 
 
-DEFAULT_GUILD = {"channels": [], "announce_channel": 0, "stats": {}, "current_override": "", "announce_everyone": False}
+DEFAULT_GUILD = {"channels": [], "announce_channel": 0, "stats": {}, "current_override": "", "announce_everyone": False, "last_announce_month": ""}
 
 
 def _month_key_for_dt(dt: Optional[datetime] = None) -> str:
@@ -26,6 +27,12 @@ class ChatterOfMonth(commands.Cog):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=0xC0FFEE1, force_registration=True)
         self.config.register_guild(**DEFAULT_GUILD)
+        self._announcer_task: Optional[asyncio.Task] = None
+        try:
+            self._announcer_task = self.bot.loop.create_task(self._monthly_announcer_loop())
+        except Exception:
+            # bot loop may not be available in some environments; defer until cog_load
+            self._announcer_task = None
 
     # ---------- Event listener ------------------------------------------------
     @commands.Cog.listener()
@@ -46,6 +53,101 @@ class ChatterOfMonth(commands.Cog):
             uid = str(message.author.id)
             month_stats[uid] = month_stats.get(uid, 0) + 1
             stats[month] = month_stats
+
+    async def cog_unload(self) -> None:
+        if self._announcer_task:
+            self._announcer_task.cancel()
+            try:
+                await self._announcer_task
+            except Exception:
+                pass
+
+    async def _monthly_announcer_loop(self) -> None:
+        """Background task: check hourly for month boundary and announce previous month's winner.
+
+        For each guild the bot is in, if the guild's `last_announce_month` is different
+        from the previous month, post the previous month's winner to the configured
+        announce channel (or `system_channel` if not set and available) and update
+        `last_announce_month` to avoid duplicate announcements.
+        """
+        await self.bot.wait_until_red_ready() if hasattr(self.bot, "wait_until_red_ready") else None
+        while True:
+            try:
+                now = datetime.utcnow()
+                first_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+                prev = first_of_month - timedelta(days=1)
+                prev_key = f"{prev.year}-{prev.month:02d}"
+
+                for guild in list(self.bot.guilds):
+                    try:
+                        last = await self.config.guild(guild).last_announce_month()
+                        if last == prev_key:
+                            continue
+
+                        # build embed for prev_key
+                        stats = await self.config.guild(guild).stats()
+                        month_stats = stats.get(prev_key) or {}
+                        embed = discord.Embed(title=f"Chatter of {prev_key}", color=0x00FF00)
+                        if not month_stats:
+                            embed.description = "No data for this month."
+                        else:
+                            top_uid, top_count = max(month_stats.items(), key=lambda kv: kv[1])
+                            top_uid_int = int(top_uid)
+                            member = guild.get_member(top_uid_int)
+                            mention = member.mention if member else f"<@{top_uid_int}>"
+                            embed.add_field(name="Winner", value=f"{mention} — {top_count} messages", inline=False)
+                            sorted_top = sorted(month_stats.items(), key=lambda kv: kv[1], reverse=True)[:5]
+                            desc_lines = []
+                            for uid, cnt in sorted_top:
+                                uid_i = int(uid)
+                                m = guild.get_member(uid_i)
+                                desc_lines.append(f"{(m.mention if m else f'<@{uid_i}>')}: {cnt}")
+                            embed.add_field(name="Top 5", value="\n".join(desc_lines), inline=False)
+
+                        ann = await self.config.guild(guild).announce_channel()
+                        everyone = await self.config.guild(guild).announce_everyone()
+                        sent = False
+                        if ann:
+                            ch = guild.get_channel(ann)
+                            if ch:
+                                try:
+                                    if everyone:
+                                        await ch.send(content="@everyone", embed=embed)
+                                    else:
+                                        await ch.send(embed=embed)
+                                    sent = True
+                                except Exception:
+                                    log.exception("Failed to send monthly announce to channel %s in guild %s", ann, guild.id)
+                        else:
+                            # fallback to system_channel if bot can send
+                            ch = guild.system_channel
+                            if ch:
+                                perms = ch.permissions_for(guild.me)
+                                if perms.send_messages:
+                                    try:
+                                        if everyone:
+                                            await ch.send(content="@everyone", embed=embed)
+                                        else:
+                                            await ch.send(embed=embed)
+                                        sent = True
+                                    except Exception:
+                                        log.exception("Failed to send monthly announce to system_channel in guild %s", guild.id)
+
+                        # record announced month regardless of success to avoid repeated attempts
+                        await self.config.guild(guild).last_announce_month.set(prev_key)
+                    except Exception:
+                        log.exception("Error during monthly announcement for guild %s", getattr(guild, "id", "?"))
+
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                log.exception("Monthly announcer loop raised an exception")
+
+            # sleep until next hour to check again
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                break
 
     # ---------- Admin commands ------------------------------------------------
     @commands.group(name="chatter")
