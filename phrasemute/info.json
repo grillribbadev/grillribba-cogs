@@ -1,0 +1,11 @@
+// info.json
+{
+    "author": ["Grillribba"],
+    "install_msg": "PhraseMute installed. Use [p]phrasemute to configure.",
+    "name": "PhraseMute",
+    "short": "Auto-mute users who send blacklisted phrases.",
+    "description": "Automatically mutes users if they send a configured phrase/pattern and logs to a chosen channel, mentioning a chosen role/user.",
+    "tags": ["moderation", "automod", "mute"],
+    "min_bot_version": "3.5.0",
+    "requirements": []
+  }
