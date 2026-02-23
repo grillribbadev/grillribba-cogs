@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass
 from typing import Optional, Union, List
 
@@ -54,11 +55,13 @@ class PhraseMute(commands.Cog):
     """
     Auto-mute users who send configured phrases.
 
-    Goals:
-    - FAST reaction (on_message_without_command)
-    - SAFE matching by default (EXACT after normalization)
-    - Robust to mention spam / different victim IDs / whitespace tricks
-    - Logs a detailed embed to a configured channel, optionally pinging role/user
+    Key behaviors:
+    - Fast: triggers in on_message_without_command
+    - Safe matching default: exact (normalized full-message match)
+    - Robust to: mention spam, different victim IDs, whitespace/newline tricks
+    - Deletes triggering message (optional)
+    - Applies configured muted role
+    - Logs ONE embed per user per cooldown window (prevents mod-log spam)
     """
 
     def __init__(self, bot: Red):
@@ -67,18 +70,22 @@ class PhraseMute(commands.Cog):
 
         defaults_guild = {
             "enabled": False,
-            "muted_role_id": None,        # int
-            "log_channel_id": None,       # int
-            "mention_role_id": None,      # int (optional)
-            "mention_user_id": None,      # int (optional)
-            "delete_trigger_message": True,  # best practice for this use-case
-            "phrases": [],                # list[str]
-            "match_mode": "exact",        # "exact" | "contains" | "regex"
+            "muted_role_id": None,         # int
+            "log_channel_id": None,        # int
+            "mention_role_id": None,       # int (optional)
+            "mention_user_id": None,       # int (optional)
+            "delete_trigger_message": True,
+            "phrases": [],                 # list[str]
+            "match_mode": "exact",         # "exact" | "contains" | "regex"
             "ignore_admins": True,
             "ignore_mods": True,
+            "log_cooldown_seconds": 45,    # log once per user per N seconds
         }
-
         self.config.register_guild(**defaults_guild)
+
+        # In-memory cooldown tracker (fast, resets on bot restart)
+        # key = (guild_id, user_id) -> last_log_timestamp (float)
+        self._recent_logs = {}
 
     # -------------------------
     # Helpers
@@ -146,7 +153,6 @@ class PhraseMute(commands.Cog):
                     if re.search(pattern, content or "", flags=re.IGNORECASE):
                         return MatchResult(phrase=pattern)
                 except re.error:
-                    # invalid regex; skip
                     continue
             return None
 
@@ -156,12 +162,10 @@ class PhraseMute(commands.Cog):
             p = normalize_for_match(raw, strip_leading_mentions=True)
 
             if mode == "exact":
-                # safest: must be effectively the same message after normalization
                 if msg == p:
                     return MatchResult(phrase=raw)
 
             elif mode == "contains":
-                # broader: still requires contiguous substring, not "any word"
                 if p and p in msg:
                     return MatchResult(phrase=raw)
 
@@ -196,6 +200,15 @@ class PhraseMute(commands.Cog):
         ts = int(dt.timestamp())
         return f"<t:{ts}:F> • <t:{ts}:R>"
 
+    def _should_log_now(self, guild_id: int, user_id: int, cooldown: int) -> bool:
+        key = (guild_id, user_id)
+        now = time.time()
+        last = self._recent_logs.get(key)
+        if last is not None and (now - last) < cooldown:
+            return False
+        self._recent_logs[key] = now
+        return True
+
     async def _log_action(
         self,
         *,
@@ -228,7 +241,6 @@ class PhraseMute(commands.Cog):
         created_at = self._dt_discord(author.created_at)
         joined_at = self._dt_discord(member.joined_at) if member and member.joined_at else "Unknown"
 
-        # Roles (skip @everyone)
         roles_text = "Unknown"
         if member:
             roles = [r.mention for r in member.roles if r.name != "@everyone"]
@@ -282,8 +294,7 @@ class PhraseMute(commands.Cog):
         if message.guild is None or message.author.bot:
             return
 
-        enabled = await self.config.guild(message.guild).enabled()
-        if not enabled:
+        if not await self.config.guild(message.guild).enabled():
             return
 
         if not isinstance(message.author, discord.Member):
@@ -310,10 +321,14 @@ class PhraseMute(commands.Cog):
             except (discord.Forbidden, discord.HTTPException):
                 deleted = False
 
-        # Mute next
+        # Always ensure muted (even if we skip logging)
         success = await self._mute_member(message.author, muted_role)
 
-        # Log
+        # Cooldown: prevent log channel spam
+        cooldown = await self.config.guild(message.guild).log_cooldown_seconds()
+        if not self._should_log_now(message.guild.id, message.author.id, int(cooldown)):
+            return
+
         await self._log_action(
             message=message,
             matched=matched,
@@ -402,15 +417,25 @@ class PhraseMute(commands.Cog):
         mode = mode.lower().strip()
         if mode not in {"exact", "contains", "regex"}:
             return await ctx.send("❌ Mode must be one of: `exact`, `contains`, `regex`.")
-
         await self.config.guild(ctx.guild).match_mode.set(mode)
         await ctx.send(f"✅ match_mode set to `{mode}`.")
 
     @phrasemute.command()
     async def deletemessage(self, ctx: commands.Context, value: bool):
-        """If true, deletes the triggering message (if bot has perms)."""
+        """If true, deletes the triggering message (if the bot has perms)."""
         await self.config.guild(ctx.guild).delete_trigger_message.set(value)
         await ctx.send(f"✅ delete_trigger_message set to `{value}`")
+
+    @phrasemute.command()
+    async def logcooldown(self, ctx: commands.Context, seconds: int):
+        """
+        Set how often the bot is allowed to LOG per user (prevents spam).
+        Deletion + mute still happen on every trigger.
+        """
+        if seconds < 0:
+            return await ctx.send("❌ Cooldown must be 0 or greater.")
+        await self.config.guild(ctx.guild).log_cooldown_seconds.set(int(seconds))
+        await ctx.send(f"✅ Log cooldown set to `{seconds}` seconds per user.")
 
     @phrasemute.command()
     async def ignoreadmins(self, ctx: commands.Context, value: bool):
@@ -443,14 +468,14 @@ class PhraseMute(commands.Cog):
         phrase = phrase.strip()
         phrases = await self.config.guild(ctx.guild).phrases()
         if phrase not in phrases:
-            return await ctx.send("❌ That phrase is not in the list (must match exactly).")
+            return await ctx.send("❌ That phrase is not in the list (must match exactly as stored).")
 
         phrases.remove(phrase)
         await self.config.guild(ctx.guild).phrases.set(phrases)
         await ctx.send("✅ Removed.")
 
-    @phrasemute.command()
-    async def list(self, ctx: commands.Context):
+    @phrasemute.command(name="list")
+    async def list_phrases(self, ctx: commands.Context):
         """List configured phrases/patterns."""
         phrases = await self.config.guild(ctx.guild).phrases()
         if not phrases:
@@ -482,6 +507,7 @@ class PhraseMute(commands.Cog):
         match_mode = await g.match_mode()
         ignore_admins = await g.ignore_admins()
         ignore_mods = await g.ignore_mods()
+        cooldown = await g.log_cooldown_seconds()
         phrases = await g.phrases()
 
         muted_role = ctx.guild.get_role(muted_role_id) if muted_role_id else None
@@ -492,6 +518,7 @@ class PhraseMute(commands.Cog):
         embed = discord.Embed(title="PhraseMute Settings", colour=discord.Colour.blurple())
         embed.add_field(name="Enabled", value=str(enabled), inline=True)
         embed.add_field(name="Match mode", value=str(match_mode), inline=True)
+        embed.add_field(name="Log cooldown", value=f"{cooldown}s", inline=True)
         embed.add_field(name="Muted role", value=muted_role.mention if muted_role else "Not set", inline=False)
         embed.add_field(
             name="Log channel",
