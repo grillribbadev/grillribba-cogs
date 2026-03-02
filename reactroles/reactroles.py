@@ -513,6 +513,58 @@ class ReactRoles(commands.Cog):
 
             await interaction.response.send_message(f"Posted to {target.mention}.", ephemeral=True)
 
+    class _EditPostModal(discord.ui.Modal):
+        def __init__(self, cog: "ReactRoles", message_id: int):
+            super().__init__(title="Edit post")
+            self.cog = cog
+            self.message_id = message_id
+            self.title_in = discord.ui.TextInput(label="Title (leave blank to keep current)", placeholder="React for Roles", max_length=256, required=False)
+            self.desc_in = discord.ui.TextInput(label="Description (leave blank to keep current)", style=discord.TextStyle.paragraph, max_length=2000, required=False)
+            self.show_roles = discord.ui.TextInput(label="Show roles in embed? (yes/no)", placeholder="yes", max_length=8, required=False)
+            self.add_item(self.title_in)
+            self.add_item(self.desc_in)
+            self.add_item(self.show_roles)
+
+        async def on_submit(self, interaction: discord.Interaction):
+            assert interaction.guild is not None
+            posts = await self.cog.config.guild(interaction.guild).posts()
+            data = posts.get(str(self.message_id))
+            if not data:
+                return await interaction.response.send_message("That post isn't tracked anymore.", ephemeral=True)
+
+            # Pull original embed title/desc if available
+            src_channel_id = data.get("_meta", {}).get("channel_id")
+            src_channel = interaction.guild.get_channel(src_channel_id) if src_channel_id else None
+            orig_title = None
+            orig_desc = None
+            if isinstance(src_channel, discord.TextChannel):
+                try:
+                    src_msg = await src_channel.fetch_message(self.message_id)
+                    if src_msg.embeds:
+                        e = src_msg.embeds[0]
+                        orig_title = e.title
+                        orig_desc = e.description
+                except Exception:
+                    pass
+
+            title = (str(self.title_in.value).strip() if self.title_in.value is not None else "") or orig_title or "React for Roles"
+            desc = (str(self.desc_in.value).strip() if self.desc_in.value is not None else "") or orig_desc or ""
+            show_raw = (str(self.show_roles.value or "").strip().lower() if self.show_roles.value is not None else "")
+            show_roles = show_raw in {"", "y", "yes", "true", "1"}
+
+            # Persist base title/desc and show_roles preference.
+            async with self.cog.config.guild(interaction.guild).posts() as posts:
+                d = posts.get(str(self.message_id)) or {}
+                meta = d.get("_meta", {}) if isinstance(d.get("_meta"), dict) else {}
+                meta["base_title"] = title[:256]
+                meta["base_desc"] = self.cog._strip_mapping_block(desc)[:2000]
+                meta["show_roles"] = bool(show_roles)
+                d["_meta"] = meta
+                posts[str(self.message_id)] = d
+
+            await self.cog._sync_post_embed(interaction.guild, self.message_id)
+            await interaction.response.send_message("Post updated.", ephemeral=True)
+
     class _MenuView(discord.ui.View):
         def __init__(self, cog: "ReactRoles", author_id: int, guild: discord.Guild):
             super().__init__(timeout=300)
@@ -585,6 +637,12 @@ class ReactRoles(commands.Cog):
             if not self.selected_message_id:
                 return await interaction.response.send_message("Select a post first.", ephemeral=True)
             await interaction.response.send_modal(ReactRoles._AddMappingModal(self.cog, self.selected_message_id))
+
+        @discord.ui.button(label="Edit post", style=discord.ButtonStyle.primary)
+        async def edit_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if not self.selected_message_id:
+                return await interaction.response.send_message("Select a post first.", ephemeral=True)
+            await interaction.response.send_modal(ReactRoles._EditPostModal(self.cog, self.selected_message_id))
 
         @discord.ui.button(label="Remove mapping", style=discord.ButtonStyle.secondary)
         async def rm_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
