@@ -356,29 +356,14 @@ class GuessEngine:
         if bw:
             im = ImageOps.grayscale(im).convert("RGBA")
 
-        if mode in {"pixelate", "pixelate_soft", "pixelate_mosaic", "pixelate_smooth"}:
+        if mode == "pixelate":
             # downscale then upscale using different sampling styles for distinct pixel looks
             w, h = im.size
             block = max(1, min(250, int(strength)))
             small_w = max(1, w // block)
             small_h = max(1, h // block)
-
-            if mode == "pixelate_soft":
-                small = im.resize((small_w, small_h), Image.BOX)
-                im = small.resize((w, h), Image.BILINEAR)
-            elif mode == "pixelate_mosaic":
-                small = im.resize((small_w, small_h), Image.BOX)
-                # Quantize to reduce color detail and create a mosaic-like block effect.
-                rgb_small = small.convert("RGB")
-                colors = max(8, min(64, 256 // max(1, block // 2)))
-                mosaic = rgb_small.quantize(colors=colors, method=Image.MEDIANCUT).convert("RGBA")
-                im = mosaic.resize((w, h), Image.NEAREST)
-            elif mode == "pixelate_smooth":
-                small = im.resize((small_w, small_h), Image.BICUBIC)
-                im = small.resize((w, h), Image.BICUBIC)
-            else:
-                small = im.resize((small_w, small_h), Image.NEAREST)
-                im = small.resize((w, h), Image.NEAREST)
+            small = im.resize((small_w, small_h), Image.NEAREST)
+            im = small.resize((w, h), Image.NEAREST)
         elif mode == "box":
             radius = max(1, min(250, int(strength)))
             im = im.filter(ImageFilter.BoxBlur(radius=radius))
@@ -388,12 +373,22 @@ class GuessEngine:
             if size % 2 == 0:
                 size += 1
             im = im.filter(ImageFilter.MedianFilter(size=size))
-        elif mode == "gaussian_soft":
+        elif mode == "simple":
+            # Repeat simple blur to make strength meaningful for this mode.
+            passes = max(1, min(10, int(strength // 3) + 1))
+            for _ in range(passes):
+                im = im.filter(ImageFilter.BLUR)
+        elif mode == "stack":
+            # Multi-pass box blur gives a different blur profile than gaussian.
             radius = max(1, min(250, int(strength)))
-            im = im.filter(ImageFilter.GaussianBlur(radius=max(1, radius // 2)))
-        elif mode == "gaussian_heavy":
-            radius = max(1, min(250, int(strength)))
-            im = im.filter(ImageFilter.GaussianBlur(radius=min(250, int(radius * 1.75))))
+            pass_radius = max(1, min(50, radius // 3 or 1))
+            for _ in range(3):
+                im = im.filter(ImageFilter.BoxBlur(radius=pass_radius))
+        elif mode == "smooth":
+            # SMOOTH_MORE acts like a local smoothing blur; run in passes for strength.
+            passes = max(1, min(10, int(strength // 4) + 1))
+            for _ in range(passes):
+                im = im.filter(ImageFilter.SMOOTH_MORE)
         else:
             radius = max(1, min(250, int(strength)))
             im = im.filter(ImageFilter.GaussianBlur(radius=radius))

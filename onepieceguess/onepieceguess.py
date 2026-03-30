@@ -20,14 +20,12 @@ DATA_DIR = Path(__file__).parent / "data"
 SEED_FILE = DATA_DIR / "character_pool.json"
 BLUR_MODES = (
     "gaussian",
-    "gaussian_soft",
-    "gaussian_heavy",
     "box",
     "median",
+    "simple",
+    "stack",
+    "smooth",
     "pixelate",
-    "pixelate_soft",
-    "pixelate_mosaic",
-    "pixelate_smooth",
 )
 
 
@@ -203,7 +201,7 @@ class OnePieceGuess(commands.Cog):
         mode = mode.lower().strip()
         if mode not in BLUR_MODES:
             return await ctx.reply(
-                "Mode must be one of: `gaussian`, `gaussian_soft`, `gaussian_heavy`, `box`, `median`, `pixelate`, `pixelate_soft`, `pixelate_mosaic`, `pixelate_smooth`."
+                "Mode must be one of: `gaussian`, `box`, `median`, `simple`, `stack`, `smooth`, `pixelate`."
             )
         blur = await self.engine.config.guild(ctx.guild).blur()
         blur["mode"] = mode
