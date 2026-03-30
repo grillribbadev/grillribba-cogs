@@ -4,6 +4,7 @@ import re
 import time
 import difflib
 from io import BytesIO
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import aiohttp
@@ -347,56 +348,89 @@ class GuessEngine:
                     raw = await r.read()
         except Exception:
             return None
+        return self.make_blurred_from_bytes(raw, mode=mode, strength=strength, bw=bw)
 
+    def make_blurred_from_bytes(
+        self,
+        raw: bytes,
+        *,
+        mode: str = "gaussian",
+        strength: int = 8,
+        bw: bool = False,
+    ) -> Optional[BytesIO]:
+        """Apply blur to raw image bytes and return a PNG BytesIO, or None on error."""
         try:
             im = Image.open(BytesIO(raw)).convert("RGBA")
         except Exception:
             return None
-
         if bw:
             im = ImageOps.grayscale(im).convert("RGBA")
-
-        if mode == "pixelate":
-            # downscale then upscale using different sampling styles for distinct pixel looks
-            w, h = im.size
-            block = max(1, min(250, int(strength)))
-            small_w = max(1, w // block)
-            small_h = max(1, h // block)
-            small = im.resize((small_w, small_h), Image.NEAREST)
-            im = small.resize((w, h), Image.NEAREST)
-        elif mode == "box":
-            radius = max(1, min(250, int(strength)))
-            im = im.filter(ImageFilter.BoxBlur(radius=radius))
-        elif mode == "median":
-            # MedianFilter requires an odd kernel size >= 3.
-            size = max(3, min(31, int(strength)))
-            if size % 2 == 0:
-                size += 1
-            im = im.filter(ImageFilter.MedianFilter(size=size))
-        elif mode == "simple":
-            # Repeat simple blur to make strength meaningful for this mode.
-            passes = max(1, min(10, int(strength // 3) + 1))
-            for _ in range(passes):
-                im = im.filter(ImageFilter.BLUR)
-        elif mode == "stack":
-            # Multi-pass box blur gives a different blur profile than gaussian.
-            radius = max(1, min(250, int(strength)))
-            pass_radius = max(1, min(50, radius // 3 or 1))
-            for _ in range(3):
-                im = im.filter(ImageFilter.BoxBlur(radius=pass_radius))
-        elif mode == "smooth":
-            # SMOOTH_MORE acts like a local smoothing blur; run in passes for strength.
-            passes = max(1, min(10, int(strength // 4) + 1))
-            for _ in range(passes):
-                im = im.filter(ImageFilter.SMOOTH_MORE)
-        else:
-            radius = max(1, min(250, int(strength)))
-            im = im.filter(ImageFilter.GaussianBlur(radius=radius))
-
+        im = self._apply_blur(im, mode=mode, strength=strength)
         buf = BytesIO()
         im.save(buf, "PNG")
         buf.seek(0)
         return buf
+
+    @staticmethod
+    def _apply_blur(im: Image.Image, *, mode: str, strength: int) -> Image.Image:
+        """Apply the selected blur/pixelate effect to a PIL image and return it."""
+        if mode == "pixelate":
+            w, h = im.size
+            block = max(1, min(250, int(strength)))
+            small = im.resize((max(1, w // block), max(1, h // block)), Image.NEAREST)
+            return small.resize((w, h), Image.NEAREST)
+        elif mode == "box":
+            radius = max(1, min(250, int(strength)))
+            return im.filter(ImageFilter.BoxBlur(radius=radius))
+        elif mode == "median":
+            size = max(3, min(31, int(strength)))
+            if size % 2 == 0:
+                size += 1
+            return im.filter(ImageFilter.MedianFilter(size=size))
+        elif mode == "simple":
+            passes = max(1, min(10, int(strength // 3) + 1))
+            for _ in range(passes):
+                im = im.filter(ImageFilter.BLUR)
+            return im
+        elif mode == "stack":
+            radius = max(1, min(250, int(strength)))
+            pass_radius = max(1, min(50, radius // 3 or 1))
+            for _ in range(3):
+                im = im.filter(ImageFilter.BoxBlur(radius=pass_radius))
+            return im
+        elif mode == "smooth":
+            passes = max(1, min(10, int(strength // 4) + 1))
+            for _ in range(passes):
+                im = im.filter(ImageFilter.SMOOTH_MORE)
+            return im
+        else:
+            radius = max(1, min(250, int(strength)))
+            return im.filter(ImageFilter.GaussianBlur(radius=radius))
+
+    # ---------------- custom image storage ----------------
+
+    def _custom_image_path(self, guild_id: int, mode: str, title: str) -> Path:
+        safe = re.sub(r"[^\w\-]", "_", title)[:80]
+        return Path(__file__).parent / "data" / "images" / str(guild_id) / mode / f"{safe}.png"
+
+    def get_custom_image_path(self, guild: discord.Guild, mode: str, title: str) -> Optional[Path]:
+        """Return the Path if a custom image is stored for this title, else None."""
+        p = self._custom_image_path(guild.id, mode, title)
+        return p if p.exists() else None
+
+    async def save_custom_image(self, guild: discord.Guild, mode: str, title: str, data: bytes) -> None:
+        """Write raw image bytes as the custom image for this title."""
+        p = self._custom_image_path(guild.id, mode, title)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(data)
+
+    def delete_custom_image(self, guild: discord.Guild, mode: str, title: str) -> bool:
+        """Delete the custom image file. Returns True if it existed."""
+        p = self._custom_image_path(guild.id, mode, title)
+        if p.exists():
+            p.unlink()
+            return True
+        return False
 
     # ---------------- BERI REWARD INTEGRATION ----------------
 

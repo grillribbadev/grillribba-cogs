@@ -263,6 +263,40 @@ class OnePieceGuess(commands.Cog):
         ok = await self.engine.remove_character(ctx.guild, title.strip())
         await ctx.reply("Removed." if ok else "Not found.")
 
+    @opguess_char.command(name="setimage")
+    @commands.admin()
+    async def opguess_char_setimage(self, ctx: commands.Context, *, title: str):
+        """Attach an image to use for this entry instead of the wiki image. Adds the entry to the pool if not already present."""
+        if not ctx.message.attachments:
+            return await ctx.reply("Attach an image (PNG/JPG/WEBP) alongside the command.")
+        att = ctx.message.attachments[0]
+        if att.content_type and not att.content_type.startswith("image/"):
+            return await ctx.reply("The attachment must be an image file.")
+        raw = await att.read()
+        try:
+            from PIL import Image as _Img
+            _Img.open(BytesIO(raw)).convert("RGB")
+        except Exception:
+            return await ctx.reply("Couldn't open the attachment as a valid image.")
+        title_key = title.strip()
+        mode = await self.engine.get_mode(ctx.guild)
+        added = await self.engine.add_character(ctx.guild, title_key)
+        await self.engine.save_custom_image(ctx.guild, mode, title_key, raw)
+        note = " (also added to pool)" if added else ""
+        await ctx.reply(f"Custom image saved for **{title_key}** ({_plural_label(mode)}){note}.")
+
+    @opguess_char.command(name="removeimage")
+    @commands.admin()
+    async def opguess_char_removeimage(self, ctx: commands.Context, *, title: str):
+        """Remove the custom image for an entry so it falls back to the wiki image."""
+        title_key = await self._resolve_title(ctx.guild, title.strip())
+        mode = await self.engine.get_mode(ctx.guild)
+        ok = self.engine.delete_custom_image(ctx.guild, mode, title_key)
+        await ctx.reply(
+            f"Custom image removed for **{title_key}**; will now use the wiki image."
+            if ok else f"No custom image was set for **{title_key}**."
+        )
+
     @opguess_char.command(name="aliases")
     @commands.admin()
     async def opguess_char_aliases(self, ctx: commands.Context, title: str, *, comma_separated: str):
@@ -431,13 +465,15 @@ class OnePieceGuess(commands.Cog):
             return False
 
         mode = (gconf.get("mode") or "character").lower()
-        # fetch wiki data
+        # check for a locally stored custom image before hitting the wiki
+        custom_image_path = self.engine.get_custom_image_path(guild, mode, title)
+        # always fetch wiki for normalized title + hint extract
         ctitle, extract, image_url = await self.engine.fetch_page_brief(title)
 
-        # require image behavior (same as _post_once)
+        # require image behavior: a custom image also satisfies the requirement
         require_map = gconf.get("require_image") or {}
         require_image = bool(require_map.get(mode, mode in {"fruit", "ship"}))
-        if require_image and not image_url:
+        if require_image and not image_url and not custom_image_path:
             return False
 
         interval = int(gconf.get("interval") or 1800)
@@ -468,16 +504,21 @@ class OnePieceGuess(commands.Cog):
                 emb.add_field(name="Hint", value=val, inline=False)
 
         file = None
-        if image_url:
+        if custom_image_path or image_url:
             blur = gconf.get("blur") or {}
             mode_blur = str(blur.get("mode") or "gaussian").lower()
             strength = int(blur.get("strength") or 8)
             bw = bool(blur.get("bw"))
-            buf = await self.engine.make_blurred(image_url, mode=mode_blur, strength=strength, bw=bw)
+            if custom_image_path:
+                buf = self.engine.make_blurred_from_bytes(
+                    custom_image_path.read_bytes(), mode=mode_blur, strength=strength, bw=bw
+                )
+            else:
+                buf = await self.engine.make_blurred(image_url, mode=mode_blur, strength=strength, bw=bw)
             if buf:
                 file = discord.File(buf, filename="opguess_blur.png")
                 emb.set_image(url="attachment://opguess_blur.png")
-            elif require_image:
+            elif require_image and not custom_image_path:
                 return False
 
         message = await channel.send(embed=emb, file=file) if file else await channel.send(embed=emb)
@@ -626,11 +667,18 @@ class OnePieceGuess(commands.Cog):
         title = None
         extract = ""
         image_url = None
+        custom_image_path = None
 
         # Try multiple random entries until we find one with an image (if required)
         for _ in range(max_retries):
             cand = await self.engine.pick_random_title(guild)
             if not cand:
+                break
+            cpath = self.engine.get_custom_image_path(guild, mode, cand)
+            if cpath:
+                # custom image satisfies require_image — still fetch wiki for extract/normalized title
+                ctitle, cextract, _ = await self.engine.fetch_page_brief(cand)
+                title, extract, image_url, custom_image_path = ctitle, cextract, None, cpath
                 break
             ctitle, cextract, cimg = await self.engine.fetch_page_brief(cand)
             if not require_image or cimg:
@@ -684,12 +732,17 @@ class OnePieceGuess(commands.Cog):
                 emb.add_field(name="Hint", value=val, inline=False)
 
         file = None
-        if image_url:
+        if custom_image_path or image_url:
             blur = gconf.get("blur") or {}
             mode_blur = str(blur.get("mode") or "gaussian").lower()
             strength = int(blur.get("strength") or 8)
             bw = bool(blur.get("bw"))
-            buf = await self.engine.make_blurred(image_url, mode=mode_blur, strength=strength, bw=bw)
+            if custom_image_path:
+                buf = self.engine.make_blurred_from_bytes(
+                    custom_image_path.read_bytes(), mode=mode_blur, strength=strength, bw=bw
+                )
+            else:
+                buf = await self.engine.make_blurred(image_url, mode=mode_blur, strength=strength, bw=bw)
             if buf:
                 file = discord.File(buf, filename="opguess_blur.png")
                 emb.set_image(url="attachment://opguess_blur.png")
