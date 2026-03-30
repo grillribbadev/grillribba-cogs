@@ -618,16 +618,22 @@ class OnePieceGuess(commands.Cog):
         if not title:
             return await ctx.reply("No active round to reveal.")
 
-        # Fetch original image
+        # Fetch original image (custom first, then wiki)
         file = None
         try:
-            ctitle, _extract, image_url = await self.engine.fetch_page_brief(title)
-            if image_url:
-                async with aiohttp.ClientSession() as s:
-                    async with s.get(image_url, timeout=12) as r:
-                        if r.status == 200:
-                            buf = BytesIO(await r.read()); buf.seek(0)
-                            file = discord.File(buf, filename="opguess_answer.png")
+            mode_now = await self.engine.get_mode(ctx.guild)
+            cpath = self.engine.get_custom_image_path(ctx.guild, mode_now, title)
+            if cpath:
+                buf = BytesIO(cpath.read_bytes()); buf.seek(0)
+                file = discord.File(buf, filename="opguess_answer.png")
+            else:
+                ctitle, _extract, image_url = await self.engine.fetch_page_brief(title)
+                if image_url:
+                    async with aiohttp.ClientSession() as s:
+                        async with s.get(image_url, timeout=12) as r:
+                            if r.status == 200:
+                                buf = BytesIO(await r.read()); buf.seek(0)
+                                file = discord.File(buf, filename="opguess_answer.png")
         except Exception:
             file = None
 
@@ -860,17 +866,23 @@ class OnePieceGuess(commands.Cog):
             print(f"[OnePieceGuess] Teams integration error: {e}")
             pass
 
-        # Unblurred reveal on correct guess
+        # Unblurred reveal on correct guess (custom first, then wiki)
         file = None
         try:
-            ctitle, _extract, image_url = await self.engine.fetch_page_brief(title)
-            if image_url:
-                async with aiohttp.ClientSession() as s:
-                    async with s.get(image_url, timeout=12) as r:
-                        if r.status == 200:
-                            buf = BytesIO(await r.read())
-                            buf.seek(0)
-                            file = discord.File(buf, filename="opguess_reveal.png")
+            mode_now = await self.engine.get_mode(ctx.guild)
+            cpath = self.engine.get_custom_image_path(ctx.guild, mode_now, title)
+            if cpath:
+                buf = BytesIO(cpath.read_bytes()); buf.seek(0)
+                file = discord.File(buf, filename="opguess_reveal.png")
+            else:
+                ctitle, _extract, image_url = await self.engine.fetch_page_brief(title)
+                if image_url:
+                    async with aiohttp.ClientSession() as s:
+                        async with s.get(image_url, timeout=12) as r:
+                            if r.status == 200:
+                                buf = BytesIO(await r.read())
+                                buf.seek(0)
+                                file = discord.File(buf, filename="opguess_reveal.png")
         except Exception:
             file = None
 

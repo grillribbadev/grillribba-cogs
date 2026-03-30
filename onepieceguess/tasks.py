@@ -106,15 +106,23 @@ class GuessTasks:
 
                                 file = None
                                 try:
-                                    _t, _extract, image_url = await self.engine.fetch_page_brief(title)
-                                    if image_url:
-                                        async with aiohttp.ClientSession() as s:
-                                            async with s.get(image_url, timeout=12) as r:
-                                                if r.status == 200:
-                                                    buf = BytesIO(await r.read())
-                                                    buf.seek(0)
-                                                    file = discord.File(buf, filename="opguess_timeout.png")
-                                                    emb.set_image(url="attachment://opguess_timeout.png")
+                                    mode_now = (await self.engine.config.guild(guild).mode() or "character").lower()
+                                    cpath = self.engine.get_custom_image_path(guild, mode_now, title)
+                                    if cpath:
+                                        buf = BytesIO(cpath.read_bytes())
+                                        buf.seek(0)
+                                        file = discord.File(buf, filename="opguess_timeout.png")
+                                        emb.set_image(url="attachment://opguess_timeout.png")
+                                    else:
+                                        _t, _extract, image_url = await self.engine.fetch_page_brief(title)
+                                        if image_url:
+                                            async with aiohttp.ClientSession() as s:
+                                                async with s.get(image_url, timeout=12) as r:
+                                                    if r.status == 200:
+                                                        buf = BytesIO(await r.read())
+                                                        buf.seek(0)
+                                                        file = discord.File(buf, filename="opguess_timeout.png")
+                                                        emb.set_image(url="attachment://opguess_timeout.png")
                                 except Exception:
                                     file = None
 
