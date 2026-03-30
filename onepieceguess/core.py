@@ -116,6 +116,8 @@ class GuessEngine:
         hints = await getattr(self.config.guild(guild), hints_key)()
         hints.pop(title, None)
         await getattr(self.config.guild(guild), hints_key).set(hints)
+        # cleanup custom image if one was stored
+        self.delete_custom_image(guild, mode, title)
         return True
 
     async def remove_character(self, guild: discord.Guild, title: str) -> bool:
