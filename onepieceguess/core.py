@@ -356,11 +356,44 @@ class GuessEngine:
         if bw:
             im = ImageOps.grayscale(im).convert("RGBA")
 
-        if mode == "pixelate":
-            # downscale then upscale
+        if mode in {"pixelate", "pixelate_soft", "pixelate_mosaic", "pixelate_smooth"}:
+            # downscale then upscale using different sampling styles for distinct pixel looks
             w, h = im.size
             block = max(1, min(250, int(strength)))
-            im = im.resize((max(1, w // block), max(1, h // block)), Image.NEAREST).resize((w, h), Image.NEAREST)
+            small_w = max(1, w // block)
+            small_h = max(1, h // block)
+
+            if mode == "pixelate_soft":
+                small = im.resize((small_w, small_h), Image.BOX)
+                im = small.resize((w, h), Image.BILINEAR)
+            elif mode == "pixelate_mosaic":
+                small = im.resize((small_w, small_h), Image.BOX)
+                # Quantize to reduce color detail and create a mosaic-like block effect.
+                rgb_small = small.convert("RGB")
+                colors = max(8, min(64, 256 // max(1, block // 2)))
+                mosaic = rgb_small.quantize(colors=colors, method=Image.MEDIANCUT).convert("RGBA")
+                im = mosaic.resize((w, h), Image.NEAREST)
+            elif mode == "pixelate_smooth":
+                small = im.resize((small_w, small_h), Image.BICUBIC)
+                im = small.resize((w, h), Image.BICUBIC)
+            else:
+                small = im.resize((small_w, small_h), Image.NEAREST)
+                im = small.resize((w, h), Image.NEAREST)
+        elif mode == "box":
+            radius = max(1, min(250, int(strength)))
+            im = im.filter(ImageFilter.BoxBlur(radius=radius))
+        elif mode == "median":
+            # MedianFilter requires an odd kernel size >= 3.
+            size = max(3, min(31, int(strength)))
+            if size % 2 == 0:
+                size += 1
+            im = im.filter(ImageFilter.MedianFilter(size=size))
+        elif mode == "gaussian_soft":
+            radius = max(1, min(250, int(strength)))
+            im = im.filter(ImageFilter.GaussianBlur(radius=max(1, radius // 2)))
+        elif mode == "gaussian_heavy":
+            radius = max(1, min(250, int(strength)))
+            im = im.filter(ImageFilter.GaussianBlur(radius=min(250, int(radius * 1.75))))
         else:
             radius = max(1, min(250, int(strength)))
             im = im.filter(ImageFilter.GaussianBlur(radius=radius))

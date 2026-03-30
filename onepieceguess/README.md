@@ -4,7 +4,7 @@ Timed One Piece character guessing game for Red v3.5+. The bot fetches a charact
 
 ## Key Features
 - Configurable interval, channel, reward
-- Blurred image (gaussian or pixelate) with configurable strength
+- Blurred image with multiple blur and pixelation styles (configurable strength)
 - Optional text hint (intro extract)
 - Manage character pool and aliases via commands
 - Optional reward payout via BeriCore
@@ -17,7 +17,7 @@ Timed One Piece character guessing game for Red v3.5+. The bot fetches a charact
 [p]opguess setreward <amount>  
 [p]opguess hint [on/off] [max_chars]  
 [p]opguess blur                 # show blur settings  
-[p]opguess blur mode <gaussian|pixelate>  
+[p]opguess blur mode <gaussian|gaussian_soft|gaussian_heavy|box|median|pixelate|pixelate_soft|pixelate_mosaic|pixelate_smooth>  
 [p]opguess blur strength <1-64>  
 [p]opguess char                 # list summary  
 [p]opguess char add <title>  

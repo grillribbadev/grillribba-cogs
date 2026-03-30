@@ -18,6 +18,17 @@ from .tasks import GuessTasks
 
 DATA_DIR = Path(__file__).parent / "data"
 SEED_FILE = DATA_DIR / "character_pool.json"
+BLUR_MODES = (
+    "gaussian",
+    "gaussian_soft",
+    "gaussian_heavy",
+    "box",
+    "median",
+    "pixelate",
+    "pixelate_soft",
+    "pixelate_mosaic",
+    "pixelate_smooth",
+)
 
 
 def _mode_label(mode: str) -> str:
@@ -188,10 +199,12 @@ class OnePieceGuess(commands.Cog):
     @opguess_blur.command(name="mode")
     @commands.admin()
     async def opguess_blur_mode(self, ctx: commands.Context, mode: str):
-        """Set blur mode: gaussian|pixelate"""
+        """Set blur mode (blur + pixel styles)."""
         mode = mode.lower().strip()
-        if mode not in {"gaussian", "pixelate"}:
-            return await ctx.reply("Mode must be `gaussian` or `pixelate`.")
+        if mode not in BLUR_MODES:
+            return await ctx.reply(
+                "Mode must be one of: `gaussian`, `gaussian_soft`, `gaussian_heavy`, `box`, `median`, `pixelate`, `pixelate_soft`, `pixelate_mosaic`, `pixelate_smooth`."
+            )
         blur = await self.engine.config.guild(ctx.guild).blur()
         blur["mode"] = mode
         await self.engine.config.guild(ctx.guild).blur.set(blur)
@@ -200,7 +213,7 @@ class OnePieceGuess(commands.Cog):
     @opguess_blur.command(name="strength")
     @commands.admin()
     async def opguess_blur_strength(self, ctx: commands.Context, value: int):
-        """Set blur radius (gaussian) or block size (pixelate). Max 250."""
+        """Set filter intensity. Gaussian/box use radius, median uses kernel size, pixelate uses block size. Max 250."""
         value = max(1, min(250, int(value)))
         blur = await self.engine.config.guild(ctx.guild).blur()
         blur["strength"] = value
