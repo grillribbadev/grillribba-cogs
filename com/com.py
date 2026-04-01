@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import discord
@@ -15,8 +15,16 @@ log = logging.getLogger(__name__)
 DEFAULT_GUILD = {"channels": [], "announce_channel": 0, "stats": {}, "current_override": "", "announce_everyone": False, "last_announce_month": ""}
 
 
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 def _month_key_for_dt(dt: Optional[datetime] = None) -> str:
-    dt = dt or datetime.utcnow()
+    dt = dt or _utc_now()
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
     return f"{dt.year}-{dt.month:02d}"
 
 
@@ -77,14 +85,14 @@ class ChatterOfMonth(commands.Cog):
 
         while True:
             try:
-                now = datetime.utcnow()
+                now = _utc_now()
                 # compute next UTC midnight plus small buffer (00:05)
                 next_midnight = (now + timedelta(days=1)).replace(hour=0, minute=5, second=0, microsecond=0)
                 sleep_seconds = (next_midnight - now).total_seconds()
                 await asyncio.sleep(sleep_seconds)
 
                 # after waking, if it's the first day of the month, announce previous month
-                now = datetime.utcnow()
+                now = _utc_now()
                 if now.day != 1:
                     continue
 
@@ -245,12 +253,12 @@ class ChatterOfMonth(commands.Cog):
                     month = _month_key_for_dt(odt)
                 except Exception:
                     # fallback to previous month if parsing fails
-                    now = datetime.utcnow()
+                    now = _utc_now()
                     first = now.replace(day=1)
                     prev = first - timedelta(days=1)
                     month = _month_key_for_dt(prev)
             else:
-                now = datetime.utcnow()
+                now = _utc_now()
                 first = now.replace(day=1)
                 prev = first - timedelta(days=1)
                 month = _month_key_for_dt(prev)
@@ -322,9 +330,9 @@ class ChatterOfMonth(commands.Cog):
                     try:
                         parsed = datetime.strptime(override, "%Y-%m")
                     except Exception:
-                        parsed = datetime.utcnow()
+                        parsed = _utc_now()
             else:
-                parsed = datetime.utcnow()
+                    parsed = _utc_now()
 
         month_key = f"{parsed.year}-{parsed.month:02d}"
         stats = await self.config.guild(ctx.guild).stats()
@@ -417,12 +425,12 @@ class ChatterOfMonth(commands.Cog):
         except Exception:
             await ctx.send("Invalid month format. Use `YYYY-MM` or `YYYY-MM-DD`.")
             return
-        start = dt.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        start = dt.replace(day=1, hour=0, minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
         # compute first day of next month
         if start.month == 12:
-            next_month = start.replace(year=start.year + 1, month=1)
+            next_month = start.replace(year=start.year + 1, month=1, day=1)
         else:
-            next_month = start.replace(month=start.month + 1)
+            next_month = start.replace(month=start.month + 1, day=1)
         end = next_month.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
         # determine channels to scan: only configured channels unless channels provided
