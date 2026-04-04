@@ -619,6 +619,49 @@ class AdminCommandsMixin:
 
         await ctx.reply("HARD WIPE complete.")
 
+    @cbadmin.command(name="prunebackups", aliases=["cleanbackups", "deleteoldbackups"])
+    async def cbadmin_prunebackups(self, ctx: commands.Context, confirm: str = None):
+        """Delete all backups for this server except the most recent one."""
+        gdir = self._guild_backup_dir(ctx.guild)
+        all_backups = sorted(
+            [p for p in gdir.glob("*.json") if p.is_file()],
+            key=lambda p: p.stat().st_mtime,
+        )
+
+        if not all_backups:
+            return await ctx.reply("No backups found for this server.")
+
+        to_delete = all_backups[:-1]  # all except last (newest)
+
+        if not to_delete:
+            return await ctx.reply("Only one backup exists — nothing to prune.")
+
+        if confirm != "confirm":
+            total_bytes = sum(p.stat().st_size for p in to_delete)
+            total_kb = total_bytes / 1024
+            return await ctx.reply(
+                f"This will delete **{len(to_delete)}** backup(s) ({total_kb:.1f} KB), "
+                f"keeping only the most recent: `{all_backups[-1].name}`\n"
+                f"Run `.cbadmin prunebackups confirm` to proceed."
+            )
+
+        deleted = 0
+        freed = 0
+        errors = 0
+        for p in to_delete:
+            try:
+                freed += p.stat().st_size
+                p.unlink()
+                deleted += 1
+            except Exception:
+                errors += 1
+
+        freed_kb = freed / 1024
+        msg = f"Pruned {deleted} backup(s), freed {freed_kb:.1f} KB. Kept: `{all_backups[-1].name}`"
+        if errors:
+            msg += f"\n⚠️ {errors} file(s) could not be deleted."
+        await ctx.reply(msg)
+
     @cbadmin.command(name="setberi")
     async def cbadmin_setberi(self, ctx: commands.Context, win: int, loss: int = 0):
         await self.config.guild(ctx.guild).beri_win.set(int(win))
