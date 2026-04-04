@@ -20,6 +20,9 @@ class JoinedToday(redcommands.Cog):
     def _normalize_days(self, days: int) -> int:
         return max(1, int(days))
 
+    def _normalize_backdate(self, days: float) -> float:
+        return max(0.0, float(days))
+
     def _cutoff_for_days(self, days: int) -> datetime:
         return datetime.now(timezone.utc) - timedelta(days=self._normalize_days(days))
 
@@ -57,17 +60,8 @@ class JoinedToday(redcommands.Cog):
         recent.sort(key=lambda item: item.get("left_at", ""), reverse=True)
         return recent
 
-    @redcommands.Cog.listener()
-    async def on_member_remove(self, member: discord.Member):
-        entry = {
-            "member_id": member.id,
-            "name": str(member),
-            "display_name": member.display_name,
-            "left_at": datetime.now(timezone.utc).isoformat(),
-            "joined_at": member.joined_at.isoformat() if member.joined_at else None,
-        }
-
-        async with self.config.guild(member.guild).leave_log() as leave_log:
+    async def _append_leave_entry(self, guild: discord.Guild, entry: dict):
+        async with self.config.guild(guild).leave_log() as leave_log:
             leave_log.append(entry)
 
             cutoff = datetime.now(timezone.utc) - timedelta(days=30)
@@ -78,6 +72,17 @@ class JoinedToday(redcommands.Cog):
                 and item.get("left_at")
                 and self._entry_is_new_enough(item, cutoff)
             ]
+
+    @redcommands.Cog.listener()
+    async def on_member_remove(self, member: discord.Member):
+        entry = {
+            "member_id": member.id,
+            "name": str(member),
+            "display_name": member.display_name,
+            "left_at": datetime.now(timezone.utc).isoformat(),
+            "joined_at": member.joined_at.isoformat() if member.joined_at else None,
+        }
+        await self._append_leave_entry(member.guild, entry)
 
     def _entry_is_new_enough(self, entry: dict, cutoff: datetime) -> bool:
         try:
@@ -255,6 +260,31 @@ class JoinedToday(redcommands.Cog):
 
         view = Paginator()
         await ctx.send(embed=pages[0], view=view)
+
+    @redcommands.guild_only()
+    @redcommands.admin_or_permissions(administrator=True)
+    @redcommands.command(name="leftbackdate")
+    async def left_backdate(self, ctx, days_ago: float, member_id: int, *, display_name: str = "Unknown Member"):
+        """Manually add a past leave record: [p]leftbackdate <days_ago> <member_id> [display_name]."""
+        days_ago = self._normalize_backdate(days_ago)
+        left_at = datetime.now(timezone.utc) - timedelta(days=days_ago)
+        clean_name = " ".join((display_name or "Unknown Member").split())[:100] or "Unknown Member"
+
+        entry = {
+            "member_id": int(member_id),
+            "name": clean_name,
+            "display_name": clean_name,
+            "left_at": left_at.isoformat(),
+            "joined_at": None,
+            "manual": True,
+            "added_by": ctx.author.id,
+        }
+        await self._append_leave_entry(ctx.guild, entry)
+
+        ts = int(left_at.timestamp())
+        await ctx.send(
+            f"Added manual leave record for **{clean_name}** (`{int(member_id)}`) at <t:{ts}:F>."
+        )
 
 async def setup(bot):
     await bot.add_cog(JoinedToday(bot))
