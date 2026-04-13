@@ -279,17 +279,6 @@ class ChatterOfMonth(commands.Cog):
             embed.set_footer(text="Use the dropdown to switch categories.")
             return embed
 
-        embed.description = "Pick a category from the dropdown below."
-        embed.add_field(name="Public", value="Leaderboards and monthly previews", inline=True)
-        embed.add_field(name="Admin", value=("Visible to staff only" if not can_view_admin else "Setup and moderation tools"), inline=True)
-        embed.add_field(name="Quick Start", value=f"{prefix}chatter results {_month_key_for_dt()}", inline=False)
-        embed.set_footer(text="Tip: leaderboard messages include interactive navigation buttons.")
-        return embed
-
-    # ---------- Event listener ------------------------------------------------
-    @commands.Cog.listener()
-    async def on_message(self, message: discord.Message) -> None:
-
         if category == "staff":
             embed.description = "Commands available to staff role members."
             if can_view_admin:
@@ -309,7 +298,18 @@ class ChatterOfMonth(commands.Cog):
             else:
                 embed.add_field(name="Access", value="Staff commands are hidden for your role.", inline=False)
             embed.set_footer(text="Use the dropdown to switch categories.")
-            return
+            return embed
+
+        embed.description = "Pick a category from the dropdown below."
+        embed.add_field(name="Public", value="Leaderboards and monthly previews", inline=True)
+        embed.add_field(name="Admin", value=("Visible to staff only" if not can_view_admin else "Setup and moderation tools"), inline=True)
+        embed.add_field(name="Quick Start", value=f"{prefix}chatter results {_month_key_for_dt()}", inline=False)
+        embed.set_footer(text="Tip: leaderboard messages include interactive navigation buttons.")
+        return embed
+
+    # ---------- Event listener ------------------------------------------------
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message) -> None:
         if message.author.bot:
             return
         guild = message.guild
