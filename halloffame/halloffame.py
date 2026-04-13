@@ -179,6 +179,8 @@ class HallOfFame(commands.Cog):
             async for user in reaction.users(limit=None):
                 if user.bot:
                     continue
+                if user.id == message.author.id:
+                    continue
                 unique_non_bot_ids.add(user.id)
             return len(unique_non_bot_ids)
 
