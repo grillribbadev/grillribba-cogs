@@ -13,6 +13,8 @@ log = logging.getLogger(__name__)
 
 
 DEFAULT_GUILD = {"channels": [], "announce_channel": 0, "stats": {}, "current_override": "", "announce_everyone": False, "last_announce_month": ""}
+LEADERBOARD_PAGE_SIZE = 5
+LEADERBOARD_MAX_PAGES = 10
 
 
 def _utc_now() -> datetime:
@@ -26,6 +28,86 @@ def _month_key_for_dt(dt: Optional[datetime] = None) -> str:
     else:
         dt = dt.astimezone(timezone.utc)
     return f"{dt.year}-{dt.month:02d}"
+
+
+class ChatterLeaderPaginationView(discord.ui.View):
+    def __init__(
+        self,
+        cog: "ChatterOfMonth",
+        ctx: commands.Context,
+        month_key: str,
+        leader_mention: str,
+        top_count: int,
+        sorted_top: list[tuple[str, int]],
+        total_pages: int,
+        uncapped_total_pages: int,
+        current_page: int,
+    ) -> None:
+        super().__init__(timeout=180)
+        self.cog = cog
+        self.ctx = ctx
+        self.month_key = month_key
+        self.leader_mention = leader_mention
+        self.top_count = top_count
+        self.sorted_top = sorted_top
+        self.total_pages = total_pages
+        self.uncapped_total_pages = uncapped_total_pages
+        self.current_page = current_page
+        self.message: Optional[discord.Message] = None
+        self._sync_buttons()
+
+    def _sync_buttons(self) -> None:
+        self.prev_btn.disabled = self.current_page <= 1
+        self.next_btn.disabled = self.current_page >= self.total_pages
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("Only the command author can use these buttons.", ephemeral=True)
+            return False
+        return True
+
+    async def on_timeout(self) -> None:
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except Exception:
+                pass
+
+    @discord.ui.button(label="<", style=discord.ButtonStyle.secondary)
+    async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.current_page > 1:
+            self.current_page -= 1
+        self._sync_buttons()
+        embed = self.cog._build_leaderboard_embed(
+            guild=self.ctx.guild,
+            month_key=self.month_key,
+            leader_mention=self.leader_mention,
+            top_count=self.top_count,
+            sorted_top=self.sorted_top,
+            page=self.current_page,
+            total_pages=self.total_pages,
+            uncapped_total_pages=self.uncapped_total_pages,
+        )
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label=">", style=discord.ButtonStyle.secondary)
+    async def next_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.current_page < self.total_pages:
+            self.current_page += 1
+        self._sync_buttons()
+        embed = self.cog._build_leaderboard_embed(
+            guild=self.ctx.guild,
+            month_key=self.month_key,
+            leader_mention=self.leader_mention,
+            top_count=self.top_count,
+            sorted_top=self.sorted_top,
+            page=self.current_page,
+            total_pages=self.total_pages,
+            uncapped_total_pages=self.uncapped_total_pages,
+        )
+        await interaction.response.edit_message(embed=embed, view=self)
 
 
 class ChatterOfMonth(commands.Cog):
@@ -158,6 +240,32 @@ class ChatterOfMonth(commands.Cog):
                 break
             except Exception:
                 log.exception("Monthly announcer loop raised an exception")
+
+    def _build_leaderboard_embed(
+        self,
+        guild: discord.Guild,
+        month_key: str,
+        leader_mention: str,
+        top_count: int,
+        sorted_top: list[tuple[str, int]],
+        page: int,
+        total_pages: int,
+        uncapped_total_pages: int,
+    ) -> discord.Embed:
+        start_index = (page - 1) * LEADERBOARD_PAGE_SIZE
+        page_slice = sorted_top[start_index:start_index + LEADERBOARD_PAGE_SIZE]
+
+        embed = discord.Embed(title=f"Current leader - {month_key}")
+        embed.add_field(name="Leader", value=f"{leader_mention} - {top_count} messages", inline=False)
+        desc_lines = []
+        for offset, (uid, cnt) in enumerate(page_slice, start=start_index + 1):
+            uid_i = int(uid)
+            m = guild.get_member(uid_i)
+            desc_lines.append(f"{offset}. {(m.mention if m else f'<@{uid_i}>')}: {cnt}")
+        embed.add_field(name=f"Leaderboard (Page {page}/{total_pages})", value="\n".join(desc_lines), inline=False)
+        if uncapped_total_pages > LEADERBOARD_MAX_PAGES:
+            embed.set_footer(text=f"Showing top {LEADERBOARD_PAGE_SIZE * LEADERBOARD_MAX_PAGES} users only.")
+        return embed
 
     # ---------- Admin commands ------------------------------------------------
     @commands.group(name="chatter")
@@ -303,13 +411,30 @@ class ChatterOfMonth(commands.Cog):
             await ctx.send(embed=embed)
 
     @chatter_group.command(name="leader")
-    async def chatter_leader(self, ctx: commands.Context, date: Optional[str] = None):
+    async def chatter_leader(self, ctx: commands.Context, date_or_page: Optional[str] = None, page: Optional[int] = None):
         """Show who's currently in lead for a month or a specific date.
 
-        `date` accepts `YYYY-MM-DD` or `YYYY-MM`. If omitted and an override is set
+        `date_or_page` accepts `YYYY-MM-DD`, `YYYY-MM`, or a page number.
+        `page` defaults to 1 and shows
+        5 users per page. If omitted and an override is set
         via `chatter backdate set`, that date will be used; otherwise today's date is used.
-        The command shows the top 5 and the current leader for the corresponding calendar month.
+        The command shows the current leader and a paged leaderboard for the
+        corresponding calendar month.
         """
+        date: Optional[str] = None
+        if page is None:
+            page = 1
+
+        if date_or_page:
+            if date_or_page.isdigit():
+                page = int(date_or_page)
+            else:
+                date = date_or_page
+
+        if page < 1:
+            await ctx.send("Page must be 1 or greater.")
+            return
+
         # resolve date: priority -> explicit arg -> guild override -> today
         if date:
             parsed = None
@@ -340,21 +465,50 @@ class ChatterOfMonth(commands.Cog):
         if not month_stats:
             await ctx.send(f"No data for {month_key}.")
             return
-        # compute top and top 5
+
+        # compute top and paged leaderboard
         top_uid, top_count = max(month_stats.items(), key=lambda kv: kv[1])
         top_uid_int = int(top_uid)
         member = ctx.guild.get_member(top_uid_int)
         mention = member.mention if member else f"<@{top_uid_int}>"
-        embed = discord.Embed(title=f"Current leader — {month_key}")
-        embed.add_field(name="Leader", value=f"{mention} — {top_count} messages", inline=False)
-        sorted_top = sorted(month_stats.items(), key=lambda kv: kv[1], reverse=True)[:5]
-        desc_lines = []
-        for uid, cnt in sorted_top:
-            uid_i = int(uid)
-            m = ctx.guild.get_member(uid_i)
-            desc_lines.append(f"{(m.mention if m else f'<@{uid_i}>')}: {cnt}")
-        embed.add_field(name="Top 5", value="\n".join(desc_lines), inline=False)
-        await ctx.send(embed=embed)
+        sorted_top = sorted(month_stats.items(), key=lambda kv: kv[1], reverse=True)
+        total_entries = len(sorted_top)
+        uncapped_total_pages = max(1, (total_entries + LEADERBOARD_PAGE_SIZE - 1) // LEADERBOARD_PAGE_SIZE)
+        total_pages = min(uncapped_total_pages, LEADERBOARD_MAX_PAGES)
+        if page > total_pages:
+            await ctx.send(
+                f"Page {page} does not exist. Showing up to page {total_pages} "
+                f"(max {LEADERBOARD_MAX_PAGES} pages)."
+            )
+            return
+
+        embed = self._build_leaderboard_embed(
+            guild=ctx.guild,
+            month_key=month_key,
+            leader_mention=mention,
+            top_count=top_count,
+            sorted_top=sorted_top,
+            page=page,
+            total_pages=total_pages,
+            uncapped_total_pages=uncapped_total_pages,
+        )
+        if total_pages <= 1:
+            await ctx.send(embed=embed)
+            return
+
+        view = ChatterLeaderPaginationView(
+            cog=self,
+            ctx=ctx,
+            month_key=month_key,
+            leader_mention=mention,
+            top_count=top_count,
+            sorted_top=sorted_top,
+            total_pages=total_pages,
+            uncapped_total_pages=uncapped_total_pages,
+            current_page=page,
+        )
+        sent = await ctx.send(embed=embed, view=view)
+        view.message = sent
 
     @chatter_group.group(name="backdate")
     async def chatter_backdate(self, ctx: commands.Context):
