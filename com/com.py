@@ -14,7 +14,6 @@ log = logging.getLogger(__name__)
 
 DEFAULT_GUILD = {"channels": [], "announce_channel": 0, "stats": {}, "current_override": "", "announce_everyone": False, "last_announce_month": ""}
 LEADERBOARD_PAGE_SIZE = 5
-LEADERBOARD_MAX_PAGES = 10
 
 
 def _utc_now() -> datetime:
@@ -108,6 +107,11 @@ class ChatterLeaderPaginationView(discord.ui.View):
             uncapped_total_pages=self.uncapped_total_pages,
         )
         await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="X", style=discord.ButtonStyle.danger)
+    async def close_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+        await interaction.response.edit_message(view=None)
 
 
 class ChatterOfMonth(commands.Cog):
@@ -263,8 +267,6 @@ class ChatterOfMonth(commands.Cog):
             m = guild.get_member(uid_i)
             desc_lines.append(f"{offset}. {(m.mention if m else f'<@{uid_i}>')}: {cnt}")
         embed.add_field(name=f"Leaderboard (Page {page}/{total_pages})", value="\n".join(desc_lines), inline=False)
-        if uncapped_total_pages > LEADERBOARD_MAX_PAGES:
-            embed.set_footer(text=f"Showing top {LEADERBOARD_PAGE_SIZE * LEADERBOARD_MAX_PAGES} users only.")
         return embed
 
     # ---------- Admin commands ------------------------------------------------
@@ -474,11 +476,11 @@ class ChatterOfMonth(commands.Cog):
         sorted_top = sorted(month_stats.items(), key=lambda kv: kv[1], reverse=True)
         total_entries = len(sorted_top)
         uncapped_total_pages = max(1, (total_entries + LEADERBOARD_PAGE_SIZE - 1) // LEADERBOARD_PAGE_SIZE)
-        total_pages = min(uncapped_total_pages, LEADERBOARD_MAX_PAGES)
+        total_pages = uncapped_total_pages
         if page > total_pages:
             await ctx.send(
-                f"Page {page} does not exist. Showing up to page {total_pages} "
-                f"(max {LEADERBOARD_MAX_PAGES} pages)."
+                f"Page {page} does not exist. There {'is' if total_pages == 1 else 'are'} "
+                f"{total_pages} page{'s' if total_pages != 1 else ''}."
             )
             return
 
