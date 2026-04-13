@@ -129,13 +129,14 @@ class ChatterMenuSelect(discord.ui.Select):
             discord.SelectOption(label="Public Commands", value="public", description="Leaderboards and preview commands"),
         ]
         if can_view_admin:
-            options.append(discord.SelectOption(label="Admin Commands", value="admin", description="Channel and announce management"))
+            options.append(discord.SelectOption(label="Admin Commands", value="admin", description="All admin and staff command access"))
+            options.append(discord.SelectOption(label="Staff Commands", value="staff", description="Commands available to staff role"))
         super().__init__(placeholder="Choose a command category", min_values=1, max_values=1, options=options)
 
     async def callback(self, interaction: discord.Interaction):
         view: ChatterMenuView = self.view
         chosen = self.values[0]
-        if chosen == "admin" and not view.can_view_admin:
+        if chosen in {"admin", "staff"} and not view.can_view_admin:
             await interaction.response.send_message("You do not have access to admin commands.", ephemeral=True)
             return
 
@@ -246,41 +247,30 @@ class ChatterOfMonth(commands.Cog):
             return embed
 
         if category == "admin":
-            embed.description = "Administrative setup and maintenance commands."
+            embed.description = "All commands available to admin and staff scopes."
             if can_view_admin:
                 embed.add_field(
-                    name="Tracking Setup",
+                    name="Admin Only",
                     value=(
                         f"{prefix}chatter channels add #channel (admin only)\n"
                         f"{prefix}chatter channels remove #channel (admin only)\n"
-                        f"{prefix}chatter channels list"
+                        f"{prefix}chatter backdate set YYYY-MM-DD (admin only)\n"
+                        f"{prefix}chatter rebuild YYYY-MM (admin only)\n"
+                        f"{prefix}chatter staffrole set @role (admin only)\n"
+                        f"{prefix}chatter staffrole clear (admin only)"
                     ),
                     inline=False,
                 )
                 embed.add_field(
-                    name="Announcements",
+                    name="Staff Commands",
                     value=(
+                        f"{prefix}chatter channels list\n"
                         f"{prefix}chatter announce set #channel\n"
                         f"{prefix}chatter announce clear\n"
-                        f"{prefix}chatter winner YYYY-MM"
-                    ),
-                    inline=False,
-                )
-                embed.add_field(
-                    name="Staff Access",
-                    value=(
-                        f"{prefix}chatter staffrole set @role\n"
-                        f"{prefix}chatter staffrole show\n"
-                        f"{prefix}chatter staffrole clear"
-                    ),
-                    inline=False,
-                )
-                embed.add_field(
-                    name="Utilities",
-                    value=(
-                        f"{prefix}chatter backdate set YYYY-MM-DD (admin only)\n"
+                        f"{prefix}chatter announce show\n"
+                        f"{prefix}chatter winner YYYY-MM\n"
                         f"{prefix}chatter show\n"
-                        f"{prefix}chatter rebuild YYYY-MM (admin only)"
+                        f"{prefix}chatter staffrole show"
                     ),
                     inline=False,
                 )
@@ -299,6 +289,27 @@ class ChatterOfMonth(commands.Cog):
     # ---------- Event listener ------------------------------------------------
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
+
+        if category == "staff":
+            embed.description = "Commands available to staff role members."
+            if can_view_admin:
+                embed.add_field(
+                    name="Staff Commands",
+                    value=(
+                        f"{prefix}chatter channels list\n"
+                        f"{prefix}chatter announce set #channel\n"
+                        f"{prefix}chatter announce clear\n"
+                        f"{prefix}chatter announce show\n"
+                        f"{prefix}chatter winner YYYY-MM\n"
+                        f"{prefix}chatter show\n"
+                        f"{prefix}chatter staffrole show"
+                    ),
+                    inline=False,
+                )
+            else:
+                embed.add_field(name="Access", value="Staff commands are hidden for your role.", inline=False)
+            embed.set_footer(text="Use the dropdown to switch categories.")
+            return
         if message.author.bot:
             return
         guild = message.guild
@@ -579,7 +590,7 @@ class ChatterOfMonth(commands.Cog):
     @chatter_staffrole.command(name="set")
     async def chatter_staffrole_set(self, ctx: commands.Context, role: discord.Role):
         """Set the staff role used for admin chatter command access."""
-        if not await self._require_staff(ctx):
+        if not await self._require_admin(ctx):
             return
         await self.config.guild(ctx.guild).staff_role.set(role.id)
         embed = discord.Embed(
@@ -607,7 +618,7 @@ class ChatterOfMonth(commands.Cog):
     @chatter_staffrole.command(name="clear")
     async def chatter_staffrole_clear(self, ctx: commands.Context):
         """Clear the configured staff role."""
-        if not await self._require_staff(ctx):
+        if not await self._require_admin(ctx):
             return
         await self.config.guild(ctx.guild).staff_role.set(0)
         embed = discord.Embed(title="Staff Role Cleared", description="Only users with Manage Server can access admin chatter commands.")
