@@ -449,8 +449,43 @@ class ChatterOfMonth(commands.Cog):
                 first = now.replace(day=1)
                 prev = first - timedelta(days=1)
                 month = _month_key_for_dt(prev)
+        else:
+            try:
+                parsed_month = datetime.strptime(month, "%Y-%m")
+                month = f"{parsed_month.year}-{parsed_month.month:02d}"
+            except Exception:
+                await ctx.send("Invalid month format. Use `YYYY-MM`.")
+                return
+
+        now = _utc_now()
+        current_month_key = _month_key_for_dt(now)
+        first_of_current = now.replace(day=1)
+        prev_month_key = _month_key_for_dt(first_of_current - timedelta(days=1))
+
         stats = await self.config.guild(ctx.guild).stats()
         month_stats = stats.get(month) or {}
+
+        # Never finalize or announce current/future months.
+        if month >= current_month_key:
+            if not month_stats:
+                embed = discord.Embed(
+                    title="No Data",
+                    description=f"No tracked messages found for {month}.",
+                    color=discord.Color.orange(),
+                )
+            else:
+                embed = self._build_month_announcement_embed(guild=ctx.guild, month_key=month, month_stats=month_stats)
+
+            status_text = (
+                "This month is still in progress, so winner announcements are not final yet."
+                if month == current_month_key
+                else "That month has not started yet, so a winner cannot be announced."
+            )
+            embed.add_field(name="Status", value=status_text, inline=False)
+            embed.set_footer(text="Preview only. Use chatter results for non-final months.")
+            await ctx.send(embed=embed)
+            return
+
         if not month_stats:
             embed = discord.Embed(
                 title="No Data",
@@ -470,6 +505,11 @@ class ChatterOfMonth(commands.Cog):
                     await ch.send(content="@everyone", embed=embed)
                 else:
                     await ch.send(embed=embed)
+
+                # If previous month was manually announced, avoid duplicate auto-post on the 1st.
+                if month == prev_month_key:
+                    await self.config.guild(ctx.guild).last_announce_month.set(month)
+
                 done_embed = discord.Embed(
                     title="Announcement Sent",
                     description=f"Posted the {month} winner announcement in {ch.mention}.",
@@ -482,6 +522,9 @@ class ChatterOfMonth(commands.Cog):
             await ctx.send(content="@everyone", embed=embed)
         else:
             await ctx.send(embed=embed)
+
+        if month == prev_month_key:
+            await self.config.guild(ctx.guild).last_announce_month.set(month)
 
     @chatter_group.command(name="results")
     async def chatter_results(self, ctx: commands.Context, month: str):
@@ -523,7 +566,7 @@ class ChatterOfMonth(commands.Cog):
             )
             embed.set_footer(text="Preview only. Ongoing month results may change.")
         else:
-            embed.set_footer(text="Preview only. This does not post to the announce channel.")
+            embed.set_footer(text="Preview only. This command does not announce the winner.")
         await ctx.send(embed=embed)
 
     @chatter_group.command(name="leader")
