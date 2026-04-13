@@ -203,6 +203,19 @@ class ChatterOfMonth(commands.Cog):
         await ctx.send(embed=embed)
         return False
 
+    async def _require_admin(self, ctx: commands.Context) -> bool:
+        if ctx.guild is None or not isinstance(ctx.author, discord.Member):
+            return False
+        if ctx.author.guild_permissions.manage_guild or ctx.author.guild_permissions.administrator:
+            return True
+        embed = discord.Embed(
+            title="Access Denied",
+            description="This command is admin-only (requires Manage Server or Administrator).",
+            color=discord.Color.red(),
+        )
+        await ctx.send(embed=embed)
+        return False
+
     def _build_chatter_menu_embed(self, ctx: commands.Context, category: str, can_view_admin: bool) -> discord.Embed:
         prefix = ctx.clean_prefix
         embed = discord.Embed(
@@ -856,7 +869,7 @@ class ChatterOfMonth(commands.Cog):
     @chatter_backdate.command(name="set")
     async def chatter_backdate_set(self, ctx: commands.Context, date: str):
         """Set a backdate override (format `YYYY-MM-DD` or `YYYY-MM`)."""
-        if not await self._require_staff(ctx):
+        if not await self._require_admin(ctx):
             return
         # validate
         parsed = None
@@ -914,7 +927,7 @@ class ChatterOfMonth(commands.Cog):
         those will be scanned; otherwise the cog uses configured counting channels.
         WARNING: this can be slow for large servers.
         """
-        if not await self._require_staff(ctx):
+        if not await self._require_admin(ctx):
             return
         # parse month -> start and end datetimes (UTC)
         try:
