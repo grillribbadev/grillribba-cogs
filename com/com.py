@@ -251,8 +251,8 @@ class ChatterOfMonth(commands.Cog):
                 embed.add_field(
                     name="Tracking Setup",
                     value=(
-                        f"{prefix}chatter channels add #channel\n"
-                        f"{prefix}chatter channels remove #channel\n"
+                        f"{prefix}chatter channels add #channel (admin only)\n"
+                        f"{prefix}chatter channels remove #channel (admin only)\n"
                         f"{prefix}chatter channels list"
                     ),
                     inline=False,
@@ -278,9 +278,9 @@ class ChatterOfMonth(commands.Cog):
                 embed.add_field(
                     name="Utilities",
                     value=(
-                        f"{prefix}chatter backdate set YYYY-MM-DD\n"
+                        f"{prefix}chatter backdate set YYYY-MM-DD (admin only)\n"
                         f"{prefix}chatter show\n"
-                        f"{prefix}chatter rebuild YYYY-MM"
+                        f"{prefix}chatter rebuild YYYY-MM (admin only)"
                     ),
                     inline=False,
                 )
@@ -493,7 +493,7 @@ class ChatterOfMonth(commands.Cog):
     @chatter_channels.command(name="add")
     async def chatter_channels_add(self, ctx: commands.Context, channel: discord.TextChannel):
         """Add a channel to be counted."""
-        if not await self._require_staff(ctx):
+        if not await self._require_admin(ctx):
             return
         async with self.config.guild(ctx.guild).channels() as chs:
             if channel.id in chs:
@@ -505,7 +505,7 @@ class ChatterOfMonth(commands.Cog):
     @chatter_channels.command(name="remove")
     async def chatter_channels_remove(self, ctx: commands.Context, channel: discord.TextChannel):
         """Remove a channel from counting."""
-        if not await self._require_staff(ctx):
+        if not await self._require_admin(ctx):
             return
         async with self.config.guild(ctx.guild).channels() as chs:
             try:
