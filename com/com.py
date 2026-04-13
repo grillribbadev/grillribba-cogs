@@ -496,6 +496,7 @@ class ChatterOfMonth(commands.Cog):
             return
 
         month_key = f"{parsed.year}-{parsed.month:02d}"
+        is_current_month = month_key == _month_key_for_dt()
         stats = await self.config.guild(ctx.guild).stats()
         month_stats = stats.get(month_key) or {}
         if not month_stats:
@@ -504,11 +505,25 @@ class ChatterOfMonth(commands.Cog):
                 description=f"No tracked messages found for {month_key}.",
                 color=discord.Color.orange(),
             )
+            if is_current_month:
+                embed.add_field(
+                    name="Status",
+                    value="This month is still in progress, so results are not final yet.",
+                    inline=False,
+                )
             await ctx.send(embed=embed)
             return
 
         embed = self._build_month_announcement_embed(guild=ctx.guild, month_key=month_key, month_stats=month_stats)
-        embed.set_footer(text="Preview only. This does not post to the announce channel.")
+        if is_current_month:
+            embed.add_field(
+                name="Status",
+                value="This month is still in progress, so results are not final yet.",
+                inline=False,
+            )
+            embed.set_footer(text="Preview only. Ongoing month results may change.")
+        else:
+            embed.set_footer(text="Preview only. This does not post to the announce channel.")
         await ctx.send(embed=embed)
 
     @chatter_group.command(name="leader")
