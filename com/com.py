@@ -193,22 +193,7 @@ class ChatterOfMonth(commands.Cog):
 
                         stats = await self.config.guild(guild).stats()
                         month_stats = stats.get(prev_key) or {}
-                        embed = discord.Embed(title=f"Chatter of {prev_key}", color=0x00FF00)
-                        if not month_stats:
-                            embed.description = "No data for this month."
-                        else:
-                            top_uid, top_count = max(month_stats.items(), key=lambda kv: kv[1])
-                            top_uid_int = int(top_uid)
-                            member = guild.get_member(top_uid_int)
-                            mention = member.mention if member else f"<@{top_uid_int}>"
-                            embed.add_field(name="Winner", value=f"{mention} — {top_count} messages", inline=False)
-                            sorted_top = sorted(month_stats.items(), key=lambda kv: kv[1], reverse=True)[:5]
-                            desc_lines = []
-                            for uid, cnt in sorted_top:
-                                uid_i = int(uid)
-                                m = guild.get_member(uid_i)
-                                desc_lines.append(f"{(m.mention if m else f'<@{uid_i}>')}: {cnt}")
-                            embed.add_field(name="Top 5", value="\n".join(desc_lines), inline=False)
+                        embed = self._build_month_announcement_embed(guild=guild, month_key=prev_key, month_stats=month_stats)
 
                         ann = await self.config.guild(guild).announce_channel()
                         everyone = await self.config.guild(guild).announce_everyone()
@@ -244,6 +229,34 @@ class ChatterOfMonth(commands.Cog):
                 break
             except Exception:
                 log.exception("Monthly announcer loop raised an exception")
+
+    def _build_month_announcement_embed(self, guild: discord.Guild, month_key: str, month_stats: dict[str, int]) -> discord.Embed:
+        embed = discord.Embed(
+            title=f"Chatter of {month_key}",
+            description="Monthly message leaderboard",
+            color=discord.Color.gold(),
+            timestamp=_utc_now(),
+        )
+        if not month_stats:
+            embed.description = "No tracked messages were recorded for this month."
+            embed.set_footer(text="Channels can be managed with chatter channels commands.")
+            return embed
+
+        top_uid, top_count = max(month_stats.items(), key=lambda kv: kv[1])
+        top_uid_int = int(top_uid)
+        member = guild.get_member(top_uid_int)
+        mention = member.mention if member else f"<@{top_uid_int}>"
+        embed.add_field(name="Winner", value=f"{mention}\n{top_count:,} messages", inline=False)
+
+        sorted_top = sorted(month_stats.items(), key=lambda kv: kv[1], reverse=True)[:5]
+        lines = []
+        for i, (uid, cnt) in enumerate(sorted_top, start=1):
+            uid_i = int(uid)
+            m = guild.get_member(uid_i)
+            lines.append(f"{i}. {(m.mention if m else f'<@{uid_i}>')} - {cnt:,}")
+        embed.add_field(name="Top 5", value="\n".join(lines), inline=False)
+        embed.set_footer(text="Only configured tracking channels are counted.")
+        return embed
 
     def _build_leaderboard_embed(
         self,
@@ -375,24 +388,14 @@ class ChatterOfMonth(commands.Cog):
         stats = await self.config.guild(ctx.guild).stats()
         month_stats = stats.get(month) or {}
         if not month_stats:
-            embed = discord.Embed(title="No Data", description=f"No data for {month}.")
+            embed = discord.Embed(
+                title="No Data",
+                description=f"No tracked messages found for {month}.",
+                color=discord.Color.orange(),
+            )
             await ctx.send(embed=embed)
             return
-        # find top
-        top_uid, top_count = max(month_stats.items(), key=lambda kv: kv[1])
-        top_uid_int = int(top_uid)
-        member = ctx.guild.get_member(top_uid_int)
-        mention = member.mention if member else f"<@{top_uid_int}>"
-        embed = discord.Embed(title=f"Chatter of {month}", color=0x00FF00)
-        embed.add_field(name="Winner", value=f"{mention} — {top_count} messages", inline=False)
-        # include top 5
-        sorted_top = sorted(month_stats.items(), key=lambda kv: kv[1], reverse=True)[:5]
-        desc_lines = []
-        for uid, cnt in sorted_top:
-            uid_i = int(uid)
-            m = ctx.guild.get_member(uid_i)
-            desc_lines.append(f"{(m.mention if m else f'<@{uid_i}>')}: {cnt}")
-        embed.add_field(name="Top 5", value="\n".join(desc_lines), inline=False)
+        embed = self._build_month_announcement_embed(guild=ctx.guild, month_key=month, month_stats=month_stats)
         # send to announce channel if set. Always send embed; optionally mention everyone.
         ann = await self.config.guild(ctx.guild).announce_channel()
         everyone = await self.config.guild(ctx.guild).announce_everyone()
@@ -403,7 +406,11 @@ class ChatterOfMonth(commands.Cog):
                     await ch.send(content="@everyone", embed=embed)
                 else:
                     await ch.send(embed=embed)
-                done_embed = discord.Embed(title="Winner Announced", description=f"Announced winner for {month} in {ch.mention}.")
+                done_embed = discord.Embed(
+                    title="Announcement Sent",
+                    description=f"Posted the {month} winner announcement in {ch.mention}.",
+                    color=discord.Color.green(),
+                )
                 await ctx.send(embed=done_embed)
                 return
         # fallback to command channel
