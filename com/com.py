@@ -305,11 +305,53 @@ class ChatterOfMonth(commands.Cog):
         return embed
 
     # ---------- Admin commands ------------------------------------------------
-    @commands.group(name="chatter")
+    @commands.group(name="chatter", invoke_without_command=True)
     @commands.guild_only()
     @commands.admin_or_permissions(manage_guild=True)
     async def chatter_group(self, ctx: commands.Context):
         """Manage chatter-of-the-month settings."""
+        if ctx.invoked_subcommand is not None:
+            return
+
+        prefix = ctx.clean_prefix
+        embed = discord.Embed(
+            title="Chatter Control Panel",
+            description="Track monthly activity, preview results, and manage announcement behavior.",
+            color=discord.Color.blurple(),
+            timestamp=_utc_now(),
+        )
+        if ctx.guild and ctx.guild.icon:
+            embed.set_author(name=ctx.guild.name, icon_url=ctx.guild.icon.url)
+
+        embed.add_field(
+            name="Setup",
+            value=(
+                f"{prefix}chatter channels add #channel\n"
+                f"{prefix}chatter announce set #channel\n"
+                f"{prefix}chatter show"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Monthly Results",
+            value=(
+                f"{prefix}chatter results YYYY-MM\n"
+                f"{prefix}chatter winner YYYY-MM\n"
+                f"{prefix}chatter leader"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Management",
+            value=(
+                f"{prefix}chatter channels list\n"
+                f"{prefix}chatter backdate set YYYY-MM-DD\n"
+                f"{prefix}chatter rebuild YYYY-MM"
+            ),
+            inline=False,
+        )
+        embed.set_footer(text="Tip: Use chatter leader to open the interactive Prev/Next leaderboard.")
+        await ctx.send(embed=embed)
 
     @chatter_group.group(name="channels")
     async def chatter_channels(self, ctx: commands.Context):
@@ -440,6 +482,34 @@ class ChatterOfMonth(commands.Cog):
             await ctx.send(content="@everyone", embed=embed)
         else:
             await ctx.send(embed=embed)
+
+    @chatter_group.command(name="results")
+    async def chatter_results(self, ctx: commands.Context, month: str):
+        """Preview monthly results without posting an announcement.
+
+        `month` must be `YYYY-MM`.
+        """
+        try:
+            parsed = datetime.strptime(month, "%Y-%m")
+        except Exception:
+            await ctx.send("Invalid month format. Use `YYYY-MM`.")
+            return
+
+        month_key = f"{parsed.year}-{parsed.month:02d}"
+        stats = await self.config.guild(ctx.guild).stats()
+        month_stats = stats.get(month_key) or {}
+        if not month_stats:
+            embed = discord.Embed(
+                title="No Data",
+                description=f"No tracked messages found for {month_key}.",
+                color=discord.Color.orange(),
+            )
+            await ctx.send(embed=embed)
+            return
+
+        embed = self._build_month_announcement_embed(guild=ctx.guild, month_key=month_key, month_stats=month_stats)
+        embed.set_footer(text="Preview only. This does not post to the announce channel.")
+        await ctx.send(embed=embed)
 
     @chatter_group.command(name="leader")
     async def chatter_leader(self, ctx: commands.Context, date_or_page: Optional[str] = None, page: Optional[int] = None):
