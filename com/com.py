@@ -74,7 +74,7 @@ class ChatterLeaderPaginationView(discord.ui.View):
             except Exception:
                 pass
 
-    @discord.ui.button(label="<", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Prev", style=discord.ButtonStyle.primary)
     async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.current_page > 1:
             self.current_page -= 1
@@ -91,7 +91,7 @@ class ChatterLeaderPaginationView(discord.ui.View):
         )
         await interaction.response.edit_message(embed=embed, view=self)
 
-    @discord.ui.button(label=">", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.primary)
     async def next_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.current_page < self.total_pages:
             self.current_page += 1
@@ -108,7 +108,7 @@ class ChatterLeaderPaginationView(discord.ui.View):
         )
         await interaction.response.edit_message(embed=embed, view=self)
 
-    @discord.ui.button(label="X", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="Close", style=discord.ButtonStyle.danger)
     async def close_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.stop()
         await interaction.response.edit_message(view=None)
@@ -231,12 +231,14 @@ class ChatterOfMonth(commands.Cog):
                 log.exception("Monthly announcer loop raised an exception")
 
     def _build_month_announcement_embed(self, guild: discord.Guild, month_key: str, month_stats: dict[str, int]) -> discord.Embed:
+        guild_icon = guild.icon.url if guild.icon else None
         embed = discord.Embed(
             title=f"Chatter of {month_key}",
-            description="Monthly message leaderboard",
+            description="Final results from tracked channels.",
             color=discord.Color.gold(),
             timestamp=_utc_now(),
         )
+        embed.set_author(name=guild.name, icon_url=guild_icon)
         if not month_stats:
             embed.description = "No tracked messages were recorded for this month."
             embed.set_footer(text="Channels can be managed with chatter channels commands.")
@@ -246,14 +248,23 @@ class ChatterOfMonth(commands.Cog):
         top_uid_int = int(top_uid)
         member = guild.get_member(top_uid_int)
         mention = member.mention if member else f"<@{top_uid_int}>"
+        if member is not None:
+            embed.set_thumbnail(url=member.display_avatar.url)
+
+        total_messages = sum(month_stats.values())
+        participant_count = len(month_stats)
+
         embed.add_field(name="Winner", value=f"{mention}\n{top_count:,} messages", inline=False)
+        embed.add_field(name="Tracked Messages", value=f"{total_messages:,}", inline=True)
+        embed.add_field(name="Active Chatters", value=f"{participant_count:,}", inline=True)
 
         sorted_top = sorted(month_stats.items(), key=lambda kv: kv[1], reverse=True)[:5]
         lines = []
         for i, (uid, cnt) in enumerate(sorted_top, start=1):
             uid_i = int(uid)
             m = guild.get_member(uid_i)
-            lines.append(f"{i}. {(m.mention if m else f'<@{uid_i}>')} - {cnt:,}")
+            rank_label = f"#{i}"
+            lines.append(f"{rank_label} {(m.mention if m else f'<@{uid_i}>')} - {cnt:,}")
         embed.add_field(name="Top 5", value="\n".join(lines), inline=False)
         embed.set_footer(text="Only configured tracking channels are counted.")
         return embed
@@ -271,15 +282,26 @@ class ChatterOfMonth(commands.Cog):
     ) -> discord.Embed:
         start_index = (page - 1) * LEADERBOARD_PAGE_SIZE
         page_slice = sorted_top[start_index:start_index + LEADERBOARD_PAGE_SIZE]
+        guild_icon = guild.icon.url if guild.icon else None
+        total_entries = len(sorted_top)
+        shown_start = start_index + 1
+        shown_end = min(start_index + LEADERBOARD_PAGE_SIZE, total_entries)
 
-        embed = discord.Embed(title=f"Current leader - {month_key}")
-        embed.add_field(name="Leader", value=f"{leader_mention} - {top_count} messages", inline=False)
+        embed = discord.Embed(
+            title=f"Live Leaderboard - {month_key}",
+            description=f"Showing ranks {shown_start}-{shown_end} of {total_entries:,}",
+            color=discord.Color.blurple(),
+            timestamp=_utc_now(),
+        )
+        embed.set_author(name=guild.name, icon_url=guild_icon)
+        embed.add_field(name="Current Leader", value=f"{leader_mention} - {top_count:,} messages", inline=False)
         desc_lines = []
         for offset, (uid, cnt) in enumerate(page_slice, start=start_index + 1):
             uid_i = int(uid)
             m = guild.get_member(uid_i)
-            desc_lines.append(f"{offset}. {(m.mention if m else f'<@{uid_i}>')}: {cnt}")
+            desc_lines.append(f"#{offset} {(m.mention if m else f'<@{uid_i}>')} - {cnt:,}")
         embed.add_field(name=f"Leaderboard (Page {page}/{total_pages})", value="\n".join(desc_lines), inline=False)
+        embed.set_footer(text="Use Prev/Next to browse pages. Close removes the buttons.")
         return embed
 
     # ---------- Admin commands ------------------------------------------------
@@ -472,7 +494,12 @@ class ChatterOfMonth(commands.Cog):
         stats = await self.config.guild(ctx.guild).stats()
         month_stats = stats.get(month_key) or {}
         if not month_stats:
-            await ctx.send(f"No data for {month_key}.")
+            embed = discord.Embed(
+                title="No Data",
+                description=f"No tracked messages found for {month_key}.",
+                color=discord.Color.orange(),
+            )
+            await ctx.send(embed=embed)
             return
 
         # compute top and paged leaderboard
