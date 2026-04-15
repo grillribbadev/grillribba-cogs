@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict, List, Optional, Tuple
 
 import discord
@@ -12,6 +13,7 @@ DEFAULT_GUILD: Dict[str, Any] = {
     "emoji": "⭐",
     "threshold": 5,
     "posts": {},
+    "listen_channel_ids": [],
 }
 
 
@@ -22,6 +24,7 @@ class HallOfFame(commands.Cog):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=0x48A11F4D, force_registration=True)
         self.config.register_guild(**DEFAULT_GUILD)
+        self._guild_locks: Dict[int, asyncio.Lock] = {}
 
     async def red_delete_data_for_user(self, **kwargs):
         return
@@ -76,16 +79,56 @@ class HallOfFame(commands.Cog):
         channel_id = data.get("target_channel_id")
         threshold = int(data.get("threshold", 5))
         emoji = data.get("emoji", "⭐")
+        listen_ids = data.get("listen_channel_ids", [])
 
         channel = ctx.guild.get_channel(channel_id) if channel_id else None
         channel_display = channel.mention if isinstance(channel, discord.TextChannel) else "Not set"
 
+        if listen_ids:
+            listen_mentions = " ".join(
+                ch.mention
+                for cid in listen_ids
+                if isinstance((ch := ctx.guild.get_channel(cid)), discord.TextChannel)
+            ) or "(unknown channels)"
+        else:
+            listen_mentions = "All channels"
+
         await ctx.send(
             f"Hall of Fame settings:\n"
-            f"Channel: {channel_display}\n"
+            f"Post channel: {channel_display}\n"
             f"Emoji: {emoji}\n"
-            f"Threshold: {threshold}"
+            f"Threshold: {threshold}\n"
+            f"Listening in: {listen_mentions}"
         )
+
+    @halloffame.command(name="addchannel")
+    @commands.guild_only()
+    @commands.admin_or_permissions(manage_guild=True)
+    async def hof_addchannel(self, ctx: commands.Context, channel: discord.TextChannel):
+        """Add a channel to listen for reactions in. If no channels are set, all channels are watched."""
+        ids = await self.config.guild(ctx.guild).listen_channel_ids()
+        if channel.id in ids:
+            await ctx.send(f"{channel.mention} is already in the listen list.")
+            return
+        ids.append(channel.id)
+        await self.config.guild(ctx.guild).listen_channel_ids.set(ids)
+        await ctx.send(f"Now listening for reactions in {channel.mention}.")
+
+    @halloffame.command(name="removechannel")
+    @commands.guild_only()
+    @commands.admin_or_permissions(manage_guild=True)
+    async def hof_removechannel(self, ctx: commands.Context, channel: discord.TextChannel):
+        """Remove a channel from the listen list."""
+        ids = await self.config.guild(ctx.guild).listen_channel_ids()
+        if channel.id not in ids:
+            await ctx.send(f"{channel.mention} is not in the listen list.")
+            return
+        ids.remove(channel.id)
+        await self.config.guild(ctx.guild).listen_channel_ids.set(ids)
+        if ids:
+            await ctx.send(f"Stopped listening in {channel.mention}.")
+        else:
+            await ctx.send(f"Stopped listening in {channel.mention}. No channels set — watching all channels.")
 
     @halloffame.command(name="resetposts")
     @commands.guild_only()
@@ -102,6 +145,11 @@ class HallOfFame(commands.Cog):
     @commands.Cog.listener()
     async def on_raw_reaction_remove(self, payload: discord.RawReactionActionEvent):
         await self._process_reaction_payload(payload)
+
+    def _get_guild_lock(self, guild_id: int) -> asyncio.Lock:
+        if guild_id not in self._guild_locks:
+            self._guild_locks[guild_id] = asyncio.Lock()
+        return self._guild_locks[guild_id]
 
     async def _process_reaction_payload(self, payload: discord.RawReactionActionEvent):
         if payload.guild_id is None:
@@ -120,6 +168,15 @@ class HallOfFame(commands.Cog):
         if not isinstance(target_channel, discord.TextChannel):
             return
 
+        # Ignore reactions in the hall of fame channel itself
+        if payload.channel_id == target_channel_id:
+            return
+
+        # Channel filter: if a listen list is configured, only process those channels
+        listen_ids = settings.get("listen_channel_ids", [])
+        if listen_ids and payload.channel_id not in listen_ids:
+            return
+
         configured_emoji = settings.get("emoji", "⭐")
         if not self._emoji_matches(configured_emoji, payload.emoji):
             return
@@ -136,39 +193,45 @@ class HallOfFame(commands.Cog):
         count = await self._count_valid_reactions(source_message, configured_emoji)
         threshold = int(settings.get("threshold", 5))
 
-        posts = settings.get("posts", {})
-        source_id = str(source_message.id)
-        existing = posts.get(source_id)
-
         if count < threshold:
             return
 
         content = self._build_starboard_content(source_message, configured_emoji, count)
         embed = await self._build_starboard_embed(source_message, configured_emoji, count)
 
-        if existing:
-            starboard_channel = guild.get_channel(existing.get("starboard_channel_id", 0))
-            if isinstance(starboard_channel, discord.TextChannel):
-                try:
-                    starboard_msg = await starboard_channel.fetch_message(existing["starboard_message_id"])
-                    await starboard_msg.edit(content=content, embed=embed)
-                    posts[source_id]["last_count"] = count
-                    await self.config.guild(guild).posts.set(posts)
-                    return
-                except (discord.NotFound, discord.Forbidden, discord.HTTPException, KeyError):
-                    pass
+        # Acquire per-guild lock to prevent race conditions from rapid reactions
+        async with self._get_guild_lock(guild.id):
+            # Re-read posts inside the lock to get the latest saved state
+            posts = await self.config.guild(guild).posts()
+            source_id = str(source_message.id)
+            existing = posts.get(source_id)
 
-        try:
-            sent = await target_channel.send(content=content, embed=embed)
-        except (discord.Forbidden, discord.HTTPException):
-            return
+            if existing:
+                starboard_channel = guild.get_channel(existing.get("starboard_channel_id", 0))
+                if isinstance(starboard_channel, discord.TextChannel):
+                    try:
+                        starboard_msg = await starboard_channel.fetch_message(existing["starboard_message_id"])
+                        await starboard_msg.edit(content=content, embed=embed)
+                        posts[source_id]["last_count"] = count
+                        await self.config.guild(guild).posts.set(posts)
+                        return
+                    except discord.NotFound:
+                        # Hall of fame message was deleted; fall through to re-post
+                        pass
+                    except (discord.Forbidden, discord.HTTPException, KeyError):
+                        return
 
-        posts[source_id] = {
-            "starboard_message_id": sent.id,
-            "starboard_channel_id": sent.channel.id,
-            "last_count": count,
-        }
-        await self.config.guild(guild).posts.set(posts)
+            try:
+                sent = await target_channel.send(content=content, embed=embed)
+            except (discord.Forbidden, discord.HTTPException):
+                return
+
+            posts[source_id] = {
+                "starboard_message_id": sent.id,
+                "starboard_channel_id": sent.channel.id,
+                "last_count": count,
+            }
+            await self.config.guild(guild).posts.set(posts)
 
     async def _count_valid_reactions(self, message: discord.Message, configured_emoji: str) -> int:
         for reaction in message.reactions:
