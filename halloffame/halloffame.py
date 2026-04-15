@@ -13,7 +13,7 @@ DEFAULT_GUILD: Dict[str, Any] = {
     "emoji": "⭐",
     "threshold": 5,
     "posts": {},
-    "listen_channel_ids": [],
+    "blacklist_channel_ids": [],
 }
 
 
@@ -79,56 +79,53 @@ class HallOfFame(commands.Cog):
         channel_id = data.get("target_channel_id")
         threshold = int(data.get("threshold", 5))
         emoji = data.get("emoji", "⭐")
-        listen_ids = data.get("listen_channel_ids", [])
+        blacklist_ids = data.get("blacklist_channel_ids", [])
 
         channel = ctx.guild.get_channel(channel_id) if channel_id else None
         channel_display = channel.mention if isinstance(channel, discord.TextChannel) else "Not set"
 
-        if listen_ids:
-            listen_mentions = " ".join(
+        if blacklist_ids:
+            blacklist_mentions = " ".join(
                 ch.mention
-                for cid in listen_ids
+                for cid in blacklist_ids
                 if isinstance((ch := ctx.guild.get_channel(cid)), discord.TextChannel)
             ) or "(unknown channels)"
         else:
-            listen_mentions = "All channels"
+            blacklist_mentions = "None"
 
         await ctx.send(
             f"Hall of Fame settings:\n"
             f"Post channel: {channel_display}\n"
             f"Emoji: {emoji}\n"
             f"Threshold: {threshold}\n"
-            f"Listening in: {listen_mentions}"
+            f"Ignored channels: {blacklist_mentions}"
         )
 
-    @halloffame.command(name="addchannel")
+    @halloffame.command(name="ignorechannel")
     @commands.guild_only()
     @commands.admin_or_permissions(manage_guild=True)
-    async def hof_addchannel(self, ctx: commands.Context, channel: discord.TextChannel):
-        """Add a channel to listen for reactions in. If no channels are set, all channels are watched."""
-        ids = await self.config.guild(ctx.guild).listen_channel_ids()
+    async def hof_ignorechannel(self, ctx: commands.Context, channel: discord.TextChannel):
+        """Blacklist a channel so reactions in it are ignored."""
+        ids = await self.config.guild(ctx.guild).blacklist_channel_ids()
         if channel.id in ids:
-            await ctx.send(f"{channel.mention} is already in the listen list.")
+            await ctx.send(f"{channel.mention} is already ignored.")
             return
         ids.append(channel.id)
-        await self.config.guild(ctx.guild).listen_channel_ids.set(ids)
-        await ctx.send(f"Now listening for reactions in {channel.mention}.")
+        await self.config.guild(ctx.guild).blacklist_channel_ids.set(ids)
+        await ctx.send(f"Reactions in {channel.mention} will now be ignored.")
 
-    @halloffame.command(name="removechannel")
+    @halloffame.command(name="unignorechannel")
     @commands.guild_only()
     @commands.admin_or_permissions(manage_guild=True)
-    async def hof_removechannel(self, ctx: commands.Context, channel: discord.TextChannel):
-        """Remove a channel from the listen list."""
-        ids = await self.config.guild(ctx.guild).listen_channel_ids()
+    async def hof_unignorechannel(self, ctx: commands.Context, channel: discord.TextChannel):
+        """Remove a channel from the blacklist."""
+        ids = await self.config.guild(ctx.guild).blacklist_channel_ids()
         if channel.id not in ids:
-            await ctx.send(f"{channel.mention} is not in the listen list.")
+            await ctx.send(f"{channel.mention} is not in the ignore list.")
             return
         ids.remove(channel.id)
-        await self.config.guild(ctx.guild).listen_channel_ids.set(ids)
-        if ids:
-            await ctx.send(f"Stopped listening in {channel.mention}.")
-        else:
-            await ctx.send(f"Stopped listening in {channel.mention}. No channels set — watching all channels.")
+        await self.config.guild(ctx.guild).blacklist_channel_ids.set(ids)
+        await ctx.send(f"{channel.mention} is no longer ignored.")
 
     @halloffame.command(name="resetposts")
     @commands.guild_only()
@@ -172,9 +169,9 @@ class HallOfFame(commands.Cog):
         if payload.channel_id == target_channel_id:
             return
 
-        # Channel filter: if a listen list is configured, only process those channels
-        listen_ids = settings.get("listen_channel_ids", [])
-        if listen_ids and payload.channel_id not in listen_ids:
+        # Channel blacklist: skip channels explicitly ignored
+        blacklist_ids = settings.get("blacklist_channel_ids", [])
+        if payload.channel_id in blacklist_ids:
             return
 
         configured_emoji = settings.get("emoji", "⭐")
