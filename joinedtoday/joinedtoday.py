@@ -262,6 +262,26 @@ class JoinedToday(redcommands.Cog):
         await ctx.send(embed=pages[0], view=view)
 
     @redcommands.guild_only()
+    @redcommands.command(name="truecount")
+    async def true_count(self, ctx, days: int = 1):
+        """Show the true count (joined - left) in the last X days (default 1)."""
+        days = self._normalize_days(days)
+        cutoff = self._cutoff_for_days(days)
+        joined_members = self._current_members_joined_since(ctx.guild, cutoff)
+        joined_count = len(joined_members)
+        left_members = await self._recent_leavers_since(ctx.guild, cutoff)
+        left_count = len(left_members)
+        true_count = joined_count - left_count
+
+        embed = discord.Embed(
+            title="📈 True Count",
+            description=f"**{true_count}** net members in the last **{days} day(s)**.\n\nJoined: {joined_count}\nLeft: {left_count}",
+            color=discord.Color.blue() if true_count > 0 else discord.Color.red() if true_count < 0 else discord.Color.orange()
+        )
+        embed.set_footer(text=f"Requested by {ctx.author}", icon_url=ctx.author.display_avatar.url)
+        await ctx.send(embed=embed)
+
+    @redcommands.guild_only()
     @redcommands.admin_or_permissions(administrator=True)
     @redcommands.command(name="leftbackdate")
     async def left_backdate(self, ctx, days_ago: float, member_id: int, *, display_name: str = "Unknown Member"):
