@@ -2,10 +2,6 @@ from redbot.core import commands, Config
 from typing import Union
 import discord
 
-class SilentDeny(Exception):
-    """Custom exception for silent permission denial."""
-    pass
-
 class BetterPermissions(commands.Cog):
     """A better permissions system for Redbot."""
 
@@ -63,11 +59,37 @@ class BetterPermissions(commands.Cog):
         # Preserve order and remove duplicates
         return list(dict.fromkeys(targets))
 
-    def get_target_permission(self, perms, ctx):
+    def get_command_targets_from_command(self, command, cog):
+        """Return all relevant names for a command to resolve permissions."""
+        if not command:
+            return []
+
+        targets = []
+        if cog:
+            targets.append(cog.qualified_name.lower())
+
+        qualified_name = command.qualified_name.lower()
+        targets.append(qualified_name)
+
+        if getattr(command, 'full_parent_name', None):
+            targets.append(command.full_parent_name.lower())
+
+        targets.append(command.name.lower())
+
+        parent = getattr(command, 'parent', None)
+        while parent:
+            if getattr(parent, 'qualified_name', None):
+                targets.append(parent.qualified_name.lower())
+            parent = getattr(parent, 'parent', None)
+
+        # Preserve order and remove duplicates
+        return list(dict.fromkeys(targets))
+
+    def get_target_permission(self, perms, targets):
         """Get the most specific permission for a context's command or cog."""
         if not perms:
             return None
-        for target in self.get_command_targets(ctx):
+        for target in targets:
             permission = self.get_permission(perms, target)
             if permission is not None:
                 return permission
@@ -83,7 +105,7 @@ class BetterPermissions(commands.Cog):
         normalized = "".join(ch for ch in normalized if ch.isalnum() or ch in "-_ ")
         return normalized.strip("-_ ")
 
-    def get_channel_role_permission(self, perms, channel_id, ctx):
+    def get_channel_role_permission(self, perms, channel_id, targets, ctx):
         """Check channel+role scoped permissions for the current author."""
         if not perms or channel_id not in perms:
             return None
@@ -93,7 +115,7 @@ class BetterPermissions(commands.Cog):
             role_id = str(role.id)
             if role_id not in channel_roles:
                 continue
-            permission = self.get_target_permission(channel_roles[role_id], ctx)
+            permission = self.get_target_permission(channel_roles[role_id], targets)
             if permission == "deny":
                 return "deny"
             if permission == "allow":
@@ -258,6 +280,42 @@ class BetterPermissions(commands.Cog):
             )
             return await ctx.send(embed=embed)
 
+        # Validate targets
+        for target in targets:
+            parts = target.split()
+            if len(parts) == 1:
+                # Cog
+                cog = self.bot.get_cog(parts[0])
+                if not cog:
+                    embed = discord.Embed(
+                        title="Error",
+                        description=f"Cog `{parts[0]}` not found.",
+                        color=discord.Color.red()
+                    )
+                    return await ctx.send(embed=embed)
+            else:
+                # Command
+                cog_name = parts[0]
+                command_parts = parts[1:]
+                cog = self.bot.get_cog(cog_name)
+                if not cog:
+                    embed = discord.Embed(
+                        title="Error",
+                        description=f"Cog `{cog_name}` not found.",
+                        color=discord.Color.red()
+                    )
+                    return await ctx.send(embed=embed)
+                command = cog
+                for part in command_parts:
+                    command = command.get_command(part)
+                    if not command:
+                        embed = discord.Embed(
+                            title="Error",
+                            description=f"Command `{part}` not found in {command.qualified_name if hasattr(command, 'qualified_name') else 'cog'}.",
+                            color=discord.Color.red()
+                        )
+                        return await ctx.send(embed=embed)
+
         scope_secondary_id = None
         if channel_obj and role_obj:
             config_section = self.config.guild(ctx.guild).channel_role_permissions()
@@ -322,6 +380,90 @@ class BetterPermissions(commands.Cog):
             title="Permissions Reset",
             description="✅ All permissions have been cleared for this guild.",
             color=discord.Color.green()
+        )
+        await ctx.send(embed=embed)
+
+    @permset.command()
+    async def debug(self, ctx, *, command_name: str):
+        """Debug permission resolution for a command."""
+        if not ctx.guild:
+            await ctx.send("Not in a guild.")
+            return
+
+        # Parse command_name
+        parts = command_name.split()
+        if not parts:
+            await ctx.send("Specify a command, e.g. `mafia unban`")
+            return
+
+        cog_name = parts[0]
+        command_parts = parts[1:]
+
+        cog = self.bot.get_cog(cog_name)
+        if not cog:
+            await ctx.send(f"Cog '{cog_name}' not found.")
+            return
+
+        command = cog
+        for part in command_parts:
+            if hasattr(command, 'get_command'):
+                command = command.get_command(part)
+            else:
+                await ctx.send(f"Command '{part}' not found in {command.qualified_name if hasattr(command, 'qualified_name') else 'cog'}.")
+                return
+            if not command:
+                await ctx.send(f"Command '{part}' not found in {getattr(command, 'qualified_name', 'cog')}.")
+                return
+
+        targets = self.get_command_targets_from_command(command, cog)
+        debug_msg = f"**Command Targets:** {', '.join(f'`{t}`' for t in targets)}\n\n"
+
+        # User permissions
+        user_perms = await self.config.guild(ctx.guild).user_permissions()
+        user_id = str(ctx.author.id)
+        if user_id in user_perms:
+            user_perm = self.get_target_permission(user_perms[user_id], targets)
+            debug_msg += f"**User Permission:** {user_perm or 'None'}\n"
+        else:
+            debug_msg += "**User Permission:** None\n"
+
+        # Channel+role permissions
+        channel_role_perms = await self.config.guild(ctx.guild).channel_role_permissions()
+        channel_id = str(ctx.channel.id)
+        channel_role_perm = self.get_channel_role_permission(channel_role_perms, channel_id, targets, ctx)
+        debug_msg += f"**Channel+Role Permission:** {channel_role_perm or 'None'}\n"
+
+        # Channel permissions
+        channel_perms = await self.config.guild(ctx.guild).channel_permissions()
+        if channel_id in channel_perms:
+            channel_perm = self.get_target_permission(channel_perms[channel_id], targets)
+            debug_msg += f"**Channel Permission:** {channel_perm or 'None'}\n"
+        else:
+            debug_msg += "**Channel Permission:** None\n"
+
+        # Role permissions
+        role_perms = await self.config.guild(ctx.guild).role_permissions()
+        role_perm = None
+        for role in ctx.author.roles:
+            role_id = str(role.id)
+            if role_id in role_perms:
+                perm = self.get_target_permission(role_perms[role_id], targets)
+                if perm == "deny":
+                    role_perm = "deny"
+                    break
+                if perm == "allow":
+                    role_perm = "allow"
+        debug_msg += f"**Role Permission:** {role_perm or 'None'}\n"
+
+        # Global permissions
+        global_perms = await self.config.guild(ctx.guild).global_permissions()
+        global_perm = self.get_target_permission(global_perms, targets)
+        debug_msg += f"**Global Permission:** {global_perm or 'None'}\n"
+
+        embed = discord.Embed(
+            title="Permission Debug",
+            description=debug_msg,
+            color=discord.Color.blue()
         )
         await ctx.send(embed=embed)
 
@@ -400,36 +542,35 @@ class BetterPermissions(commands.Cog):
         if not ctx.guild:
             return True
 
-        command_name = ctx.command.qualified_name.lower()
-        cog_name = ctx.cog.qualified_name.lower() if ctx.cog else None
+        targets = self.get_command_targets(ctx)
 
         # User permissions are most specific
         user_perms = await self.config.guild(ctx.guild).user_permissions()
         user_id = str(ctx.author.id)
         if user_id in user_perms:
-            user_perm = self.get_target_permission(user_perms[user_id], ctx)
+            user_perm = self.get_target_permission(user_perms[user_id], targets)
             if user_perm == "allow":
                 return True
             if user_perm == "deny":
-                raise SilentDeny()
+                return False
 
         # Channel+role permissions override channel/role/global.
         channel_role_perms = await self.config.guild(ctx.guild).channel_role_permissions()
         channel_id = str(ctx.channel.id)
-        channel_role_perm = self.get_channel_role_permission(channel_role_perms, channel_id, ctx)
+        channel_role_perm = self.get_channel_role_permission(channel_role_perms, channel_id, targets, ctx)
         if channel_role_perm == "allow":
             return True
         if channel_role_perm == "deny":
-            raise SilentDeny()
+            return False
 
         # Channel permissions override role/global permissions
         channel_perms = await self.config.guild(ctx.guild).channel_permissions()
         if channel_id in channel_perms:
-            channel_perm = self.get_target_permission(channel_perms[channel_id], ctx)
+            channel_perm = self.get_target_permission(channel_perms[channel_id], targets)
             if channel_perm == "allow":
                 return True
             if channel_perm == "deny":
-                raise SilentDeny()
+                return False
 
         # Role permissions come next; deny wins among roles at the same scope
         role_perms = await self.config.guild(ctx.guild).role_permissions()
@@ -437,7 +578,7 @@ class BetterPermissions(commands.Cog):
         for role in ctx.author.roles:
             role_id = str(role.id)
             if role_id in role_perms:
-                perm = self.get_target_permission(role_perms[role_id], ctx)
+                perm = self.get_target_permission(role_perms[role_id], targets)
                 if perm == "deny":
                     role_perm = "deny"
                     break
@@ -446,15 +587,15 @@ class BetterPermissions(commands.Cog):
         if role_perm == "allow":
             return True
         if role_perm == "deny":
-            raise SilentDeny()
+            return False
 
         # Global permissions are the least specific
         global_perms = await self.config.guild(ctx.guild).global_permissions()
-        global_perm = self.get_target_permission(global_perms, ctx)
+        global_perm = self.get_target_permission(global_perms, targets)
         if global_perm == "allow":
             return True
         if global_perm == "deny":
-            raise SilentDeny()
+            return False
 
         return True
 
