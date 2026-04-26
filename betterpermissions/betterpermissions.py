@@ -36,14 +36,41 @@ class BetterPermissions(commands.Cog):
                 return normalized[group]
         return None
 
-    def get_target_permission(self, perms, command_name, cog_name):
-        """Get the most specific permission for a command or its cog group."""
+    def get_command_targets(self, ctx):
+        """Return all relevant names for the current command to resolve permissions."""
+        if not ctx.command:
+            return []
+
+        targets = []
+        if ctx.cog:
+            targets.append(ctx.cog.qualified_name.lower())
+
+        qualified_name = ctx.command.qualified_name.lower()
+        targets.append(qualified_name)
+
+        if getattr(ctx.command, 'full_parent_name', None):
+            targets.append(ctx.command.full_parent_name.lower())
+
+        targets.append(ctx.command.name.lower())
+
+        parent = getattr(ctx.command, 'parent', None)
+        while parent:
+            if getattr(parent, 'qualified_name', None):
+                targets.append(parent.qualified_name.lower())
+            parent = getattr(parent, 'parent', None)
+
+        # Preserve order and remove duplicates
+        return list(dict.fromkeys(targets))
+
+    def get_target_permission(self, perms, ctx):
+        """Get the most specific permission for a context's command or cog."""
         if not perms:
             return None
-        permission = self.get_permission(perms, command_name)
-        if permission is not None:
-            return permission
-        return self.get_permission(perms, cog_name) if cog_name else None
+        for target in self.get_command_targets(ctx):
+            permission = self.get_permission(perms, target)
+            if permission is not None:
+                return permission
+        return None
 
     @commands.group()
     @commands.has_permissions(manage_guild=True)
@@ -233,7 +260,7 @@ class BetterPermissions(commands.Cog):
         user_id = str(ctx.author.id)
         user_perm = None
         if user_id in user_perms:
-            user_perm = self.get_target_permission(user_perms[user_id], command_name, cog_name)
+            user_perm = self.get_target_permission(user_perms[user_id], ctx)
             if user_perm == "allow":
                 return True
             if user_perm == "deny":
@@ -244,7 +271,7 @@ class BetterPermissions(commands.Cog):
         channel_perm = None
         channel_id = str(ctx.channel.id)
         if channel_id in channel_perms:
-            channel_perm = self.get_target_permission(channel_perms[channel_id], command_name, cog_name)
+            channel_perm = self.get_target_permission(channel_perms[channel_id], ctx)
             if channel_perm == "allow":
                 return True
             if channel_perm == "deny":
@@ -256,7 +283,7 @@ class BetterPermissions(commands.Cog):
         for role in ctx.author.roles:
             role_id = str(role.id)
             if role_id in role_perms:
-                perm = self.get_target_permission(role_perms[role_id], command_name, cog_name)
+                perm = self.get_target_permission(role_perms[role_id], ctx)
                 if perm == "deny":
                     role_perm = "deny"
                     break
@@ -269,7 +296,7 @@ class BetterPermissions(commands.Cog):
 
         # Global permissions are the least specific
         global_perms = await self.config.guild(ctx.guild).global_permissions()
-        global_perm = self.get_target_permission(global_perms, command_name, cog_name)
+        global_perm = self.get_target_permission(global_perms, ctx)
         if global_perm == "allow":
             return True
         if global_perm == "deny":
