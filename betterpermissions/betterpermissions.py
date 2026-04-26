@@ -32,6 +32,15 @@ class BetterPermissions(commands.Cog):
                 return perms[group]
         return None
 
+    def get_target_permission(self, perms, command_name, cog_name):
+        """Get the most specific permission for a command or its cog group."""
+        if not perms:
+            return None
+        permission = self.get_permission(perms, command_name)
+        if permission is not None:
+            return permission
+        return self.get_permission(perms, cog_name) if cog_name else None
+
     @commands.group()
     @commands.has_permissions(manage_guild=True)
     async def permset(self, ctx):
@@ -67,53 +76,88 @@ class BetterPermissions(commands.Cog):
         )
         await ctx.send(embed=embed)
 
+    async def resolve_scope(self, ctx, scope: str):
+        """Resolve a scope string into a Member, Role, or TextChannel."""
+        if scope.lower() == "everyone":
+            return ctx.guild.default_role
+
+        converters = [
+            commands.MemberConverter(),
+            commands.TextChannelConverter(),
+            commands.RoleConverter()
+        ]
+
+        for converter in converters:
+            try:
+                return await converter.convert(ctx, scope)
+            except commands.BadArgument:
+                continue
+
+        raise commands.BadArgument(f"Could not resolve scope: {scope}")
+
     @permset.command()
-    async def local(self, ctx, target: str, action: str, scope: Union[discord.Member, discord.TextChannel, discord.Role]):
-        """Set local permissions for a user, channel, or role."""
-        if action.lower() not in ["allow", "deny"]:
+    async def local(self, ctx, action: str, scope: str, *targets: str):
+        """Set local permissions for a user, role, or channel on one or more commands."""
+        action = action.lower()
+        if action not in ["allow", "deny"]:
             embed = discord.Embed(
                 title="Error",
                 description="Action must be 'allow' or 'deny'.",
                 color=discord.Color.red()
             )
             return await ctx.send(embed=embed)
-        
-        if isinstance(scope, discord.Member):
-            async with self.config.guild(ctx.guild).user_permissions() as perms:
-                user_id = str(scope.id)
-                if user_id not in perms:
-                    perms[user_id] = {}
-                perms[user_id][target] = action.lower()
+
+        if not targets:
             embed = discord.Embed(
-                title="Permission Set",
-                description=f"{'✅' if action.lower() == 'allow' else '❌'} Set {action} for user {scope.mention} on `{target}`",
-                color=discord.Color.green() if action.lower() == 'allow' else discord.Color.red()
+                title="Error",
+                description="You must specify at least one command or command group.",
+                color=discord.Color.red()
             )
-            await ctx.send(embed=embed)
-        elif isinstance(scope, discord.Role):
-            async with self.config.guild(ctx.guild).role_permissions() as perms:
-                role_id = str(scope.id)
-                if role_id not in perms:
-                    perms[role_id] = {}
-                perms[role_id][target] = action.lower()
+            return await ctx.send(embed=embed)
+
+        try:
+            scope_obj = await self.resolve_scope(ctx, scope)
+        except commands.BadArgument as exc:
             embed = discord.Embed(
-                title="Permission Set",
-                description=f"{'✅' if action.lower() == 'allow' else '❌'} Set {action} for role {scope.mention} on `{target}`",
-                color=discord.Color.green() if action.lower() == 'allow' else discord.Color.red()
+                title="Error",
+                description=str(exc),
+                color=discord.Color.red()
             )
-            await ctx.send(embed=embed)
+            return await ctx.send(embed=embed)
+
+        if isinstance(scope_obj, discord.Member):
+            config_section = self.config.guild(ctx.guild).user_permissions()
+            scope_id = str(scope_obj.id)
+            subject_name = f"user {scope_obj.mention}"
+        elif isinstance(scope_obj, discord.Role):
+            config_section = self.config.guild(ctx.guild).role_permissions()
+            scope_id = str(scope_obj.id)
+            subject_name = f"role {scope_obj.mention}"
+        elif isinstance(scope_obj, discord.TextChannel):
+            config_section = self.config.guild(ctx.guild).channel_permissions()
+            scope_id = str(scope_obj.id)
+            subject_name = f"channel {scope_obj.mention}"
         else:
-            async with self.config.guild(ctx.guild).channel_permissions() as perms:
-                channel_id = str(scope.id)
-                if channel_id not in perms:
-                    perms[channel_id] = {}
-                perms[channel_id][target] = action.lower()
             embed = discord.Embed(
-                title="Permission Set",
-                description=f"{'✅' if action.lower() == 'allow' else '❌'} Set {action} for channel {scope.mention} on `{target}`",
-                color=discord.Color.green() if action.lower() == 'allow' else discord.Color.red()
+                title="Error",
+                description="Invalid scope type.",
+                color=discord.Color.red()
             )
-            await ctx.send(embed=embed)
+            return await ctx.send(embed=embed)
+
+        async with config_section as perms:
+            if scope_id not in perms:
+                perms[scope_id] = {}
+            for target in targets:
+                perms[scope_id][target] = action
+
+        target_text = ", ".join(f"`{target}`" for target in targets)
+        embed = discord.Embed(
+            title="Permission Set",
+            description=f"{'✅' if action == 'allow' else '❌'} Set {action} for {subject_name} on {target_text}",
+            color=discord.Color.green() if action == 'allow' else discord.Color.red()
+        )
+        await ctx.send(embed=embed)
 
     @permset.command()
     async def list(self, ctx):
@@ -171,58 +215,60 @@ class BetterPermissions(commands.Cog):
         # Allow this cog's commands
         if ctx.cog == self:
             return True
-        
-        # Get command and cog names
+
+        if not ctx.guild:
+            return True
+
         command_name = ctx.command.qualified_name
         cog_name = ctx.cog.qualified_name if ctx.cog else None
-        
-        # Check user permissions
+
+        # User permissions are most specific
         user_perms = await self.config.guild(ctx.guild).user_permissions()
         user_id = str(ctx.author.id)
+        user_perm = None
         if user_id in user_perms:
-            perms = user_perms[user_id]
-            cmd_perm = self.get_permission(perms, command_name)
-            if cmd_perm == "deny":
+            user_perm = self.get_target_permission(user_perms[user_id], command_name, cog_name)
+            if user_perm == "allow":
+                return True
+            if user_perm == "deny":
                 raise SilentDeny()
-            cog_perm = self.get_permission(perms, cog_name) if cog_name else None
-            if cog_perm == "deny":
+
+        # Channel permissions override role/global permissions
+        channel_perms = await self.config.guild(ctx.guild).channel_permissions()
+        channel_perm = None
+        channel_id = str(ctx.channel.id)
+        if channel_id in channel_perms:
+            channel_perm = self.get_target_permission(channel_perms[channel_id], command_name, cog_name)
+            if channel_perm == "allow":
+                return True
+            if channel_perm == "deny":
                 raise SilentDeny()
-        
-        # Check role permissions (any role deny denies)
+
+        # Role permissions come next; deny wins among roles at the same scope
         role_perms = await self.config.guild(ctx.guild).role_permissions()
+        role_perm = None
         for role in ctx.author.roles:
             role_id = str(role.id)
             if role_id in role_perms:
-                perms = role_perms[role_id]
-                cmd_perm = self.get_permission(perms, command_name)
-                if cmd_perm == "deny":
-                    raise SilentDeny()
-                cog_perm = self.get_permission(perms, cog_name) if cog_name else None
-                if cog_perm == "deny":
-                    raise SilentDeny()
-        
-        # Check channel permissions
-        channel_perms = await self.config.guild(ctx.guild).channel_permissions()
-        channel_id = str(ctx.channel.id)
-        if channel_id in channel_perms:
-            perms = channel_perms[channel_id]
-            cmd_perm = self.get_permission(perms, command_name)
-            if cmd_perm == "deny":
-                raise SilentDeny()
-            cog_perm = self.get_permission(perms, cog_name) if cog_name else None
-            if cog_perm == "deny":
-                raise SilentDeny()
-        
-        # Check global permissions
+                perm = self.get_target_permission(role_perms[role_id], command_name, cog_name)
+                if perm == "deny":
+                    role_perm = "deny"
+                    break
+                if perm == "allow":
+                    role_perm = "allow"
+        if role_perm == "allow":
+            return True
+        if role_perm == "deny":
+            raise SilentDeny()
+
+        # Global permissions are the least specific
         global_perms = await self.config.guild(ctx.guild).global_permissions()
-        cmd_perm = self.get_permission(global_perms, command_name)
-        if cmd_perm == "deny":
+        global_perm = self.get_target_permission(global_perms, command_name, cog_name)
+        if global_perm == "allow":
+            return True
+        if global_perm == "deny":
             raise SilentDeny()
-        cog_perm = self.get_permission(global_perms, cog_name) if cog_name else None
-        if cog_perm == "deny":
-            raise SilentDeny()
-        
-        # If not denied, allow
+
         return True
 
     @commands.Cog.listener()
