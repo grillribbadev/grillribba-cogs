@@ -16,7 +16,8 @@ class BetterPermissions(commands.Cog):
             "global_permissions": {},
             "channel_permissions": {},
             "user_permissions": {},
-            "role_permissions": {}
+            "role_permissions": {},
+            "channel_role_permissions": {}
         }
         self.config.register_guild(**default_guild)
 
@@ -71,6 +72,23 @@ class BetterPermissions(commands.Cog):
             if permission is not None:
                 return permission
         return None
+
+    def get_channel_role_permission(self, perms, channel_id, ctx):
+        """Check channel+role scoped permissions for the current author."""
+        if not perms or channel_id not in perms:
+            return None
+        channel_roles = perms[channel_id]
+        allowed = None
+        for role in ctx.author.roles:
+            role_id = str(role.id)
+            if role_id not in channel_roles:
+                continue
+            permission = self.get_target_permission(channel_roles[role_id], ctx)
+            if permission == "deny":
+                return "deny"
+            if permission == "allow":
+                allowed = "allow"
+        return allowed
 
     @commands.group()
     @commands.has_permissions(manage_guild=True)
@@ -145,7 +163,7 @@ class BetterPermissions(commands.Cog):
 
     @permset.command()
     async def local(self, ctx, action: str, *args: str):
-        """Set local permissions for a user, role, or channel on one or more commands."""
+        """Set local permissions for a user, role, channel, or role+channel on one or more commands."""
         action = action.lower()
         if action not in ["allow", "deny"]:
             embed = discord.Embed(
@@ -163,28 +181,45 @@ class BetterPermissions(commands.Cog):
             )
             return await ctx.send(embed=embed)
 
-        scope_obj = None
-        targets = []
-
+        scope_matches = []
         for i, candidate in enumerate(args):
             try:
                 candidate_obj = await self.resolve_scope(ctx, candidate)
             except commands.BadArgument:
                 continue
+            scope_matches.append((i, candidate_obj))
 
-            candidate_targets = list(args[:i] + args[i+1:])
-            if candidate_targets:
-                scope_obj = candidate_obj
-                targets = candidate_targets
-                break
-
-        if scope_obj is None:
+        if not scope_matches:
             embed = discord.Embed(
                 title="Error",
                 description=f"Could not resolve scope from arguments: {' '.join(args)}",
                 color=discord.Color.red()
             )
             return await ctx.send(embed=embed)
+
+        scope_obj = None
+        channel_obj = None
+        role_obj = None
+        targets = []
+
+        if len(scope_matches) == 1:
+            idx, scope_obj = scope_matches[0]
+            targets = list(args[:idx] + args[idx+1:])
+        else:
+            scope_indexes = {idx for idx, _ in scope_matches}
+            for _, candidate_obj in scope_matches:
+                if isinstance(candidate_obj, discord.abc.GuildChannel) and channel_obj is None:
+                    channel_obj = candidate_obj
+                elif isinstance(candidate_obj, discord.Role) and role_obj is None:
+                    role_obj = candidate_obj
+                elif isinstance(candidate_obj, discord.Member) and role_obj is None:
+                    role_obj = candidate_obj
+
+            if channel_obj and role_obj:
+                targets = [arg for i, arg in enumerate(args) if i not in scope_indexes]
+            else:
+                idx, scope_obj = scope_matches[0]
+                targets = list(args[:idx] + args[idx+1:])
 
         if not targets:
             embed = discord.Embed(
@@ -194,7 +229,13 @@ class BetterPermissions(commands.Cog):
             )
             return await ctx.send(embed=embed)
 
-        if isinstance(scope_obj, discord.Member):
+        scope_secondary_id = None
+        if channel_obj and role_obj:
+            config_section = self.config.guild(ctx.guild).channel_role_permissions()
+            scope_id = str(channel_obj.id)
+            scope_secondary_id = str(role_obj.id)
+            subject_name = f"role {role_obj.mention} in channel {channel_obj.mention}"
+        elif isinstance(scope_obj, discord.Member):
             config_section = self.config.guild(ctx.guild).user_permissions()
             scope_id = str(scope_obj.id)
             subject_name = f"user {scope_obj.mention}"
@@ -217,8 +258,14 @@ class BetterPermissions(commands.Cog):
         async with config_section as perms:
             if scope_id not in perms:
                 perms[scope_id] = {}
-            for target in targets:
-                perms[scope_id][target.lower()] = action
+            if scope_secondary_id is not None:
+                if scope_secondary_id not in perms[scope_id]:
+                    perms[scope_id][scope_secondary_id] = {}
+                for target in targets:
+                    perms[scope_id][scope_secondary_id][target.lower()] = action
+            else:
+                for target in targets:
+                    perms[scope_id][target.lower()] = action
 
         target_text = ", ".join(f"`{target}`" for target in targets)
         embed = discord.Embed(
@@ -239,6 +286,8 @@ class BetterPermissions(commands.Cog):
             perms.clear()
         async with self.config.guild(ctx.guild).channel_permissions() as perms:
             perms.clear()
+        async with self.config.guild(ctx.guild).channel_role_permissions() as perms:
+            perms.clear()
 
         embed = discord.Embed(
             title="Permissions Reset",
@@ -254,18 +303,19 @@ class BetterPermissions(commands.Cog):
         user_perms = await self.config.guild(ctx.guild).user_permissions()
         role_perms = await self.config.guild(ctx.guild).role_permissions()
         channel_perms = await self.config.guild(ctx.guild).channel_permissions()
-        
+        channel_role_perms = await self.config.guild(ctx.guild).channel_role_permissions()
+
         embed = discord.Embed(
             title="Permissions Overview",
             color=discord.Color.blue()
         )
-        
+
         if global_perms:
             global_list = "\n".join(f"`{k}`: {v}" for k, v in global_perms.items())
             embed.add_field(name="Global Permissions", value=global_list, inline=False)
         else:
             embed.add_field(name="Global Permissions", value="None", inline=False)
-        
+
         if user_perms:
             user_list = []
             for uid, perms in user_perms.items():
@@ -275,7 +325,7 @@ class BetterPermissions(commands.Cog):
             embed.add_field(name="User Permissions", value="\n".join(user_list), inline=False)
         else:
             embed.add_field(name="User Permissions", value="None", inline=False)
-        
+
         if role_perms:
             role_list = []
             for rid, perms in role_perms.items():
@@ -285,7 +335,7 @@ class BetterPermissions(commands.Cog):
             embed.add_field(name="Role Permissions", value="\n".join(role_list), inline=False)
         else:
             embed.add_field(name="Role Permissions", value="None", inline=False)
-        
+
         if channel_perms:
             channel_list = []
             for cid, perms in channel_perms.items():
@@ -295,12 +345,26 @@ class BetterPermissions(commands.Cog):
             embed.add_field(name="Channel Permissions", value="\n".join(channel_list), inline=False)
         else:
             embed.add_field(name="Channel Permissions", value="None", inline=False)
-        
+
+        if channel_role_perms:
+            channel_role_list = []
+            for cid, role_map in channel_role_perms.items():
+                channel = ctx.guild.get_channel(int(cid))
+                channel_name = channel.mention if channel else f"Channel {cid}"
+                for rid, perms in role_map.items():
+                    role = ctx.guild.get_role(int(rid))
+                    if role is None and str(ctx.guild.default_role.id) == rid:
+                        role = ctx.guild.default_role
+                    role_name = role.mention if role else f"Role {rid}"
+                    channel_role_list.append(f"{channel_name} / {role_name}: " + ", ".join(f"`{k}`: {v}" for k, v in perms.items()))
+            embed.add_field(name="Channel Role Permissions", value="\n".join(channel_role_list), inline=False)
+        else:
+            embed.add_field(name="Channel Role Permissions", value="None", inline=False)
+
         await ctx.send(embed=embed)
 
     async def global_check(self, ctx):
         """Global check for permissions."""
-        # Allow this cog's commands
         if ctx.cog == self:
             return True
 
@@ -313,7 +377,6 @@ class BetterPermissions(commands.Cog):
         # User permissions are most specific
         user_perms = await self.config.guild(ctx.guild).user_permissions()
         user_id = str(ctx.author.id)
-        user_perm = None
         if user_id in user_perms:
             user_perm = self.get_target_permission(user_perms[user_id], ctx)
             if user_perm == "allow":
@@ -321,10 +384,17 @@ class BetterPermissions(commands.Cog):
             if user_perm == "deny":
                 raise SilentDeny()
 
+        # Channel+role permissions override channel/role/global.
+        channel_role_perms = await self.config.guild(ctx.guild).channel_role_permissions()
+        channel_id = str(ctx.channel.id)
+        channel_role_perm = self.get_channel_role_permission(channel_role_perms, channel_id, ctx)
+        if channel_role_perm == "allow":
+            return True
+        if channel_role_perm == "deny":
+            raise SilentDeny()
+
         # Channel permissions override role/global permissions
         channel_perms = await self.config.guild(ctx.guild).channel_permissions()
-        channel_perm = None
-        channel_id = str(ctx.channel.id)
         if channel_id in channel_perms:
             channel_perm = self.get_target_permission(channel_perms[channel_id], ctx)
             if channel_perm == "allow":
