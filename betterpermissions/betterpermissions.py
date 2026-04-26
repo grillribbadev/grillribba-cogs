@@ -231,7 +231,7 @@ class BetterPermissions(commands.Cog):
         if isinstance(error, SilentDeny):
             return  # Suppress the error, no message sent
 
-def setup(bot):
+async def setup(bot):
     cog = BetterPermissions(bot)
-    bot.add_cog(cog)
+    await bot.add_cog(cog)
     bot.add_check(cog.global_check)
