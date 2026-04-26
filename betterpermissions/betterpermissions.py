@@ -6,6 +6,20 @@ class SilentDeny(Exception):
     """Custom exception for silent permission denial."""
     pass
 
+class BetterPermissions(commands.Cog):
+    """A better permissions system for Redbot."""
+
+    def __init__(self, bot):
+        self.bot = bot
+        self.config = Config.get_conf(self, identifier=1234567890, force_registration=True)
+        default_guild = {
+            "global_permissions": {},
+            "channel_permissions": {},
+            "user_permissions": {},
+            "role_permissions": {}
+        }
+        self.config.register_guild(**default_guild)
+
     def get_permission(self, perms, target):
         """Get the most specific permission for a target, checking groups."""
         if target in perms:
@@ -17,15 +31,6 @@ class SilentDeny(Exception):
             if group in perms:
                 return perms[group]
         return None
-        self.bot = bot
-        self.config = Config.get_conf(self, identifier=1234567890, force_registration=True)
-        default_guild = {
-            "global_permissions": {},
-            "channel_permissions": {},
-            "user_permissions": {},
-            "role_permissions": {}
-        }
-        self.config.register_guild(**default_guild)
 
     @commands.group()
     @commands.has_permissions(manage_guild=True)
