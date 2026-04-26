@@ -285,7 +285,11 @@ class BetterPermissions(commands.Cog):
             parts = target.split()
             if len(parts) == 1:
                 # Cog
-                cog = self.bot.get_cog(parts[0])
+                cog = None
+                for cog_name_key, cog_instance in self.bot.cogs.items():
+                    if cog_name_key.lower() == parts[0].lower():
+                        cog = cog_instance
+                        break
                 if not cog:
                     embed = discord.Embed(
                         title="Error",
@@ -297,7 +301,11 @@ class BetterPermissions(commands.Cog):
                 # Command
                 cog_name = parts[0]
                 command_parts = parts[1:]
-                cog = self.bot.get_cog(cog_name)
+                cog = None
+                for cog_name_key, cog_instance in self.bot.cogs.items():
+                    if cog_name_key.lower() == cog_name.lower():
+                        cog = cog_instance
+                        break
                 if not cog:
                     embed = discord.Embed(
                         title="Error",
@@ -384,6 +392,20 @@ class BetterPermissions(commands.Cog):
         await ctx.send(embed=embed)
 
     @permset.command()
+    async def cogs(self, ctx):
+        """List all loaded cogs."""
+        cog_names = list(self.bot.cogs.keys())
+        if not cog_names:
+            await ctx.send("No cogs loaded.")
+            return
+        embed = discord.Embed(
+            title="Loaded Cogs",
+            description="\n".join(f"`{name}`" for name in sorted(cog_names)),
+            color=discord.Color.blue()
+        )
+        await ctx.send(embed=embed)
+
+    @permset.command()
     async def debug(self, ctx, *, command_name: str):
         """Debug permission resolution for a command."""
         if not ctx.guild:
@@ -399,7 +421,11 @@ class BetterPermissions(commands.Cog):
         cog_name = parts[0]
         command_parts = parts[1:]
 
-        cog = self.bot.get_cog(cog_name)
+        cog = None
+        for cog_name_key, cog_instance in self.bot.cogs.items():
+            if cog_name_key.lower() == cog_name.lower():
+                cog = cog_instance
+                break
         if not cog:
             await ctx.send(f"Cog '{cog_name}' not found.")
             return
