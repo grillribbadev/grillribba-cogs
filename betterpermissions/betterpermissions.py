@@ -172,6 +172,10 @@ class BetterPermissions(commands.Cog):
         if channel is not None:
             return channel
 
+        for channel in ctx.guild.channels:
+            if self.normalize_name(channel.name) == normalized_scope:
+                return channel
+
         role = discord.utils.get(ctx.guild.roles, name=scope)
         if role is not None:
             return role
@@ -179,6 +183,10 @@ class BetterPermissions(commands.Cog):
         role = discord.utils.get(ctx.guild.roles, name=normalized_scope)
         if role is not None:
             return role
+
+        for role in ctx.guild.roles:
+            if self.normalize_name(role.name) == normalized_scope:
+                return role
 
         raise commands.BadArgument(f"Could not resolve scope: {scope}")
 
