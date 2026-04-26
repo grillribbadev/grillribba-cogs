@@ -22,14 +22,18 @@ class BetterPermissions(commands.Cog):
 
     def get_permission(self, perms, target):
         """Get the most specific permission for a target, checking groups."""
-        if target in perms:
-            return perms[target]
+        if not perms:
+            return None
+        target = target.lower()
+        normalized = {k.lower(): v for k, v in perms.items()}
+        if target in normalized:
+            return normalized[target]
         # Check for parent groups
         parts = target.split()
         for i in range(len(parts) - 1, 0, -1):
             group = " ".join(parts[:i])
-            if group in perms:
-                return perms[group]
+            if group in normalized:
+                return normalized[group]
         return None
 
     def get_target_permission(self, perms, command_name, cog_name):
@@ -55,6 +59,7 @@ class BetterPermissions(commands.Cog):
     @global_perm.command()
     async def allow(self, ctx, target: str):
         """Allow a cog, command, or command group globally."""
+        target = target.lower()
         async with self.config.guild(ctx.guild).global_permissions() as perms:
             perms[target] = "allow"
         embed = discord.Embed(
@@ -67,6 +72,7 @@ class BetterPermissions(commands.Cog):
     @global_perm.command()
     async def deny(self, ctx, target: str):
         """Deny a cog, command, or command group globally."""
+        target = target.lower()
         async with self.config.guild(ctx.guild).global_permissions() as perms:
             perms[target] = "deny"
         embed = discord.Embed(
@@ -133,7 +139,7 @@ class BetterPermissions(commands.Cog):
             config_section = self.config.guild(ctx.guild).role_permissions()
             scope_id = str(scope_obj.id)
             subject_name = f"role {scope_obj.mention}"
-        elif isinstance(scope_obj, discord.TextChannel):
+        elif isinstance(scope_obj, discord.abc.GuildChannel):
             config_section = self.config.guild(ctx.guild).channel_permissions()
             scope_id = str(scope_obj.id)
             subject_name = f"channel {scope_obj.mention}"
@@ -149,7 +155,7 @@ class BetterPermissions(commands.Cog):
             if scope_id not in perms:
                 perms[scope_id] = {}
             for target in targets:
-                perms[scope_id][target] = action
+                perms[scope_id][target.lower()] = action
 
         target_text = ", ".join(f"`{target}`" for target in targets)
         embed = discord.Embed(
@@ -219,8 +225,8 @@ class BetterPermissions(commands.Cog):
         if not ctx.guild:
             return True
 
-        command_name = ctx.command.qualified_name
-        cog_name = ctx.cog.qualified_name if ctx.cog else None
+        command_name = ctx.command.qualified_name.lower()
+        cog_name = ctx.cog.qualified_name.lower() if ctx.cog else None
 
         # User permissions are most specific
         user_perms = await self.config.guild(ctx.guild).user_permissions()
