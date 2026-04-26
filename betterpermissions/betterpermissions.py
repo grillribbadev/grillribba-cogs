@@ -229,6 +229,25 @@ class BetterPermissions(commands.Cog):
         await ctx.send(embed=embed)
 
     @permset.command()
+    async def reset(self, ctx):
+        """Reset all stored permissions for this guild."""
+        async with self.config.guild(ctx.guild).global_permissions() as perms:
+            perms.clear()
+        async with self.config.guild(ctx.guild).user_permissions() as perms:
+            perms.clear()
+        async with self.config.guild(ctx.guild).role_permissions() as perms:
+            perms.clear()
+        async with self.config.guild(ctx.guild).channel_permissions() as perms:
+            perms.clear()
+
+        embed = discord.Embed(
+            title="Permissions Reset",
+            description="✅ All permissions have been cleared for this guild.",
+            color=discord.Color.green()
+        )
+        await ctx.send(embed=embed)
+
+    @permset.command()
     async def list(self, ctx):
         """List all current permissions."""
         global_perms = await self.config.guild(ctx.guild).global_permissions()
