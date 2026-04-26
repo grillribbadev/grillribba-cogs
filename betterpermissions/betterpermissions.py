@@ -144,7 +144,7 @@ class BetterPermissions(commands.Cog):
         raise commands.BadArgument(f"Could not resolve scope: {scope}")
 
     @permset.command()
-    async def local(self, ctx, action: str, scope: str, *targets: str):
+    async def local(self, ctx, action: str, *args: str):
         """Set local permissions for a user, role, or channel on one or more commands."""
         action = action.lower()
         if action not in ["allow", "deny"]:
@@ -155,20 +155,41 @@ class BetterPermissions(commands.Cog):
             )
             return await ctx.send(embed=embed)
 
-        if not targets:
+        if len(args) < 2:
             embed = discord.Embed(
                 title="Error",
-                description="You must specify at least one command or command group.",
+                description="You must specify a scope and at least one command or command group.",
                 color=discord.Color.red()
             )
             return await ctx.send(embed=embed)
 
-        try:
-            scope_obj = await self.resolve_scope(ctx, scope)
-        except commands.BadArgument as exc:
+        scope_obj = None
+        targets = []
+
+        for i, candidate in enumerate(args):
+            try:
+                candidate_obj = await self.resolve_scope(ctx, candidate)
+            except commands.BadArgument:
+                continue
+
+            candidate_targets = list(args[:i] + args[i+1:])
+            if candidate_targets:
+                scope_obj = candidate_obj
+                targets = candidate_targets
+                break
+
+        if scope_obj is None:
             embed = discord.Embed(
                 title="Error",
-                description=str(exc),
+                description=f"Could not resolve scope from arguments: {' '.join(args)}",
+                color=discord.Color.red()
+            )
+            return await ctx.send(embed=embed)
+
+        if not targets:
+            embed = discord.Embed(
+                title="Error",
+                description="You must specify at least one command or command group.",
                 color=discord.Color.red()
             )
             return await ctx.send(embed=embed)
