@@ -73,6 +73,16 @@ class BetterPermissions(commands.Cog):
                 return permission
         return None
 
+    def normalize_name(self, name: str) -> str:
+        """Normalize a name for fuzzy channel/role matching."""
+        if not name:
+            return ""
+        normalized = name.lower()
+        normalized = normalized.replace("#", "").replace("@", "")
+        normalized = normalized.replace(" ", "-")
+        normalized = "".join(ch for ch in normalized if ch.isalnum() or ch in "-_ ")
+        return normalized.strip("-_ ")
+
     def get_channel_role_permission(self, perms, channel_id, ctx):
         """Check channel+role scoped permissions for the current author."""
         if not perms or channel_id not in perms:
@@ -134,8 +144,8 @@ class BetterPermissions(commands.Cog):
 
         converters = [
             commands.MemberConverter(),
-            commands.TextChannelConverter(),
-            commands.RoleConverter()
+            commands.RoleConverter(),
+            commands.TextChannelConverter()
         ]
 
         for converter in converters:
@@ -144,20 +154,31 @@ class BetterPermissions(commands.Cog):
             except commands.BadArgument:
                 continue
 
-        # Fallback support for bare channel IDs and channel names.
         if scope.isdigit():
+            role = ctx.guild.get_role(int(scope))
+            if role is not None:
+                return role
             channel = ctx.guild.get_channel(int(scope))
             if channel is not None:
                 return channel
 
-        if scope.startswith("#"):
-            channel = discord.utils.get(ctx.guild.channels, name=scope[1:])
-            if channel is not None:
-                return channel
+        normalized_scope = self.normalize_name(scope)
 
         channel = discord.utils.get(ctx.guild.channels, name=scope)
         if channel is not None:
             return channel
+
+        channel = discord.utils.get(ctx.guild.channels, name=normalized_scope)
+        if channel is not None:
+            return channel
+
+        role = discord.utils.get(ctx.guild.roles, name=scope)
+        if role is not None:
+            return role
+
+        role = discord.utils.get(ctx.guild.roles, name=normalized_scope)
+        if role is not None:
+            return role
 
         raise commands.BadArgument(f"Could not resolve scope: {scope}")
 
