@@ -406,6 +406,30 @@ class BetterPermissions(commands.Cog):
         await ctx.send(embed=embed)
 
     @permset.command()
+    async def commands(self, ctx, cog_name: str):
+        """List all commands in a cog."""
+        cog = None
+        for name, c in self.bot.cogs.items():
+            if name.lower() == cog_name.lower():
+                cog = c
+                break
+        if not cog:
+            await ctx.send(f"Cog '{cog_name}' not found.")
+            return
+
+        command_list = [cmd.qualified_name for cmd in cog.walk_commands()]
+        if not command_list:
+            await ctx.send(f"No commands in {cog_name}.")
+            return
+
+        embed = discord.Embed(
+            title=f"Commands in {cog.qualified_name}",
+            description="\n".join(f"`{cmd}`" for cmd in sorted(command_list)),
+            color=discord.Color.blue()
+        )
+        await ctx.send(embed=embed)
+
+    @permset.command()
     async def debug(self, ctx, *, command_name: str):
         """Debug permission resolution for a command."""
         if not ctx.guild:
