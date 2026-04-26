@@ -1,0 +1,1 @@
+from .betterpermissions import setup
