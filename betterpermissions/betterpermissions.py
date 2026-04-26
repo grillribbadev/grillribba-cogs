@@ -126,6 +126,21 @@ class BetterPermissions(commands.Cog):
             except commands.BadArgument:
                 continue
 
+        # Fallback support for bare channel IDs and channel names.
+        if scope.isdigit():
+            channel = ctx.guild.get_channel(int(scope))
+            if channel is not None:
+                return channel
+
+        if scope.startswith("#"):
+            channel = discord.utils.get(ctx.guild.channels, name=scope[1:])
+            if channel is not None:
+                return channel
+
+        channel = discord.utils.get(ctx.guild.channels, name=scope)
+        if channel is not None:
+            return channel
+
         raise commands.BadArgument(f"Could not resolve scope: {scope}")
 
     @permset.command()
