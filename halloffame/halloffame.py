@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import re
+from collections import Counter
 from typing import Any, Dict, List, Optional, Tuple
 
 import discord
 from redbot.core import Config, commands
 from redbot.core.bot import Red
+from redbot.core.utils.menus import DEFAULT_CONTROLS, menu
 
 
 DEFAULT_GUILD: Dict[str, Any] = {
@@ -18,7 +21,7 @@ DEFAULT_GUILD: Dict[str, Any] = {
 
 
 class HallOfFame(commands.Cog):
-    """Starboard-style hall of fame with configurable channel, emoji, and threshold."""
+    """Starboard-style hall of fame with configurable channel, emoji, threshold, and leaderboard."""
 
     def __init__(self, bot: Red):
         self.bot = bot
@@ -49,7 +52,7 @@ class HallOfFame(commands.Cog):
     @commands.guild_only()
     @commands.admin_or_permissions(manage_guild=True)
     async def hof_setemoji(self, ctx: commands.Context, *, emoji: str):
-        """Set the trigger emoji (unicode or custom server emoji)."""
+        """Set the trigger emoji."""
         key, _, error = self._resolve_emoji(ctx.guild, emoji)
         if error:
             await ctx.send(error)
@@ -110,6 +113,7 @@ class HallOfFame(commands.Cog):
         if channel.id in ids:
             await ctx.send(f"{channel.mention} is already ignored.")
             return
+
         ids.append(channel.id)
         await self.config.guild(ctx.guild).blacklist_channel_ids.set(ids)
         await ctx.send(f"Reactions in {channel.mention} will now be ignored.")
@@ -123,6 +127,7 @@ class HallOfFame(commands.Cog):
         if channel.id not in ids:
             await ctx.send(f"{channel.mention} is not in the ignore list.")
             return
+
         ids.remove(channel.id)
         await self.config.guild(ctx.guild).blacklist_channel_ids.set(ids)
         await ctx.send(f"{channel.mention} is no longer ignored.")
@@ -134,6 +139,99 @@ class HallOfFame(commands.Cog):
         """Clear tracked source->hall-of-fame mappings."""
         await self.config.guild(ctx.guild).posts.set({})
         await ctx.send("Cleared tracked Hall of Fame post mappings.")
+
+    @halloffame.command(name="leaderboard", aliases=["lb", "top"])
+    @commands.guild_only()
+    async def hof_leaderboard(self, ctx: commands.Context):
+        """Show who has the most messages featured in Hall of Fame."""
+        counts = await self._get_leaderboard_counts(ctx.guild)
+
+        if not counts:
+            await ctx.send("No Hall of Fame entries found yet.")
+            return
+
+        sorted_counts = counts.most_common()
+        per_page = 10
+        pages = []
+
+        for start in range(0, len(sorted_counts), per_page):
+            chunk = sorted_counts[start:start + per_page]
+            page_num = (start // per_page) + 1
+            total_pages = ((len(sorted_counts) - 1) // per_page) + 1
+
+            lines = []
+            for index, (user_id, total) in enumerate(chunk, start=start + 1):
+                member = ctx.guild.get_member(user_id)
+                name = member.mention if member else f"`Unknown user ({user_id})`"
+                entry_word = "entry" if total == 1 else "entries"
+                lines.append(f"**#{index}** {name} — **{total}** {entry_word}")
+
+            embed = discord.Embed(
+                title="🏆 Hall of Fame Leaderboard",
+                description="\n".join(lines),
+                color=discord.Color.gold(),
+            )
+            embed.set_footer(text=f"Page {page_num}/{total_pages}")
+            pages.append(embed)
+
+        if len(pages) == 1:
+            await ctx.send(embed=pages[0])
+        else:
+            await menu(ctx, pages, DEFAULT_CONTROLS)
+
+    @halloffame.command(name="recount")
+    @commands.guild_only()
+    @commands.admin_or_permissions(manage_guild=True)
+    async def hof_recount(self, ctx: commands.Context):
+        """Recount current Hall of Fame posts from the configured channel."""
+        data = await self.config.guild(ctx.guild).all()
+        target_channel_id = data.get("target_channel_id")
+        target_channel = ctx.guild.get_channel(target_channel_id) if target_channel_id else None
+
+        if not isinstance(target_channel, discord.TextChannel):
+            await ctx.send("Hall of Fame target channel is not set.")
+            return
+
+        rebuilt_posts = {}
+        scanned = 0
+        recovered = 0
+
+        async with ctx.typing():
+            async for msg in target_channel.history(limit=None, oldest_first=True):
+                scanned += 1
+
+                if msg.author.id != self.bot.user.id:
+                    continue
+
+                if not msg.embeds:
+                    continue
+
+                embed = msg.embeds[0]
+
+                source_message_id = self._extract_source_message_id(embed)
+                author_id = self._extract_author_id_from_embed(embed)
+                source_channel_id = self._extract_channel_id_from_content(msg.content)
+                last_count = self._extract_react_count(msg.content, embed)
+
+                if not source_message_id or not author_id:
+                    continue
+
+                rebuilt_posts[str(source_message_id)] = {
+                    "starboard_message_id": msg.id,
+                    "starboard_channel_id": msg.channel.id,
+                    "source_channel_id": source_channel_id,
+                    "author_id": author_id,
+                    "last_count": last_count,
+                }
+                recovered += 1
+
+        await self.config.guild(ctx.guild).posts.set(rebuilt_posts)
+
+        await ctx.send(
+            f"Recount complete.\n"
+            f"Scanned: **{scanned}** messages\n"
+            f"Recovered Hall of Fame entries: **{recovered}**"
+        )
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
@@ -156,7 +254,7 @@ class HallOfFame(commands.Cog):
         if guild is None:
             return
 
-        if payload.user_id == self.bot.user.id:
+        if self.bot.user and payload.user_id == self.bot.user.id:
             return
 
         settings = await self.config.guild(guild).all()
@@ -165,11 +263,9 @@ class HallOfFame(commands.Cog):
         if not isinstance(target_channel, discord.TextChannel):
             return
 
-        # Ignore reactions in the hall of fame channel itself
         if payload.channel_id == target_channel_id:
             return
 
-        # Channel blacklist: skip channels explicitly ignored
         blacklist_ids = settings.get("blacklist_channel_ids", [])
         if payload.channel_id in blacklist_ids:
             return
@@ -196,9 +292,7 @@ class HallOfFame(commands.Cog):
         content = self._build_starboard_content(source_message, configured_emoji, count)
         embed = await self._build_starboard_embed(source_message, configured_emoji, count)
 
-        # Acquire per-guild lock to prevent race conditions from rapid reactions
         async with self._get_guild_lock(guild.id):
-            # Re-read posts inside the lock to get the latest saved state
             posts = await self.config.guild(guild).posts()
             source_id = str(source_message.id)
             existing = posts.get(source_id)
@@ -209,11 +303,14 @@ class HallOfFame(commands.Cog):
                     try:
                         starboard_msg = await starboard_channel.fetch_message(existing["starboard_message_id"])
                         await starboard_msg.edit(content=content, embed=embed)
+
+                        posts[source_id]["source_channel_id"] = source_message.channel.id
+                        posts[source_id]["author_id"] = source_message.author.id
                         posts[source_id]["last_count"] = count
+
                         await self.config.guild(guild).posts.set(posts)
                         return
                     except discord.NotFound:
-                        # Hall of fame message was deleted; fall through to re-post
                         pass
                     except (discord.Forbidden, discord.HTTPException, KeyError):
                         return
@@ -226,6 +323,8 @@ class HallOfFame(commands.Cog):
             posts[source_id] = {
                 "starboard_message_id": sent.id,
                 "starboard_channel_id": sent.channel.id,
+                "source_channel_id": source_message.channel.id,
+                "author_id": source_message.author.id,
                 "last_count": count,
             }
             await self.config.guild(guild).posts.set(posts)
@@ -242,9 +341,39 @@ class HallOfFame(commands.Cog):
                 if user.id == message.author.id:
                     continue
                 unique_non_bot_ids.add(user.id)
+
             return len(unique_non_bot_ids)
 
         return 0
+
+    async def _get_leaderboard_counts(self, guild: discord.Guild) -> Counter:
+        posts = await self.config.guild(guild).posts()
+        counts = Counter()
+        changed = False
+
+        for source_id, post_data in posts.items():
+            author_id = post_data.get("author_id")
+
+            if not author_id:
+                channel = guild.get_channel(post_data.get("starboard_channel_id", 0))
+                if isinstance(channel, discord.TextChannel):
+                    try:
+                        msg = await channel.fetch_message(post_data["starboard_message_id"])
+                        if msg.embeds:
+                            author_id = self._extract_author_id_from_embed(msg.embeds[0])
+                            if author_id:
+                                post_data["author_id"] = author_id
+                                changed = True
+                    except (discord.NotFound, discord.Forbidden, discord.HTTPException, KeyError):
+                        pass
+
+            if author_id:
+                counts[int(author_id)] += 1
+
+        if changed:
+            await self.config.guild(guild).posts.set(posts)
+
+        return counts
 
     def _build_starboard_content(self, message: discord.Message, emoji: str, count: int) -> str:
         return f"{emoji} **{count}** | {message.channel.mention} | [Jump to message]({message.jump_url})"
@@ -263,10 +392,12 @@ class HallOfFame(commands.Cog):
         if message.reference and message.reference.message_id:
             ref_text = "Unable to load replied-to message"
             ref_channel = message.channel
+
             if message.reference.channel_id:
                 maybe_channel = message.guild.get_channel(message.reference.channel_id)
                 if isinstance(maybe_channel, discord.TextChannel):
                     ref_channel = maybe_channel
+
             try:
                 replied = await ref_channel.fetch_message(message.reference.message_id)
                 preview = replied.content.strip() if replied.content else "[No text content]"
@@ -275,6 +406,7 @@ class HallOfFame(commands.Cog):
                 ref_text = f"Replying to {replied.author.mention}: {preview}"
             except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                 pass
+
             embed.add_field(name="Reply Context", value=ref_text, inline=False)
 
         media_urls = self._collect_media_urls(message)
@@ -306,11 +438,13 @@ class HallOfFame(commands.Cog):
 
         deduped = []
         seen = set()
+
         for url in urls:
             if url in seen:
                 continue
             seen.add(url)
             deduped.append(url)
+
         return deduped
 
     @staticmethod
@@ -323,6 +457,7 @@ class HallOfFame(commands.Cog):
 
         lowered = url.lower()
         image_exts = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".apng")
+
         if any(ext in lowered for ext in image_exts):
             return True
 
@@ -337,9 +472,11 @@ class HallOfFame(commands.Cog):
         if text.startswith(":") and text.endswith(":") and len(text) >= 3:
             name = text.strip(":")
             matches = [e for e in guild.emojis if e.name.lower() == name.lower()]
+
             if len(matches) == 1:
                 chosen = matches[0]
                 return str(chosen), chosen, None
+
             if len(matches) > 1:
                 return None, None, "Multiple emojis with that name found. Use a full emoji mention like <:name:id>."
 
@@ -381,3 +518,41 @@ class HallOfFame(commands.Cog):
             return cfg_pe.name == incoming_name or cfg_pe.name == incoming_text
 
         return cfg_text == incoming_text
+
+    @staticmethod
+    def _extract_source_message_id(embed: discord.Embed) -> Optional[int]:
+        footer_text = embed.footer.text if embed.footer else None
+        if not footer_text:
+            return None
+
+        match = re.search(r"Message ID:\s*(\d+)", footer_text)
+        return int(match.group(1)) if match else None
+
+    @staticmethod
+    def _extract_author_id_from_embed(embed: discord.Embed) -> Optional[int]:
+        for field in embed.fields:
+            if field.name.lower() == "author":
+                match = re.search(r"<@!?(\d+)>", field.value)
+                if match:
+                    return int(match.group(1))
+
+        return None
+
+    @staticmethod
+    def _extract_channel_id_from_content(content: str) -> Optional[int]:
+        match = re.search(r"<#(\d+)>", content or "")
+        return int(match.group(1)) if match else None
+
+    @staticmethod
+    def _extract_react_count(content: str, embed: discord.Embed) -> int:
+        match = re.search(r"\*\*(\d+)\*\*", content or "")
+        if match:
+            return int(match.group(1))
+
+        for field in embed.fields:
+            if field.name.lower() == "reacts":
+                match = re.search(r"(\d+)", field.value)
+                if match:
+                    return int(match.group(1))
+
+        return 0
