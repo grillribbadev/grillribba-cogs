@@ -196,6 +196,7 @@ class HallOfFame(commands.Cog):
         scanned = 0
         recovered = 0
         failed = 0
+        skipped_bots = 0
 
         async with ctx.typing():
             async for msg in target_channel.history(limit=None, oldest_first=True):
@@ -209,6 +210,10 @@ class HallOfFame(commands.Cog):
 
                 embed = msg.embeds[0]
 
+                if not self._looks_like_hof_embed(embed):
+                    failed += 1
+                    continue
+
                 author_id = self._extract_author_id_from_embed(embed)
                 source_message_id = self._extract_source_message_id(embed)
                 source_channel_id = self._extract_channel_id_from_content(msg.content)
@@ -216,6 +221,11 @@ class HallOfFame(commands.Cog):
 
                 if not author_id:
                     failed += 1
+                    continue
+
+                member = ctx.guild.get_member(author_id)
+                if member and member.bot:
+                    skipped_bots += 1
                     continue
 
                 key = str(source_message_id) if source_message_id else str(msg.id)
@@ -236,6 +246,7 @@ class HallOfFame(commands.Cog):
             f"Recount complete.\n"
             f"Scanned: **{scanned}** messages\n"
             f"Recovered Hall of Fame entries: **{recovered}**\n"
+            f"Skipped bot authors: **{skipped_bots}**\n"
             f"Failed/skipped: **{failed}**"
         )
 
@@ -287,6 +298,9 @@ class HallOfFame(commands.Cog):
         try:
             source_message = await source_channel.fetch_message(payload.message_id)
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            return
+
+        if source_message.author.bot:
             return
 
         count = await self._count_valid_reactions(source_message, configured_emoji)
@@ -374,6 +388,9 @@ class HallOfFame(commands.Cog):
                         pass
 
             if author_id:
+                member = guild.get_member(int(author_id))
+                if member and member.bot:
+                    continue
                 counts[int(author_id)] += 1
 
         if changed:
@@ -524,6 +541,11 @@ class HallOfFame(commands.Cog):
             return cfg_pe.name == incoming_name or cfg_pe.name == incoming_text
 
         return cfg_text == incoming_text
+
+    @staticmethod
+    def _looks_like_hof_embed(embed: discord.Embed) -> bool:
+        field_names = {field.name.lower() for field in embed.fields}
+        return {"author", "channel", "reacts"}.issubset(field_names)
 
     @staticmethod
     def _extract_source_message_id(embed: discord.Embed) -> Optional[int]:
