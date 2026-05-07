@@ -44,7 +44,6 @@ class HallOfFame(commands.Cog):
     @commands.guild_only()
     @commands.admin_or_permissions(manage_guild=True)
     async def hof_setchannel(self, ctx: commands.Context, channel: discord.TextChannel):
-        """Set the target channel where hall of fame posts are sent."""
         await self.config.guild(ctx.guild).target_channel_id.set(channel.id)
         await ctx.send(f"Hall of Fame target channel set to {channel.mention}.")
 
@@ -52,7 +51,6 @@ class HallOfFame(commands.Cog):
     @commands.guild_only()
     @commands.admin_or_permissions(manage_guild=True)
     async def hof_setemoji(self, ctx: commands.Context, *, emoji: str):
-        """Set the trigger emoji."""
         key, _, error = self._resolve_emoji(ctx.guild, emoji)
         if error:
             await ctx.send(error)
@@ -65,7 +63,6 @@ class HallOfFame(commands.Cog):
     @commands.guild_only()
     @commands.admin_or_permissions(manage_guild=True)
     async def hof_setthreshold(self, ctx: commands.Context, threshold: int):
-        """Set how many valid reactions are required to post."""
         if threshold < 1:
             await ctx.send("Threshold must be at least 1.")
             return
@@ -77,7 +74,6 @@ class HallOfFame(commands.Cog):
     @commands.guild_only()
     @commands.admin_or_permissions(manage_guild=True)
     async def hof_settings(self, ctx: commands.Context):
-        """Show current hall of fame settings."""
         data = await self.config.guild(ctx.guild).all()
         channel_id = data.get("target_channel_id")
         threshold = int(data.get("threshold", 5))
@@ -108,7 +104,6 @@ class HallOfFame(commands.Cog):
     @commands.guild_only()
     @commands.admin_or_permissions(manage_guild=True)
     async def hof_ignorechannel(self, ctx: commands.Context, channel: discord.TextChannel):
-        """Blacklist a channel so reactions in it are ignored."""
         ids = await self.config.guild(ctx.guild).blacklist_channel_ids()
         if channel.id in ids:
             await ctx.send(f"{channel.mention} is already ignored.")
@@ -122,7 +117,6 @@ class HallOfFame(commands.Cog):
     @commands.guild_only()
     @commands.admin_or_permissions(manage_guild=True)
     async def hof_unignorechannel(self, ctx: commands.Context, channel: discord.TextChannel):
-        """Remove a channel from the blacklist."""
         ids = await self.config.guild(ctx.guild).blacklist_channel_ids()
         if channel.id not in ids:
             await ctx.send(f"{channel.mention} is not in the ignore list.")
@@ -136,14 +130,12 @@ class HallOfFame(commands.Cog):
     @commands.guild_only()
     @commands.admin_or_permissions(manage_guild=True)
     async def hof_resetposts(self, ctx: commands.Context):
-        """Clear tracked source->hall-of-fame mappings."""
         await self.config.guild(ctx.guild).posts.set({})
         await ctx.send("Cleared tracked Hall of Fame post mappings.")
 
     @halloffame.command(name="leaderboard", aliases=["lb", "top"])
     @commands.guild_only()
     async def hof_leaderboard(self, ctx: commands.Context):
-        """Show who has the most messages featured in Hall of Fame."""
         counts = await self._get_leaderboard_counts(ctx.guild)
 
         if not counts:
@@ -183,7 +175,6 @@ class HallOfFame(commands.Cog):
     @commands.guild_only()
     @commands.admin_or_permissions(manage_guild=True)
     async def hof_recount(self, ctx: commands.Context):
-        """Recount Hall of Fame posts by scanning the configured Hall of Fame channel embeds."""
         data = await self.config.guild(ctx.guild).all()
         target_channel_id = data.get("target_channel_id")
         target_channel = ctx.guild.get_channel(target_channel_id) if target_channel_id else None
@@ -209,10 +200,6 @@ class HallOfFame(commands.Cog):
                     continue
 
                 embed = msg.embeds[0]
-
-                if not self._looks_like_hof_embed(embed):
-                    failed += 1
-                    continue
 
                 author_id = self._extract_author_id_from_embed(embed)
                 source_message_id = self._extract_source_message_id(embed)
@@ -541,11 +528,6 @@ class HallOfFame(commands.Cog):
             return cfg_pe.name == incoming_name or cfg_pe.name == incoming_text
 
         return cfg_text == incoming_text
-
-    @staticmethod
-    def _looks_like_hof_embed(embed: discord.Embed) -> bool:
-        field_names = {field.name.lower() for field in embed.fields}
-        return {"author", "channel", "reacts"}.issubset(field_names)
 
     @staticmethod
     def _extract_source_message_id(embed: discord.Embed) -> Optional[int]:
