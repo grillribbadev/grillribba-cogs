@@ -183,7 +183,7 @@ class HallOfFame(commands.Cog):
     @commands.guild_only()
     @commands.admin_or_permissions(manage_guild=True)
     async def hof_recount(self, ctx: commands.Context):
-        """Recount current Hall of Fame posts from the configured channel."""
+        """Recount current Hall of Fame posts by fetching the original source messages."""
         data = await self.config.guild(ctx.guild).all()
         target_channel_id = data.get("target_channel_id")
         target_channel = ctx.guild.get_channel(target_channel_id) if target_channel_id else None
@@ -195,12 +195,13 @@ class HallOfFame(commands.Cog):
         rebuilt_posts = {}
         scanned = 0
         recovered = 0
+        failed = 0
 
         async with ctx.typing():
             async for msg in target_channel.history(limit=None, oldest_first=True):
                 scanned += 1
 
-                if msg.author.id != self.bot.user.id:
+                if self.bot.user and msg.author.id != self.bot.user.id:
                     continue
 
                 if not msg.embeds:
@@ -209,20 +210,32 @@ class HallOfFame(commands.Cog):
                 embed = msg.embeds[0]
 
                 source_message_id = self._extract_source_message_id(embed)
-                author_id = self._extract_author_id_from_embed(embed)
                 source_channel_id = self._extract_channel_id_from_content(msg.content)
                 last_count = self._extract_react_count(msg.content, embed)
 
-                if not source_message_id or not author_id:
+                if not source_message_id or not source_channel_id:
+                    failed += 1
                     continue
 
-                rebuilt_posts[str(source_message_id)] = {
+                source_channel = ctx.guild.get_channel(source_channel_id)
+                if not isinstance(source_channel, discord.TextChannel):
+                    failed += 1
+                    continue
+
+                try:
+                    source_message = await source_channel.fetch_message(source_message_id)
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    failed += 1
+                    continue
+
+                rebuilt_posts[str(source_message.id)] = {
                     "starboard_message_id": msg.id,
                     "starboard_channel_id": msg.channel.id,
-                    "source_channel_id": source_channel_id,
-                    "author_id": author_id,
+                    "source_channel_id": source_message.channel.id,
+                    "author_id": source_message.author.id,
                     "last_count": last_count,
                 }
+
                 recovered += 1
 
         await self.config.guild(ctx.guild).posts.set(rebuilt_posts)
@@ -230,7 +243,8 @@ class HallOfFame(commands.Cog):
         await ctx.send(
             f"Recount complete.\n"
             f"Scanned: **{scanned}** messages\n"
-            f"Recovered Hall of Fame entries: **{recovered}**"
+            f"Recovered Hall of Fame entries: **{recovered}**\n"
+            f"Failed/skipped: **{failed}**"
         )
 
     @commands.Cog.listener()
