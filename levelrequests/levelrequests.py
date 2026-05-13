@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import discord
 from redbot.core import Config, commands
@@ -9,7 +9,8 @@ from redbot.core.bot import Red
 
 
 DEFAULT_GUILD: Dict[str, Any] = {
-    "request_channel_id": None,
+    "request_channel_id": None,      # old single-channel support
+    "request_channel_ids": [],       # new multi-channel support
     "proof_channel_id": None,
     "log_channel_id": None,
     "admin_role_id": None,
@@ -35,20 +36,27 @@ class LevelRequests(commands.Cog):
     async def red_delete_data_for_user(self, **kwargs):
         return
 
+    async def _get_request_channel_ids(self, guild: discord.Guild) -> List[int]:
+        settings = await self.config.guild(guild).all()
+
+        channel_ids = list(settings.get("request_channel_ids") or [])
+
+        old_id = settings.get("request_channel_id")
+        if old_id and old_id not in channel_ids:
+            channel_ids.append(old_id)
+
+        return channel_ids
+
+    async def _is_request_channel(self, guild: discord.Guild, channel_id: int) -> bool:
+        channel_ids = await self._get_request_channel_ids(guild)
+        return channel_id in channel_ids
+
     @commands.Cog.listener()
-    async def on_message(self, message: discord.Message):
+    async def on_message_without_command(self, message: discord.Message):
         if message.author.bot or not message.guild:
             return
 
-        settings = await self.config.guild(message.guild).all()
-        request_channel_id = settings.get("request_channel_id")
-
-        if not request_channel_id or message.channel.id != request_channel_id:
-            return
-
-        prefixes = await self.bot.get_valid_prefixes(message.guild)
-
-        if any(message.content.startswith(f"{prefix}requestlevel") for prefix in prefixes):
+        if not await self._is_request_channel(message.guild, message.channel.id):
             return
 
         try:
@@ -56,27 +64,63 @@ class LevelRequests(commands.Cog):
         except discord.HTTPException:
             pass
 
+    async def cog_check(self, ctx: commands.Context) -> bool:
+        if not ctx.guild or not ctx.command:
+            return True
+
+        if await self._is_request_channel(ctx.guild, ctx.channel.id):
+            return ctx.command.name == "requestlevel"
+
+        return True
+
     async def _get_channel(self, guild: discord.Guild, channel_id: Optional[int]):
         if not channel_id:
             return None
+
         channel = guild.get_channel(channel_id)
         if isinstance(channel, discord.TextChannel):
             return channel
+
         try:
             fetched = await guild.fetch_channel(channel_id)
         except discord.HTTPException:
             return None
+
         return fetched if isinstance(fetched, discord.TextChannel) else None
+
+    async def _send_request_info_message(self, channel: discord.TextChannel):
+        embed = discord.Embed(
+            title="Level Restoration Requests",
+            description=(
+                "Use `.requestlevel` to begin your level restoration request.\n\n"
+                "The bot will DM you automatically so you can upload your proof screenshot/image."
+            ),
+            color=discord.Color.gold(),
+        )
+        embed.add_field(
+            name="Important",
+            value=(
+                "• Only use `.requestlevel` here\n"
+                "• All other messages are deleted automatically\n"
+                "• Staff will manually review your proof"
+            ),
+            inline=False,
+        )
+        embed.set_footer(text="All requests are manually reviewed by staff.")
+
+        await channel.send(embed=embed)
 
     async def _log(self, guild: discord.Guild, message: str):
         settings = await self.config.guild(guild).all()
         channel = await self._get_channel(guild, settings.get("log_channel_id"))
+
         if channel:
             await channel.send(message)
 
     async def _is_request_admin(self, ctx: commands.Context) -> bool:
         if await self.bot.is_owner(ctx.author):
             return True
+
         if ctx.author.guild_permissions.manage_guild:
             return True
 
@@ -91,15 +135,19 @@ class LevelRequests(commands.Cog):
     def _image_from_message(self, message: discord.Message) -> Optional[str]:
         for attachment in message.attachments:
             content_type = attachment.content_type or ""
+
             if content_type.startswith("image/"):
                 return attachment.url
 
-            if attachment.filename.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".webp")):
+            if attachment.filename.lower().endswith(
+                (".png", ".jpg", ".jpeg", ".gif", ".webp")
+            ):
                 return attachment.url
 
         for embed in message.embeds:
             if embed.image and embed.image.url:
                 return embed.image.url
+
             if embed.thumbnail and embed.thumbnail.url:
                 return embed.thumbnail.url
 
@@ -113,9 +161,20 @@ class LevelRequests(commands.Cog):
 
     @levelreqset.command(name="requestchannel")
     async def set_request_channel(self, ctx: commands.Context, channel: discord.TextChannel):
-        """Set the channel where users run requestlevel."""
+        """Add a request channel and post the info message."""
 
-        await self.config.guild(ctx.guild).request_channel_id.set(channel.id)
+        async with self.config.guild(ctx.guild).all() as data:
+            channel_ids = list(data.get("request_channel_ids") or [])
+
+            old_id = data.get("request_channel_id")
+            if old_id and old_id not in channel_ids:
+                channel_ids.append(old_id)
+
+            if channel.id not in channel_ids:
+                channel_ids.append(channel.id)
+
+            data["request_channel_ids"] = channel_ids
+            data["request_channel_id"] = channel.id
 
         deleted = 0
 
@@ -129,76 +188,166 @@ class LevelRequests(commands.Cog):
         except discord.HTTPException:
             pass
 
-        embed = discord.Embed(
-            title="Level Restoration Requests",
-            description=(
-                "Use `.requestlevel` to begin your level restoration request.\n\n"
-                "After using the command, the bot will DM you automatically "
-                "where you can upload your proof screenshot/image."
-            ),
-            color=discord.Color.gold(),
-        )
-        embed.add_field(
-            name="What to submit",
-            value=(
-                "• Screenshot of your previous level\n"
-                "• Clear proof only\n"
-                "• Do not spam this channel"
-            ),
-            inline=False,
-        )
-        embed.set_footer(text="All requests are manually reviewed by staff.")
-
-        await channel.send(embed=embed)
+        try:
+            await self._send_request_info_message(channel)
+        except discord.HTTPException:
+            return await ctx.send(
+                f"Request channel was saved, but I could not post the info message in {channel.mention}."
+            )
 
         await ctx.send(
-            f"Request channel set to {channel.mention}.\n"
+            f"Request channel added: {channel.mention}\n"
             f"Deleted `{deleted}` old messages and posted the request info message."
         )
 
+    @levelreqset.command(name="removerequestchannel", aliases=["delrequestchannel", "rmrequestchannel"])
+    async def remove_request_channel(self, ctx: commands.Context, channel: discord.TextChannel):
+        """Remove a request channel."""
+
+        async with self.config.guild(ctx.guild).all() as data:
+            channel_ids = list(data.get("request_channel_ids") or [])
+
+            old_id = data.get("request_channel_id")
+            if old_id and old_id not in channel_ids:
+                channel_ids.append(old_id)
+
+            if channel.id in channel_ids:
+                channel_ids.remove(channel.id)
+
+            data["request_channel_ids"] = channel_ids
+
+            if data.get("request_channel_id") == channel.id:
+                data["request_channel_id"] = channel_ids[0] if channel_ids else None
+
+        await ctx.send(f"Removed request channel: {channel.mention}")
+
+    @levelreqset.command(name="clearrequestchannels")
+    async def clear_request_channels(self, ctx: commands.Context):
+        """Clear all request channels."""
+
+        await self.config.guild(ctx.guild).request_channel_ids.set([])
+        await self.config.guild(ctx.guild).request_channel_id.set(None)
+
+        await ctx.send("All request channels cleared.")
+
+    @levelreqset.command(name="postmessage")
+    async def post_request_message(self, ctx: commands.Context, channel: Optional[discord.TextChannel] = None):
+        """Post the request info message again."""
+
+        if channel is None:
+            channel = ctx.channel
+
+        if not await self._is_request_channel(ctx.guild, channel.id):
+            return await ctx.send("That channel is not configured as a request channel.")
+
+        await self._send_request_info_message(channel)
+        await ctx.send(f"Posted the request info message in {channel.mention}.")
+
     @levelreqset.command(name="proofchannel")
-    async def set_proof_channel(self, ctx: commands.Context, channel: discord.TextChannel):
-        await self.config.guild(ctx.guild).proof_channel_id.set(channel.id)
-        await ctx.send(f"Proof channel set to {channel.mention}.")
+    async def set_proof_channel(
+        self,
+        ctx: commands.Context,
+        channel: Optional[discord.TextChannel] = None,
+    ):
+        """Set or clear the proof/staff channel."""
+
+        await self.config.guild(ctx.guild).proof_channel_id.set(channel.id if channel else None)
+
+        if channel:
+            await ctx.send(f"Proof channel set to {channel.mention}.")
+        else:
+            await ctx.send("Proof channel cleared.")
 
     @levelreqset.command(name="logchannel")
-    async def set_log_channel(self, ctx: commands.Context, channel: Optional[discord.TextChannel] = None):
+    async def set_log_channel(
+        self,
+        ctx: commands.Context,
+        channel: Optional[discord.TextChannel] = None,
+    ):
+        """Set or clear the log channel."""
+
         await self.config.guild(ctx.guild).log_channel_id.set(channel.id if channel else None)
-        await ctx.send(f"Log channel set to {channel.mention}." if channel else "Log channel cleared.")
+
+        if channel:
+            await ctx.send(f"Log channel set to {channel.mention}.")
+        else:
+            await ctx.send("Log channel cleared.")
 
     @levelreqset.command(name="adminrole")
-    async def set_admin_role(self, ctx: commands.Context, role: Optional[discord.Role] = None):
+    async def set_admin_role(
+        self,
+        ctx: commands.Context,
+        role: Optional[discord.Role] = None,
+    ):
+        """Set or clear the admin role."""
+
         await self.config.guild(ctx.guild).admin_role_id.set(role.id if role else None)
-        await ctx.send(f"Admin role set to {role.mention}." if role else "Admin role cleared.")
+
+        if role:
+            await ctx.send(f"Admin role set to {role.mention}.")
+        else:
+            await ctx.send("Admin role cleared.")
 
     @levelreqset.command(name="deletedelay")
     async def set_delete_delay(self, ctx: commands.Context, seconds: int):
+        """Set requestlevel delete delay."""
+
         if seconds < 0 or seconds > 60:
             return await ctx.send("Delete delay must be between 0 and 60 seconds.")
+
         await self.config.guild(ctx.guild).delete_delay.set(seconds)
         await ctx.send(f"Delete delay set to `{seconds}` seconds.")
 
     @levelreqset.command(name="dmtimeout")
     async def set_dm_timeout(self, ctx: commands.Context, seconds: int):
+        """Set DM proof timeout."""
+
         if seconds < 30 or seconds > 3600:
             return await ctx.send("DM timeout must be between 30 and 3600 seconds.")
+
         await self.config.guild(ctx.guild).dm_timeout.set(seconds)
         await ctx.send(f"DM timeout set to `{seconds}` seconds.")
 
     @levelreqset.command(name="show")
     async def show_settings(self, ctx: commands.Context):
-        settings = await self.config.guild(ctx.guild).all()
+        """Show settings."""
 
-        request_channel = await self._get_channel(ctx.guild, settings["request_channel_id"])
+        settings = await self.config.guild(ctx.guild).all()
+        request_channel_ids = await self._get_request_channel_ids(ctx.guild)
+
+        request_channels = []
+        for channel_id in request_channel_ids:
+            channel = await self._get_channel(ctx.guild, channel_id)
+            request_channels.append(channel.mention if channel else f"`Missing channel: {channel_id}`")
+
         proof_channel = await self._get_channel(ctx.guild, settings["proof_channel_id"])
         log_channel = await self._get_channel(ctx.guild, settings["log_channel_id"])
         admin_role = ctx.guild.get_role(settings["admin_role_id"]) if settings["admin_role_id"] else None
 
-        embed = discord.Embed(title="Level Request Settings", color=await ctx.embed_color())
-        embed.add_field(name="Request channel", value=request_channel.mention if request_channel else "Not set", inline=False)
-        embed.add_field(name="Proof channel", value=proof_channel.mention if proof_channel else "Not set", inline=False)
-        embed.add_field(name="Log channel", value=log_channel.mention if log_channel else "Not set", inline=False)
-        embed.add_field(name="Admin role", value=admin_role.mention if admin_role else "Not set", inline=False)
+        embed = discord.Embed(
+            title="Level Request Settings",
+            color=await ctx.embed_color(),
+        )
+        embed.add_field(
+            name="Request channels",
+            value="\n".join(request_channels) if request_channels else "Not set",
+            inline=False,
+        )
+        embed.add_field(
+            name="Proof channel",
+            value=proof_channel.mention if proof_channel else "Not set",
+            inline=False,
+        )
+        embed.add_field(
+            name="Log channel",
+            value=log_channel.mention if log_channel else "Not set",
+            inline=False,
+        )
+        embed.add_field(
+            name="Admin role",
+            value=admin_role.mention if admin_role else "Not set",
+            inline=False,
+        )
         embed.add_field(name="Delete delay", value=f"{settings['delete_delay']}s")
         embed.add_field(name="DM timeout", value=f"{settings['dm_timeout']}s")
         embed.add_field(name="Next request ID", value=str(settings["next_request_id"]))
@@ -208,15 +357,24 @@ class LevelRequests(commands.Cog):
     @commands.command(name="requestlevel")
     @commands.guild_only()
     async def request_level(self, ctx: commands.Context):
+        """Request level restoration."""
+
         settings = await self.config.guild(ctx.guild).all()
+        request_channel_ids = await self._get_request_channel_ids(ctx.guild)
 
-        if not settings["request_channel_id"] or not settings["proof_channel_id"]:
-            return await ctx.send("Level requests are not configured yet.")
+        if not request_channel_ids or not settings["proof_channel_id"]:
+            return await ctx.send("Level requests are not configured yet.", delete_after=10)
 
-        if ctx.channel.id != settings["request_channel_id"]:
-            request_channel = await self._get_channel(ctx.guild, settings["request_channel_id"])
+        if ctx.channel.id not in request_channel_ids:
+            channels = []
+            for channel_id in request_channel_ids:
+                channel = await self._get_channel(ctx.guild, channel_id)
+                if channel:
+                    channels.append(channel.mention)
+
             return await ctx.send(
-                f"Use this command in {request_channel.mention if request_channel else 'the configured request channel'}."
+                f"Use this command in {', '.join(channels) if channels else 'the configured request channel'}.",
+                delete_after=10,
             )
 
         try:
@@ -237,7 +395,10 @@ class LevelRequests(commands.Cog):
             )
 
         def check(message: discord.Message) -> bool:
-            return message.author.id == ctx.author.id and isinstance(message.channel, discord.DMChannel)
+            return (
+                message.author.id == ctx.author.id
+                and isinstance(message.channel, discord.DMChannel)
+            )
 
         try:
             proof_message = await self.bot.wait_for(
@@ -330,7 +491,10 @@ class LevelRequests(commands.Cog):
 
         embed = discord.Embed(
             title=f"Level Request #{request_data['id']} - {status.upper()}",
-            description=f"User: {user.mention if user else request_data['user_id']}\nUser ID: `{request_data['user_id']}`",
+            description=(
+                f"User: {user.mention if user else request_data['user_id']}\n"
+                f"User ID: `{request_data['user_id']}`"
+            ),
             color=color,
             timestamp=discord.utils.utcnow(),
         )
@@ -345,6 +509,8 @@ class LevelRequests(commands.Cog):
     @commands.command(name="reqaccept")
     @commands.guild_only()
     async def request_accept(self, ctx: commands.Context, request_id: int):
+        """Accept a request."""
+
         if not await self._is_request_admin(ctx):
             return await ctx.send("You do not have permission to accept level requests.")
 
@@ -368,7 +534,9 @@ class LevelRequests(commands.Cog):
             try:
                 await member.send(
                     f"Your level request `#{request_id}` was accepted.",
-                    embed=discord.Embed(description="Accepted proof:").set_image(url=request_data["image_url"]),
+                    embed=discord.Embed(description="Accepted proof:").set_image(
+                        url=request_data["image_url"]
+                    ),
                 )
             except discord.HTTPException:
                 pass
@@ -380,6 +548,8 @@ class LevelRequests(commands.Cog):
     @commands.command(name="reqdeny")
     @commands.guild_only()
     async def request_deny(self, ctx: commands.Context, request_id: int, *, reason: str):
+        """Deny a request."""
+
         if not await self._is_request_admin(ctx):
             return await ctx.send("You do not have permission to deny level requests.")
 
@@ -403,36 +573,63 @@ class LevelRequests(commands.Cog):
             try:
                 await member.send(
                     f"Your level request `#{request_id}` was denied.\n\nReason: {reason}",
-                    embed=discord.Embed(description="Denied proof:").set_image(url=request_data["image_url"]),
+                    embed=discord.Embed(description="Denied proof:").set_image(
+                        url=request_data["image_url"]
+                    ),
                 )
             except discord.HTTPException:
                 pass
 
         await self._update_staff_embed(ctx.guild, request_data, "denied", ctx.author, reason)
         await ctx.send(f"Denied level request `#{request_id}`.")
-        await self._log(ctx.guild, f"Level request `#{request_id}` denied by {ctx.author.mention}. Reason: {reason}")
+        await self._log(
+            ctx.guild,
+            f"Level request `#{request_id}` denied by {ctx.author.mention}. Reason: {reason}",
+        )
 
     @commands.command(name="reqstatus")
     @commands.guild_only()
     async def request_status(self, ctx: commands.Context, request_id: int):
+        """Check a request."""
+
         request_data = await self._get_request(ctx.guild, request_id)
 
         if not request_data:
             return await ctx.send(f"No request found with ID `{request_id}`.")
 
         user = ctx.guild.get_member(request_data["user_id"])
-        handled_by = ctx.guild.get_member(request_data["handled_by"]) if request_data.get("handled_by") else None
+        handled_by = (
+            ctx.guild.get_member(request_data["handled_by"])
+            if request_data.get("handled_by")
+            else None
+        )
 
         embed = discord.Embed(
             title=f"Level Request #{request_id}",
             color=await ctx.embed_color(),
         )
-        embed.add_field(name="Status", value=request_data["status"], inline=False)
-        embed.add_field(name="User", value=user.mention if user else f"`{request_data['user_id']}`", inline=False)
-        embed.add_field(name="Handled by", value=handled_by.mention if handled_by else "Not handled yet", inline=False)
+        embed.add_field(
+            name="Status",
+            value=request_data["status"],
+            inline=False,
+        )
+        embed.add_field(
+            name="User",
+            value=user.mention if user else f"`{request_data['user_id']}`",
+            inline=False,
+        )
+        embed.add_field(
+            name="Handled by",
+            value=handled_by.mention if handled_by else "Not handled yet",
+            inline=False,
+        )
 
         if request_data.get("decision_comment"):
-            embed.add_field(name="Comment", value=request_data["decision_comment"], inline=False)
+            embed.add_field(
+                name="Comment",
+                value=request_data["decision_comment"],
+                inline=False,
+            )
 
         embed.set_image(url=request_data["image_url"])
         await ctx.send(embed=embed)
