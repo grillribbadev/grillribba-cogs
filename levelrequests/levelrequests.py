@@ -16,8 +16,12 @@ DEFAULT_GUILD: Dict[str, Any] = {
     "admin_role_id": None,
     "delete_delay": 5,
     "dm_timeout": 600,
+    "cooldown_seconds": 300,
+    "delete_thread_after_decision": True,
+    "thread_delete_delay": 5,
     "next_request_id": 1,
     "requests": {},
+    "last_request_times": {},
 }
 
 
@@ -106,14 +110,14 @@ class LevelRequests(commands.Cog):
         )
         embed.set_footer(text="All requests are manually reviewed by staff.")
 
-        await channel.send(embed=embed)
+        await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
     async def _log(self, guild: discord.Guild, message: str):
         settings = await self.config.guild(guild).all()
         channel = await self._get_channel(guild, settings.get("log_channel_id"))
 
         if channel:
-            await channel.send(message)
+            await channel.send(message, allowed_mentions=discord.AllowedMentions.none())
 
     async def _is_request_admin(self, ctx: commands.Context) -> bool:
         if await self.bot.is_owner(ctx.author):
@@ -150,6 +154,14 @@ class LevelRequests(commands.Cog):
                 return embed.thumbnail.url
 
         return None
+
+    async def _delete_thread_later(self, thread: discord.Thread, delay: int):
+        await asyncio.sleep(max(delay, 0))
+
+        try:
+            await thread.delete(reason="Level request finished")
+        except discord.HTTPException:
+            pass
 
     @commands.group(name="levelreqset")
     @commands.guild_only()
@@ -195,7 +207,8 @@ class LevelRequests(commands.Cog):
 
         await ctx.send(
             f"Request channel added: {channel.mention}\n"
-            f"Deleted `{deleted}` old messages and posted the request info message."
+            f"Deleted `{deleted}` old messages and posted the request info message.",
+            allowed_mentions=discord.AllowedMentions.none(),
         )
 
     @levelreqset.command(
@@ -220,7 +233,7 @@ class LevelRequests(commands.Cog):
             if data.get("request_channel_id") == channel.id:
                 data["request_channel_id"] = channel_ids[0] if channel_ids else None
 
-        await ctx.send(f"Removed request channel: {channel.mention}")
+        await ctx.send(f"Removed request channel: {channel.mention}", allowed_mentions=discord.AllowedMentions.none())
 
     @levelreqset.command(name="clearrequestchannels")
     async def clear_request_channels(self, ctx: commands.Context):
@@ -246,7 +259,7 @@ class LevelRequests(commands.Cog):
             return await ctx.send("That channel is not configured as a request channel.")
 
         await self._send_request_info_message(channel)
-        await ctx.send(f"Posted the request info message in {channel.mention}.")
+        await ctx.send(f"Posted the request info message in {channel.mention}.", allowed_mentions=discord.AllowedMentions.none())
 
     @levelreqset.command(name="proofchannel")
     async def set_proof_channel(
@@ -259,7 +272,7 @@ class LevelRequests(commands.Cog):
         await self.config.guild(ctx.guild).proof_channel_id.set(channel.id if channel else None)
 
         if channel:
-            await ctx.send(f"Proof thread parent channel set to {channel.mention}.")
+            await ctx.send(f"Proof thread parent channel set to {channel.mention}.", allowed_mentions=discord.AllowedMentions.none())
         else:
             await ctx.send("Proof channel cleared.")
 
@@ -274,7 +287,7 @@ class LevelRequests(commands.Cog):
         await self.config.guild(ctx.guild).log_channel_id.set(channel.id if channel else None)
 
         if channel:
-            await ctx.send(f"Log channel set to {channel.mention}.")
+            await ctx.send(f"Log channel set to {channel.mention}.", allowed_mentions=discord.AllowedMentions.none())
         else:
             await ctx.send("Log channel cleared.")
 
@@ -289,7 +302,7 @@ class LevelRequests(commands.Cog):
         await self.config.guild(ctx.guild).admin_role_id.set(role.id if role else None)
 
         if role:
-            await ctx.send(f"Admin role set to {role.mention}.")
+            await ctx.send(f"Admin role set to {role.mention}.", allowed_mentions=discord.AllowedMentions.none())
         else:
             await ctx.send("Admin role cleared.")
 
@@ -312,6 +325,33 @@ class LevelRequests(commands.Cog):
 
         await self.config.guild(ctx.guild).dm_timeout.set(seconds)
         await ctx.send(f"DM timeout set to `{seconds}` seconds.")
+
+    @levelreqset.command(name="cooldown")
+    async def set_cooldown(self, ctx: commands.Context, seconds: int):
+        """Set how often users can submit requests."""
+
+        if seconds < 0 or seconds > 86400:
+            return await ctx.send("Cooldown must be between 0 and 86400 seconds.")
+
+        await self.config.guild(ctx.guild).cooldown_seconds.set(seconds)
+        await ctx.send(f"Request cooldown set to `{seconds}` seconds.")
+
+    @levelreqset.command(name="threaddelete")
+    async def set_thread_delete(self, ctx: commands.Context, enabled: bool):
+        """Enable or disable auto thread deletion after accept/deny."""
+
+        await self.config.guild(ctx.guild).delete_thread_after_decision.set(enabled)
+        await ctx.send(f"Auto thread deletion set to `{enabled}`.")
+
+    @levelreqset.command(name="threaddeletedelay")
+    async def set_thread_delete_delay(self, ctx: commands.Context, seconds: int):
+        """Set delay before deleting finished request threads."""
+
+        if seconds < 0 or seconds > 3600:
+            return await ctx.send("Thread delete delay must be between 0 and 3600 seconds.")
+
+        await self.config.guild(ctx.guild).thread_delete_delay.set(seconds)
+        await ctx.send(f"Thread delete delay set to `{seconds}` seconds.")
 
     @levelreqset.command(name="show")
     async def show_settings(self, ctx: commands.Context):
@@ -355,9 +395,12 @@ class LevelRequests(commands.Cog):
         )
         embed.add_field(name="Delete delay", value=f"{settings['delete_delay']}s")
         embed.add_field(name="DM timeout", value=f"{settings['dm_timeout']}s")
+        embed.add_field(name="Cooldown", value=f"{settings.get('cooldown_seconds', 300)}s")
+        embed.add_field(name="Thread auto-delete", value=str(settings.get("delete_thread_after_decision", True)))
+        embed.add_field(name="Thread delete delay", value=f"{settings.get('thread_delete_delay', 5)}s")
         embed.add_field(name="Next request ID", value=str(settings["next_request_id"]))
 
-        await ctx.send(embed=embed)
+        await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
     @commands.command(name="requestlevel")
     @commands.guild_only()
@@ -380,6 +423,25 @@ class LevelRequests(commands.Cog):
             return await ctx.send(
                 f"Use this command in {', '.join(channels) if channels else 'the configured request channel'}.",
                 delete_after=10,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+
+        now = int(discord.utils.utcnow().timestamp())
+        user_id = str(ctx.author.id)
+        cooldown_seconds = int(settings.get("cooldown_seconds", 300))
+        last_request_times = settings.get("last_request_times") or {}
+        last_time = int(last_request_times.get(user_id, 0))
+
+        if cooldown_seconds > 0 and now - last_time < cooldown_seconds:
+            remaining = cooldown_seconds - (now - last_time)
+
+            try:
+                await ctx.message.delete(delay=settings["delete_delay"])
+            except discord.HTTPException:
+                pass
+
+            return await ctx.author.send(
+                f"You are on cooldown. Please wait `{remaining}` more seconds before submitting another level request."
             )
 
         try:
@@ -395,8 +457,9 @@ class LevelRequests(commands.Cog):
             )
         except discord.Forbidden:
             return await ctx.send(
-                f"{ctx.author.mention}, I could not DM you. Please enable DMs from server members.",
+                "I could not DM you. Please enable DMs from server members.",
                 delete_after=10,
+                allowed_mentions=discord.AllowedMentions.none(),
             )
 
         def check(message: discord.Message) -> bool:
@@ -430,22 +493,27 @@ class LevelRequests(commands.Cog):
             request_id = data["next_request_id"]
             data["next_request_id"] += 1
 
+            data.setdefault("last_request_times", {})
+            data["last_request_times"][str(ctx.author.id)] = now
+
             request_data = {
                 "id": request_id,
                 "user_id": ctx.author.id,
+                "username": str(ctx.author),
                 "status": "pending",
                 "image_url": image_url,
                 "proof_message_id": proof_message.id,
                 "proof_channel_message_id": None,
                 "proof_thread_id": None,
-                "created_at": int(discord.utils.utcnow().timestamp()),
+                "created_at": now,
                 "handled_by": None,
                 "decision_comment": None,
             }
 
             data["requests"][str(request_id)] = request_data
 
-        thread_name = f"level-request-{request_id}-{ctx.author.name}"[:100]
+        safe_name = "".join(c for c in ctx.author.name if c.isalnum() or c in "-_")[:30]
+        thread_name = f"level-request-{request_id}-{safe_name}"[:100]
 
         try:
             thread = await proof_channel.create_thread(
@@ -453,10 +521,6 @@ class LevelRequests(commands.Cog):
                 type=discord.ChannelType.private_thread,
                 invitable=False,
                 reason=f"Level request #{request_id} by {ctx.author} ({ctx.author.id})",
-            )
-        except discord.Forbidden:
-            return await dm.send(
-                "I could not create a private thread in the staff channel. Please contact staff."
             )
         except discord.HTTPException:
             try:
@@ -472,7 +536,11 @@ class LevelRequests(commands.Cog):
 
         embed = discord.Embed(
             title=f"Level Request #{request_id}",
-            description=f"User: {ctx.author.mention}\nUser ID: `{ctx.author.id}`",
+            description=(
+                f"User: `{ctx.author}`\n"
+                f"Display name: `{getattr(ctx.author, 'display_name', ctx.author.name)}`\n"
+                f"User ID: `{ctx.author.id}`"
+            ),
             color=discord.Color.gold(),
             timestamp=discord.utils.utcnow(),
         )
@@ -480,8 +548,9 @@ class LevelRequests(commands.Cog):
         embed.set_footer(text=f"Use reqaccept {request_id} or reqdeny {request_id} <reason>")
 
         staff_message = await thread.send(
-            content=f"New level request from {ctx.author.mention}",
+            content=f"New level request #{request_id}",
             embed=embed,
+            allowed_mentions=discord.AllowedMentions.none(),
         )
 
         async with self.config.guild(ctx.guild).requests() as requests:
@@ -495,7 +564,7 @@ class LevelRequests(commands.Cog):
 
         await self._log(
             ctx.guild,
-            f"Level request `#{request_id}` submitted by {ctx.author.mention}. Thread: {thread.mention}",
+            f"Level request `#{request_id}` submitted by `{ctx.author}`. Thread: `{thread.name}`",
         )
 
     async def _get_request(self, guild: discord.Guild, request_id: int):
@@ -543,32 +612,41 @@ class LevelRequests(commands.Cog):
             return
 
         user = guild.get_member(request_data["user_id"])
+        user_text = str(user) if user else request_data.get("username", str(request_data["user_id"]))
+
         color = discord.Color.green() if status == "accepted" else discord.Color.red()
 
         embed = discord.Embed(
             title=f"Level Request #{request_data['id']} - {status.upper()}",
             description=(
-                f"User: {user.mention if user else request_data['user_id']}\n"
+                f"User: `{user_text}`\n"
                 f"User ID: `{request_data['user_id']}`"
             ),
             color=color,
             timestamp=discord.utils.utcnow(),
         )
         embed.set_image(url=request_data["image_url"])
-        embed.add_field(name="Handled by", value=moderator.mention, inline=False)
+        embed.add_field(name="Handled by", value=f"`{moderator}`", inline=False)
 
         if comment:
             embed.add_field(name="Reason/comment", value=comment, inline=False)
 
-        await message.edit(embed=embed)
+        await message.edit(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
         if isinstance(proof_location, discord.Thread):
             try:
                 await proof_location.send(
-                    f"Request `#{request_data['id']}` marked as **{status}** by {moderator.mention}."
+                    f"Request `#{request_data['id']}` marked as **{status}** by `{moderator}`.",
+                    allowed_mentions=discord.AllowedMentions.none(),
                 )
             except discord.HTTPException:
                 pass
+
+            settings = await self.config.guild(guild).all()
+
+            if settings.get("delete_thread_after_decision", True):
+                delay = int(settings.get("thread_delete_delay", 5))
+                asyncio.create_task(self._delete_thread_later(proof_location, delay))
 
     @commands.command(name="reqaccept")
     @commands.guild_only()
@@ -607,7 +685,7 @@ class LevelRequests(commands.Cog):
 
         await self._update_staff_embed(ctx.guild, request_data, "accepted", ctx.author)
         await ctx.send(f"Accepted level request `#{request_id}`.")
-        await self._log(ctx.guild, f"Level request `#{request_id}` accepted by {ctx.author.mention}.")
+        await self._log(ctx.guild, f"Level request `#{request_id}` accepted by `{ctx.author}`.")
 
     @commands.command(name="reqdeny")
     @commands.guild_only()
@@ -648,7 +726,7 @@ class LevelRequests(commands.Cog):
         await ctx.send(f"Denied level request `#{request_id}`.")
         await self._log(
             ctx.guild,
-            f"Level request `#{request_id}` denied by {ctx.author.mention}. Reason: {reason}",
+            f"Level request `#{request_id}` denied by `{ctx.author}`. Reason: {reason}",
         )
 
     @commands.command(name="reqstatus")
@@ -678,17 +756,22 @@ class LevelRequests(commands.Cog):
         embed.add_field(name="Status", value=request_data["status"], inline=False)
         embed.add_field(
             name="User",
-            value=user.mention if user else f"`{request_data['user_id']}`",
+            value=f"`{user}`" if user else f"`{request_data.get('username', request_data['user_id'])}`",
+            inline=False,
+        )
+        embed.add_field(
+            name="User ID",
+            value=f"`{request_data['user_id']}`",
             inline=False,
         )
         embed.add_field(
             name="Handled by",
-            value=handled_by.mention if handled_by else "Not handled yet",
+            value=f"`{handled_by}`" if handled_by else "Not handled yet",
             inline=False,
         )
         embed.add_field(
             name="Thread",
-            value=thread.mention if thread else "Missing/old request",
+            value=f"`{thread.name}`" if thread else "Missing/deleted/old request",
             inline=False,
         )
 
@@ -700,4 +783,4 @@ class LevelRequests(commands.Cog):
             )
 
         embed.set_image(url=request_data["image_url"])
-        await ctx.send(embed=embed)
+        await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
