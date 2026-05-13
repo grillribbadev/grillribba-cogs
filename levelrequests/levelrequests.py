@@ -13,6 +13,7 @@ DEFAULT_GUILD: Dict[str, Any] = {
     "request_channel_ids": [],
     "proof_channel_id": None,
     "log_channel_id": None,
+    "thread_log_channel_id": None,
     "admin_role_id": None,
     "delete_delay": 5,
     "dm_timeout": 600,
@@ -118,6 +119,13 @@ class LevelRequests(commands.Cog):
 
         if channel:
             await channel.send(message, allowed_mentions=discord.AllowedMentions.none())
+
+    async def _thread_log(self, guild: discord.Guild, embed: discord.Embed):
+        settings = await self.config.guild(guild).all()
+        channel = await self._get_channel(guild, settings.get("thread_log_channel_id"))
+
+        if channel:
+            await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
     async def _is_request_admin(self, ctx: commands.Context) -> bool:
         if await self.bot.is_owner(ctx.author):
@@ -233,7 +241,10 @@ class LevelRequests(commands.Cog):
             if data.get("request_channel_id") == channel.id:
                 data["request_channel_id"] = channel_ids[0] if channel_ids else None
 
-        await ctx.send(f"Removed request channel: {channel.mention}", allowed_mentions=discord.AllowedMentions.none())
+        await ctx.send(
+            f"Removed request channel: {channel.mention}",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
 
     @levelreqset.command(name="clearrequestchannels")
     async def clear_request_channels(self, ctx: commands.Context):
@@ -259,7 +270,10 @@ class LevelRequests(commands.Cog):
             return await ctx.send("That channel is not configured as a request channel.")
 
         await self._send_request_info_message(channel)
-        await ctx.send(f"Posted the request info message in {channel.mention}.", allowed_mentions=discord.AllowedMentions.none())
+        await ctx.send(
+            f"Posted the request info message in {channel.mention}.",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
 
     @levelreqset.command(name="proofchannel")
     async def set_proof_channel(
@@ -272,7 +286,10 @@ class LevelRequests(commands.Cog):
         await self.config.guild(ctx.guild).proof_channel_id.set(channel.id if channel else None)
 
         if channel:
-            await ctx.send(f"Proof thread parent channel set to {channel.mention}.", allowed_mentions=discord.AllowedMentions.none())
+            await ctx.send(
+                f"Proof thread parent channel set to {channel.mention}.",
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
         else:
             await ctx.send("Proof channel cleared.")
 
@@ -282,14 +299,35 @@ class LevelRequests(commands.Cog):
         ctx: commands.Context,
         channel: Optional[discord.TextChannel] = None,
     ):
-        """Set or clear the log channel."""
+        """Set or clear the normal log channel."""
 
         await self.config.guild(ctx.guild).log_channel_id.set(channel.id if channel else None)
 
         if channel:
-            await ctx.send(f"Log channel set to {channel.mention}.", allowed_mentions=discord.AllowedMentions.none())
+            await ctx.send(
+                f"Log channel set to {channel.mention}.",
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
         else:
             await ctx.send("Log channel cleared.")
+
+    @levelreqset.command(name="threadlogchannel")
+    async def set_thread_log_channel(
+        self,
+        ctx: commands.Context,
+        channel: Optional[discord.TextChannel] = None,
+    ):
+        """Set or clear the request thread log channel."""
+
+        await self.config.guild(ctx.guild).thread_log_channel_id.set(channel.id if channel else None)
+
+        if channel:
+            await ctx.send(
+                f"Thread log channel set to {channel.mention}.",
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        else:
+            await ctx.send("Thread log channel cleared.")
 
     @levelreqset.command(name="adminrole")
     async def set_admin_role(
@@ -302,7 +340,10 @@ class LevelRequests(commands.Cog):
         await self.config.guild(ctx.guild).admin_role_id.set(role.id if role else None)
 
         if role:
-            await ctx.send(f"Admin role set to {role.mention}.", allowed_mentions=discord.AllowedMentions.none())
+            await ctx.send(
+                f"Admin role set to {role.mention}.",
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
         else:
             await ctx.send("Admin role cleared.")
 
@@ -367,6 +408,7 @@ class LevelRequests(commands.Cog):
 
         proof_channel = await self._get_channel(ctx.guild, settings["proof_channel_id"])
         log_channel = await self._get_channel(ctx.guild, settings["log_channel_id"])
+        thread_log_channel = await self._get_channel(ctx.guild, settings.get("thread_log_channel_id"))
         admin_role = ctx.guild.get_role(settings["admin_role_id"]) if settings["admin_role_id"] else None
 
         embed = discord.Embed(
@@ -384,8 +426,13 @@ class LevelRequests(commands.Cog):
             inline=False,
         )
         embed.add_field(
-            name="Log channel",
+            name="Normal log channel",
             value=log_channel.mention if log_channel else "Not set",
+            inline=False,
+        )
+        embed.add_field(
+            name="Thread log channel",
+            value=thread_log_channel.mention if thread_log_channel else "Not set",
             inline=False,
         )
         embed.add_field(
@@ -562,6 +609,20 @@ class LevelRequests(commands.Cog):
             embed=discord.Embed(description="Submitted proof:").set_image(url=image_url),
         )
 
+        thread_log_embed = discord.Embed(
+            title=f"New Level Request Thread #{request_id}",
+            description=(
+                f"Thread: {thread.mention}\n"
+                f"User: `{ctx.author}`\n"
+                f"User ID: `{ctx.author.id}`"
+            ),
+            color=discord.Color.gold(),
+            timestamp=discord.utils.utcnow(),
+        )
+        thread_log_embed.set_footer(text=f"Use reqaccept {request_id} or reqdeny {request_id} <reason>")
+
+        await self._thread_log(ctx.guild, thread_log_embed)
+
         await self._log(
             ctx.guild,
             f"Level request `#{request_id}` submitted by `{ctx.author}`. Thread: `{thread.name}`",
@@ -632,6 +693,22 @@ class LevelRequests(commands.Cog):
             embed.add_field(name="Reason/comment", value=comment, inline=False)
 
         await message.edit(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+        thread_log_embed = discord.Embed(
+            title=f"Request #{request_data['id']} {status.upper()}",
+            description=(
+                f"User: `{user_text}`\n"
+                f"User ID: `{request_data['user_id']}`\n"
+                f"Handled by: `{moderator}`"
+            ),
+            color=color,
+            timestamp=discord.utils.utcnow(),
+        )
+
+        if comment:
+            thread_log_embed.add_field(name="Reason/comment", value=comment, inline=False)
+
+        await self._thread_log(guild, thread_log_embed)
 
         if isinstance(proof_location, discord.Thread):
             try:
