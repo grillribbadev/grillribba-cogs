@@ -9,8 +9,8 @@ from redbot.core.bot import Red
 
 
 DEFAULT_GUILD: Dict[str, Any] = {
-    "request_channel_id": None,      # old single-channel support
-    "request_channel_ids": [],       # new multi-channel support
+    "request_channel_id": None,
+    "request_channel_ids": [],
     "proof_channel_id": None,
     "log_channel_id": None,
     "admin_role_id": None,
@@ -38,7 +38,6 @@ class LevelRequests(commands.Cog):
 
     async def _get_request_channel_ids(self, guild: discord.Guild) -> List[int]:
         settings = await self.config.guild(guild).all()
-
         channel_ids = list(settings.get("request_channel_ids") or [])
 
         old_id = settings.get("request_channel_id")
@@ -48,8 +47,7 @@ class LevelRequests(commands.Cog):
         return channel_ids
 
     async def _is_request_channel(self, guild: discord.Guild, channel_id: int) -> bool:
-        channel_ids = await self._get_request_channel_ids(guild)
-        return channel_id in channel_ids
+        return channel_id in await self._get_request_channel_ids(guild)
 
     @commands.Cog.listener()
     async def on_message_without_command(self, message: discord.Message):
@@ -200,7 +198,10 @@ class LevelRequests(commands.Cog):
             f"Deleted `{deleted}` old messages and posted the request info message."
         )
 
-    @levelreqset.command(name="removerequestchannel", aliases=["delrequestchannel", "rmrequestchannel"])
+    @levelreqset.command(
+        name="removerequestchannel",
+        aliases=["delrequestchannel", "rmrequestchannel"],
+    )
     async def remove_request_channel(self, ctx: commands.Context, channel: discord.TextChannel):
         """Remove a request channel."""
 
@@ -231,7 +232,11 @@ class LevelRequests(commands.Cog):
         await ctx.send("All request channels cleared.")
 
     @levelreqset.command(name="postmessage")
-    async def post_request_message(self, ctx: commands.Context, channel: Optional[discord.TextChannel] = None):
+    async def post_request_message(
+        self,
+        ctx: commands.Context,
+        channel: Optional[discord.TextChannel] = None,
+    ):
         """Post the request info message again."""
 
         if channel is None:
@@ -249,12 +254,12 @@ class LevelRequests(commands.Cog):
         ctx: commands.Context,
         channel: Optional[discord.TextChannel] = None,
     ):
-        """Set or clear the proof/staff channel."""
+        """Set or clear the proof/staff channel where threads are created."""
 
         await self.config.guild(ctx.guild).proof_channel_id.set(channel.id if channel else None)
 
         if channel:
-            await ctx.send(f"Proof channel set to {channel.mention}.")
+            await ctx.send(f"Proof thread parent channel set to {channel.mention}.")
         else:
             await ctx.send("Proof channel cleared.")
 
@@ -334,7 +339,7 @@ class LevelRequests(commands.Cog):
             inline=False,
         )
         embed.add_field(
-            name="Proof channel",
+            name="Proof thread parent channel",
             value=proof_channel.mention if proof_channel else "Not set",
             inline=False,
         )
@@ -432,12 +437,38 @@ class LevelRequests(commands.Cog):
                 "image_url": image_url,
                 "proof_message_id": proof_message.id,
                 "proof_channel_message_id": None,
+                "proof_thread_id": None,
                 "created_at": int(discord.utils.utcnow().timestamp()),
                 "handled_by": None,
                 "decision_comment": None,
             }
 
             data["requests"][str(request_id)] = request_data
+
+        thread_name = f"level-request-{request_id}-{ctx.author.name}"[:100]
+
+        try:
+            thread = await proof_channel.create_thread(
+                name=thread_name,
+                type=discord.ChannelType.private_thread,
+                invitable=False,
+                reason=f"Level request #{request_id} by {ctx.author} ({ctx.author.id})",
+            )
+        except discord.Forbidden:
+            return await dm.send(
+                "I could not create a private thread in the staff channel. Please contact staff."
+            )
+        except discord.HTTPException:
+            try:
+                thread = await proof_channel.create_thread(
+                    name=thread_name,
+                    type=discord.ChannelType.public_thread,
+                    reason=f"Level request #{request_id} by {ctx.author} ({ctx.author.id})",
+                )
+            except discord.HTTPException:
+                return await dm.send(
+                    "I could not create a thread in the staff channel. Please contact staff."
+                )
 
         embed = discord.Embed(
             title=f"Level Request #{request_id}",
@@ -448,24 +479,50 @@ class LevelRequests(commands.Cog):
         embed.set_image(url=image_url)
         embed.set_footer(text=f"Use reqaccept {request_id} or reqdeny {request_id} <reason>")
 
-        staff_message = await proof_channel.send(
+        staff_message = await thread.send(
             content=f"New level request from {ctx.author.mention}",
             embed=embed,
         )
 
         async with self.config.guild(ctx.guild).requests() as requests:
             requests[str(request_id)]["proof_channel_message_id"] = staff_message.id
+            requests[str(request_id)]["proof_thread_id"] = thread.id
 
         await dm.send(
             f"Your proof was submitted properly.\nRequest ID: `#{request_id}`",
             embed=discord.Embed(description="Submitted proof:").set_image(url=image_url),
         )
 
-        await self._log(ctx.guild, f"Level request `#{request_id}` submitted by {ctx.author.mention}.")
+        await self._log(
+            ctx.guild,
+            f"Level request `#{request_id}` submitted by {ctx.author.mention}. Thread: {thread.mention}",
+        )
 
     async def _get_request(self, guild: discord.Guild, request_id: int):
         requests = await self.config.guild(guild).requests()
         return requests.get(str(request_id))
+
+    async def _get_thread_or_channel(
+        self,
+        guild: discord.Guild,
+        request_data: Dict[str, Any],
+    ):
+        thread_id = request_data.get("proof_thread_id")
+
+        if thread_id:
+            channel = guild.get_channel(thread_id)
+
+            if channel:
+                return channel
+
+            try:
+                fetched = await guild.fetch_channel(thread_id)
+                return fetched
+            except discord.HTTPException:
+                pass
+
+        settings = await self.config.guild(guild).all()
+        return await self._get_channel(guild, settings["proof_channel_id"])
 
     async def _update_staff_embed(
         self,
@@ -475,14 +532,13 @@ class LevelRequests(commands.Cog):
         moderator: discord.Member,
         comment: Optional[str] = None,
     ):
-        settings = await self.config.guild(guild).all()
-        proof_channel = await self._get_channel(guild, settings["proof_channel_id"])
+        proof_location = await self._get_thread_or_channel(guild, request_data)
 
-        if not proof_channel or not request_data.get("proof_channel_message_id"):
+        if not proof_location or not request_data.get("proof_channel_message_id"):
             return
 
         try:
-            message = await proof_channel.fetch_message(request_data["proof_channel_message_id"])
+            message = await proof_location.fetch_message(request_data["proof_channel_message_id"])
         except discord.HTTPException:
             return
 
@@ -505,6 +561,14 @@ class LevelRequests(commands.Cog):
             embed.add_field(name="Reason/comment", value=comment, inline=False)
 
         await message.edit(embed=embed)
+
+        if isinstance(proof_location, discord.Thread):
+            try:
+                await proof_location.send(
+                    f"Request `#{request_data['id']}` marked as **{status}** by {moderator.mention}."
+                )
+            except discord.HTTPException:
+                pass
 
     @commands.command(name="reqaccept")
     @commands.guild_only()
@@ -604,15 +668,14 @@ class LevelRequests(commands.Cog):
             else None
         )
 
+        thread_id = request_data.get("proof_thread_id")
+        thread = ctx.guild.get_channel(thread_id) if thread_id else None
+
         embed = discord.Embed(
             title=f"Level Request #{request_id}",
             color=await ctx.embed_color(),
         )
-        embed.add_field(
-            name="Status",
-            value=request_data["status"],
-            inline=False,
-        )
+        embed.add_field(name="Status", value=request_data["status"], inline=False)
         embed.add_field(
             name="User",
             value=user.mention if user else f"`{request_data['user_id']}`",
@@ -621,6 +684,11 @@ class LevelRequests(commands.Cog):
         embed.add_field(
             name="Handled by",
             value=handled_by.mention if handled_by else "Not handled yet",
+            inline=False,
+        )
+        embed.add_field(
+            name="Thread",
+            value=thread.mention if thread else "Missing/old request",
             inline=False,
         )
 
