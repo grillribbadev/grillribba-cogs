@@ -367,7 +367,7 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
         success = False
         if core:
             try:
-                await core.add_beri(member, amount, reason=reason or "crew_battles:add", bypass_cap=True)
+                await core.add_beri(member, amount, reason=reason or "crew_battles:add")
                 success = True
             except Exception:
                 success = False
