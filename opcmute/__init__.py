@@ -1,4 +1,4 @@
-from .muterole import MuteRole
+from .opcmute import MuteRole
 
 
 async def setup(bot):
