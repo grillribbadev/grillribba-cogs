@@ -32,44 +32,82 @@ class BanAnnounce(commands.Cog):
         pass
 
     @banannounce.command(name="channel")
-    async def set_channel(self, ctx: commands.Context, channel: discord.TextChannel):
-        """Set the channel where ban announcements are sent."""
+    async def set_channel(
+        self,
+        ctx: commands.Context,
+        channel: discord.TextChannel,
+    ):
+        """Set the announcement channel."""
+
         await self.config.guild(ctx.guild).channel_id.set(channel.id)
-        await ctx.send(f"✅ Ban announcement channel set to {channel.mention}")
+
+        await ctx.send(
+            f"✅ Ban announcement channel set to {channel.mention}"
+        )
 
     @banannounce.command(name="message")
-    async def set_message(self, ctx: commands.Context, *, message: str):
-        """Set the ban announcement message."""
+    async def set_message(
+        self,
+        ctx: commands.Context,
+        *,
+        message: str,
+    ):
+        """
+        Set the announcement message.
+
+        Variables:
+        {user}
+        {mention}
+        {id}
+        {server}
+        """
+
         await self.config.guild(ctx.guild).message.set(message)
+
         await ctx.send("✅ Ban announcement message updated.")
 
     @banannounce.command(name="image")
-    async def set_image(self, ctx: commands.Context, url: str):
-        """Set a GIF/image URL."""
+    async def set_image(
+        self,
+        ctx: commands.Context,
+        url: str,
+    ):
+        """Set image or GIF URL."""
+
         await self.config.guild(ctx.guild).image_url.set(url)
-        await ctx.send(f"✅ Ban announcement image/GIF updated:\n{url}")
+
+        await ctx.send("✅ Ban announcement image/GIF updated.")
 
     @banannounce.command(name="clearimage")
     async def clear_image(self, ctx: commands.Context):
-        """Remove the GIF/image URL."""
+        """Remove image/GIF."""
+
         await self.config.guild(ctx.guild).image_url.set(None)
+
         await ctx.send("✅ Ban announcement image/GIF removed.")
 
     @banannounce.command(name="toggle")
     async def toggle(self, ctx: commands.Context):
-        """Enable or disable ban announcements."""
+        """Enable or disable announcements."""
+
         current = await self.config.guild(ctx.guild).enabled()
+
         await self.config.guild(ctx.guild).enabled.set(not current)
 
         status = "enabled" if not current else "disabled"
-        await ctx.send(f"✅ Ban announcements are now **{status}**.")
+
+        await ctx.send(
+            f"✅ Ban announcements are now **{status}**."
+        )
 
     @banannounce.command(name="settings")
     async def settings(self, ctx: commands.Context):
-        """Show current ban announcement settings."""
+        """Show current settings."""
+
         data = await self.config.guild(ctx.guild).all()
 
         channel = None
+
         if data["channel_id"]:
             channel = ctx.guild.get_channel(data["channel_id"])
 
@@ -82,17 +120,23 @@ class BanAnnounce(commands.Cog):
         )
 
     @commands.Cog.listener()
-    async def on_member_ban(self, guild: discord.Guild, user: discord.User):
+    async def on_member_ban(
+        self,
+        guild: discord.Guild,
+        user: discord.User,
+    ):
         data = await self.config.guild(guild).all()
 
         if not data["enabled"]:
             return
 
         channel_id = data["channel_id"]
+
         if not channel_id:
             return
 
         channel = guild.get_channel(channel_id)
+
         if channel is None:
             return
 
@@ -103,11 +147,12 @@ class BanAnnounce(commands.Cog):
             server=guild.name,
         )
 
-        if data["image_url"]:
-            message += f"\n{data['image_url']}"
-
         try:
             await channel.send(message)
+
+            if data["image_url"]:
+                await channel.send(data["image_url"])
+
         except discord.Forbidden:
             pass
 
