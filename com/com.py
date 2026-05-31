@@ -802,10 +802,6 @@ class ChatterOfMonth(commands.Cog):
         
         embed = self._build_month_announcement_embed(guild=ctx.guild, month_key=month, month_stats=month_stats)
         
-        # If announcing the current month early, note that it will reset
-        if month == current_month_key:
-            embed.add_field(name="Early Announcement", value="This month's stats will be reset to 0 to start counting for next month.", inline=False)
-        
         # Update winner role
         top_uid, _ = max(month_stats.items(), key=lambda kv: kv[1])
         await self._update_winner_role(ctx.guild, top_uid)
@@ -831,11 +827,6 @@ class ChatterOfMonth(commands.Cog):
                     color=discord.Color.green(),
                 )
                 await ctx.send(embed=done_embed)
-                
-                # If announcing current month, reset stats for next month
-                if month == current_month_key:
-                    async with self.config.guild(ctx.guild).stats() as stats:
-                        stats[month] = {}
                 return
         # fallback to command channel
         if everyone:
@@ -845,11 +836,6 @@ class ChatterOfMonth(commands.Cog):
 
         if month == prev_month_key:
             await self.config.guild(ctx.guild).last_announce_month.set(month)
-        
-        # If announcing current month, reset stats for next month
-        if month == current_month_key:
-            async with self.config.guild(ctx.guild).stats() as stats:
-                stats[month] = {}
 
     @chatter_group.command(name="results")
     async def chatter_results(self, ctx: commands.Context, month: str):
