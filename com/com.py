@@ -22,6 +22,7 @@ DEFAULT_GUILD = {
     "staff_role": 0,
     "winner_role": 0,
     "last_winner_uid": "",
+    "announce_timezone_offset": 0,
 }
 LEADERBOARD_PAGE_SIZE = 5
 
@@ -383,23 +384,25 @@ class ChatterOfMonth(commands.Cog):
 
         while True:
             try:
-                now = _utc_now()
-                # compute next UTC midnight plus small buffer (00:05)
-                next_midnight = (now + timedelta(days=1)).replace(hour=0, minute=5, second=0, microsecond=0)
-                sleep_seconds = (next_midnight - now).total_seconds()
-                await asyncio.sleep(sleep_seconds)
-
-                # after waking, if it's the first day of the month, announce previous month
-                now = _utc_now()
-                if now.day != 1:
-                    continue
-
-                prev = (now.replace(day=1) - timedelta(days=1))
-                prev_key = f"{prev.year}-{prev.month:02d}"
+                # Check every hour if any guild should announce
+                await asyncio.sleep(3600)
+                now_utc = _utc_now()
 
                 for guild in list(self.bot.guilds):
                     try:
                         last = await self.config.guild(guild).last_announce_month()
+                        offset = await self.config.guild(guild).announce_timezone_offset()
+                        
+                        # Convert UTC time to guild's local time
+                        local_now = now_utc + timedelta(hours=offset)
+                        
+                        # Check if it's the 1st of the month at around midnight (00:00-01:00 local time)
+                        if local_now.day != 1 or local_now.hour != 0:
+                            continue
+
+                        prev_utc = (now_utc.replace(day=1) - timedelta(days=1))
+                        prev_key = f"{prev_utc.year}-{prev_utc.month:02d}"
+                        
                         if last == prev_key:
                             continue
 
@@ -702,6 +705,42 @@ class ChatterOfMonth(commands.Cog):
         await self.config.guild(ctx.guild).winner_role.set(0)
         await self.config.guild(ctx.guild).last_winner_uid.set("")
         embed = discord.Embed(title="Winner Role Cleared", description="Winner role assignment has been disabled.")
+        await ctx.send(embed=embed)
+
+    @chatter_group.group(name="timezone")
+    async def chatter_timezone(self, ctx: commands.Context):
+        """Manage the timezone for automatic announcements."""
+
+    @chatter_timezone.command(name="set")
+    async def chatter_timezone_set(self, ctx: commands.Context, offset: int):
+        """Set the timezone offset for automatic announcements.
+        
+        `offset` is the number of hours ahead of UTC (e.g., 2 for CEST, 1 for CET, 0 for UTC).
+        Announcements will occur at midnight (00:00) in your timezone on the 1st of each month.
+        """
+        if not await self._require_admin(ctx):
+            return
+        if offset < -12 or offset > 14:
+            await ctx.send("Invalid offset. Use a value between -12 and 14.")
+            return
+        await self.config.guild(ctx.guild).announce_timezone_offset.set(offset)
+        sign = "+" if offset >= 0 else ""
+        embed = discord.Embed(
+            title="Timezone Set",
+            description=f"Announcements will occur at midnight (UTC{sign}{offset}) on the 1st of each month.",
+            color=discord.Color.green(),
+        )
+        await ctx.send(embed=embed)
+
+    @chatter_timezone.command(name="show")
+    async def chatter_timezone_show(self, ctx: commands.Context):
+        """Show the configured timezone offset for announcements."""
+        if not await self._require_staff(ctx):
+            return
+        offset = await self.config.guild(ctx.guild).announce_timezone_offset()
+        sign = "+" if offset >= 0 else ""
+        desc = f"Timezone offset: UTC{sign}{offset} (midnight in your timezone)"
+        embed = discord.Embed(title="Announcement Timezone", description=desc, color=discord.Color.blurple())
         await ctx.send(embed=embed)
 
     @chatter_group.command(name="winner")
