@@ -20,6 +20,8 @@ DEFAULT_GUILD = {
     "announce_everyone": False,
     "last_announce_month": "",
     "staff_role": 0,
+    "winner_role": 0,
+    "last_winner_uid": "",
 }
 LEADERBOARD_PAGE_SIZE = 5
 
@@ -217,6 +219,37 @@ class ChatterOfMonth(commands.Cog):
         await ctx.send(embed=embed)
         return False
 
+    async def _update_winner_role(self, guild: discord.Guild, new_winner_uid: str) -> None:
+        """Update the winner role: remove from last winner, assign to new winner."""
+        winner_role_id = await self.config.guild(guild).winner_role()
+        if not winner_role_id:
+            return
+        
+        role = guild.get_role(winner_role_id)
+        if not role:
+            return
+        
+        # Remove role from last winner
+        last_winner_uid = await self.config.guild(guild).last_winner_uid()
+        if last_winner_uid:
+            try:
+                last_member = guild.get_member(int(last_winner_uid))
+                if last_member and role in last_member.roles:
+                    await last_member.remove_roles(role)
+            except Exception as e:
+                log.exception("Failed to remove winner role from last winner %s: %s", last_winner_uid, e)
+        
+        # Assign role to new winner
+        try:
+            new_member = guild.get_member(int(new_winner_uid))
+            if new_member and role not in new_member.roles:
+                await new_member.add_roles(role)
+        except Exception as e:
+            log.exception("Failed to assign winner role to new winner %s: %s", new_winner_uid, e)
+        
+        # Update config
+        await self.config.guild(guild).last_winner_uid.set(new_winner_uid)
+
     def _build_chatter_menu_embed(self, ctx: commands.Context, category: str, can_view_admin: bool) -> discord.Embed:
         prefix = ctx.clean_prefix
         embed = discord.Embed(
@@ -373,6 +406,11 @@ class ChatterOfMonth(commands.Cog):
                         stats = await self.config.guild(guild).stats()
                         month_stats = stats.get(prev_key) or {}
                         embed = self._build_month_announcement_embed(guild=guild, month_key=prev_key, month_stats=month_stats)
+
+                        # Update winner role if month_stats has data
+                        if month_stats:
+                            top_uid, _ = max(month_stats.items(), key=lambda kv: kv[1])
+                            await self._update_winner_role(guild, top_uid)
 
                         ann = await self.config.guild(guild).announce_channel()
                         everyone = await self.config.guild(guild).announce_everyone()
@@ -624,6 +662,48 @@ class ChatterOfMonth(commands.Cog):
         embed = discord.Embed(title="Staff Role Cleared", description="Only users with Manage Server can access admin chatter commands.")
         await ctx.send(embed=embed)
 
+    @chatter_group.group(name="winnerrole")
+    async def chatter_winnerrole(self, ctx: commands.Context):
+        """Manage which role is automatically given to the monthly winner."""
+
+    @chatter_winnerrole.command(name="set")
+    async def chatter_winnerrole_set(self, ctx: commands.Context, role: discord.Role):
+        """Set the role that will be automatically assigned to the monthly winner."""
+        if not await self._require_admin(ctx):
+            return
+        await self.config.guild(ctx.guild).winner_role.set(role.id)
+        embed = discord.Embed(
+            title="Winner Role Set",
+            description=f"The {role.mention} role will now be automatically assigned to the monthly winner.",
+            color=discord.Color.green(),
+        )
+        await ctx.send(embed=embed)
+
+    @chatter_winnerrole.command(name="show")
+    async def chatter_winnerrole_show(self, ctx: commands.Context):
+        """Show the configured winner role."""
+        if not await self._require_staff(ctx):
+            return
+        role_id = await self.config.guild(ctx.guild).winner_role()
+        if not role_id:
+            embed = discord.Embed(title="Winner Role", description="No winner role configured.", color=discord.Color.orange())
+            await ctx.send(embed=embed)
+            return
+        role = ctx.guild.get_role(role_id)
+        desc = f"Configured winner role: {role.mention}" if role else f"Configured winner role id: `{role_id}` (role not found)"
+        embed = discord.Embed(title="Winner Role", description=desc, color=discord.Color.blurple())
+        await ctx.send(embed=embed)
+
+    @chatter_winnerrole.command(name="clear")
+    async def chatter_winnerrole_clear(self, ctx: commands.Context):
+        """Clear the configured winner role."""
+        if not await self._require_admin(ctx):
+            return
+        await self.config.guild(ctx.guild).winner_role.set(0)
+        await self.config.guild(ctx.guild).last_winner_uid.set("")
+        embed = discord.Embed(title="Winner Role Cleared", description="Winner role assignment has been disabled.")
+        await ctx.send(embed=embed)
+
     @chatter_group.command(name="winner")
     async def chatter_winner(self, ctx: commands.Context, month: Optional[str] = None):
         """Show the top chatter for a month. Month format `YYYY-MM`. Defaults to previous month."""
@@ -694,6 +774,11 @@ class ChatterOfMonth(commands.Cog):
             await ctx.send(embed=embed)
             return
         embed = self._build_month_announcement_embed(guild=ctx.guild, month_key=month, month_stats=month_stats)
+        
+        # Update winner role
+        top_uid, _ = max(month_stats.items(), key=lambda kv: kv[1])
+        await self._update_winner_role(ctx.guild, top_uid)
+        
         # send to announce channel if set. Always send embed; optionally mention everyone.
         ann = await self.config.guild(ctx.guild).announce_channel()
         everyone = await self.config.guild(ctx.guild).announce_everyone()
