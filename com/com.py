@@ -21,7 +21,6 @@ DEFAULT_GUILD = {
     "last_announce_month": "",
     "staff_role": 0,
     "winner_role": 0,
-    "last_winner_uid": "",
     "announce_timezone_offset": 0,
 }
 LEADERBOARD_PAGE_SIZE = 5
@@ -221,7 +220,7 @@ class ChatterOfMonth(commands.Cog):
         return False
 
     async def _update_winner_role(self, guild: discord.Guild, new_winner_uid: str) -> None:
-        """Update the winner role: remove from last winner, assign to new winner."""
+        """Update the winner role: remove from all members, assign only to new winner."""
         winner_role_id = await self.config.guild(guild).winner_role()
         if not winner_role_id:
             return
@@ -230,15 +229,16 @@ class ChatterOfMonth(commands.Cog):
         if not role:
             return
         
-        # Remove role from last winner
-        last_winner_uid = await self.config.guild(guild).last_winner_uid()
-        if last_winner_uid:
-            try:
-                last_member = guild.get_member(int(last_winner_uid))
-                if last_member and role in last_member.roles:
-                    await last_member.remove_roles(role)
-            except Exception as e:
-                log.exception("Failed to remove winner role from last winner %s: %s", last_winner_uid, e)
+        # Remove role from all members who currently have it
+        try:
+            for member in role.members:
+                if member.id != int(new_winner_uid):
+                    try:
+                        await member.remove_roles(role)
+                    except Exception as e:
+                        log.exception("Failed to remove winner role from %s: %s", member.id, e)
+        except Exception as e:
+            log.exception("Failed to iterate role members: %s", e)
         
         # Assign role to new winner
         try:
@@ -247,9 +247,6 @@ class ChatterOfMonth(commands.Cog):
                 await new_member.add_roles(role)
         except Exception as e:
             log.exception("Failed to assign winner role to new winner %s: %s", new_winner_uid, e)
-        
-        # Update config
-        await self.config.guild(guild).last_winner_uid.set(new_winner_uid)
 
     def _build_chatter_menu_embed(self, ctx: commands.Context, category: str, can_view_admin: bool) -> discord.Embed:
         prefix = ctx.clean_prefix
@@ -702,8 +699,19 @@ class ChatterOfMonth(commands.Cog):
         """Clear the configured winner role."""
         if not await self._require_admin(ctx):
             return
+        
+        # Remove role from all members who have it
+        winner_role_id = await self.config.guild(ctx.guild).winner_role()
+        if winner_role_id:
+            role = ctx.guild.get_role(winner_role_id)
+            if role:
+                try:
+                    for member in role.members:
+                        await member.remove_roles(role)
+                except Exception as e:
+                    log.exception("Failed to remove winner role from members: %s", e)
+        
         await self.config.guild(ctx.guild).winner_role.set(0)
-        await self.config.guild(ctx.guild).last_winner_uid.set("")
         embed = discord.Embed(title="Winner Role Cleared", description="Winner role assignment has been disabled.")
         await ctx.send(embed=embed)
 
