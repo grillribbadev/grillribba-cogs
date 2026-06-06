@@ -1,12 +1,13 @@
 import json
 import os
 import re
+import discord
 from redbot.core import commands
 from redbot.core.bot import Red
 
 
 class FilterCog(commands.Cog):
-    """Persistent keyword + regex filter with multi-role whitelist support."""
+    """Advanced filter system with whitelist roles + embed UI."""
 
     def __init__(self, bot: Red):
         self.bot = bot
@@ -23,7 +24,7 @@ class FilterCog(commands.Cog):
         self.load_words()
 
     # =========================
-    # FILE HANDLING
+    # FILE SYSTEM
     # =========================
 
     def load_words(self):
@@ -73,7 +74,7 @@ class FilterCog(commands.Cog):
         return text
 
     # =========================
-    # MAIN FILTER LOGIC
+    # FILTER CORE
     # =========================
 
     @commands.Cog.listener()
@@ -82,18 +83,40 @@ class FilterCog(commands.Cog):
         if not message.guild:
             return
 
-        # ---- whitelist role check (MULTI ROLE) ----
+        # =========================
+        # BYPASS SYSTEM (IMPORTANT)
+        # =========================
+
+        # ignore bot messages (prevents loops + self-delete issues)
+        if message.author.bot:
+            return
+
+        # ignore commands so they never get deleted
+        ctx = await self.bot.get_context(message)
+        if ctx.valid:
+            return
+
+        # =========================
+        # WHITELIST ROLES
+        # =========================
+
         if self.immune_role_ids:
             for role in message.author.roles:
                 if role.id in self.immune_role_ids:
                     return
 
+        # =========================
+        # TEXT COLLECTION
+        # =========================
+
         content = (message.content or "").lower()
         embeds = self.extract_embed_text(message).lower()
-
         full_text = content + " " + embeds
 
-        # ---- keyword check ----
+        # =========================
+        # KEYWORD FILTER
+        # =========================
+
         for word in self.banned_keywords:
             if word.lower() in full_text:
                 try:
@@ -102,7 +125,10 @@ class FilterCog(commands.Cog):
                     pass
                 return
 
-        # ---- regex check ----
+        # =========================
+        # REGEX FILTER
+        # =========================
+
         for pattern in self.banned_patterns:
             if re.search(pattern, full_text):
                 try:
@@ -117,10 +143,12 @@ class FilterCog(commands.Cog):
 
     @commands.group()
     async def filter(self, ctx):
-        """Manage message filter system."""
+        """Manage filter system."""
         pass
 
-    # ---- keyword commands ----
+    # =========================
+    # KEYWORDS
+    # =========================
 
     @filter.command()
     async def add(self, ctx, *, word: str):
@@ -140,15 +168,9 @@ class FilterCog(commands.Cog):
             self.save_words()
             await ctx.send(f"❌ Removed keyword: `{word}`")
 
-    @filter.command()
-    async def list(self, ctx):
-        if not self.banned_keywords:
-            await ctx.send("No keywords set.")
-            return
-
-        await ctx.send("**Banned keywords:**\n" + "\n".join(self.banned_keywords))
-
-    # ---- regex commands ----
+    # =========================
+    # REGEX
+    # =========================
 
     @filter.command()
     async def addregex(self, ctx, *, pattern: str):
@@ -163,14 +185,16 @@ class FilterCog(commands.Cog):
             self.save_words()
             await ctx.send(f"❌ Removed regex: `{pattern}`")
 
-    # ---- MULTI WHITELIST ROLES ----
+    # =========================
+    # WHITELIST ROLES
+    # =========================
 
     @filter.command()
     async def whitelist(self, ctx, role: commands.RoleConverter = None):
         """
         Toggle whitelist role.
-        - Add if not present
-        - Remove if already present
+        - Add if missing
+        - Remove if exists
         - No role = clear all
         """
 
@@ -188,3 +212,50 @@ class FilterCog(commands.Cog):
             self.immune_role_ids.append(role.id)
             self.save_words()
             await ctx.send(f"🟢 Added whitelist role: {role.name}")
+
+    # =========================
+    # EMBED LIST (FIXED + SAFE)
+    # =========================
+
+    @filter.command()
+    async def list(self, ctx):
+
+        embed = discord.Embed(
+            title="🧹 Filter System",
+            color=discord.Color.red()
+        )
+
+        # Keywords
+        if self.banned_keywords:
+            embed.add_field(
+                name="🚫 Keywords",
+                value="\n".join(f"`{w}`" for w in self.banned_keywords[:50]),
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="🚫 Keywords",
+                value="None",
+                inline=False
+            )
+
+        # Regex
+        if self.banned_patterns:
+            embed.add_field(
+                name="🔧 Regex Patterns",
+                value="\n".join(f"`{p}`" for p in self.banned_patterns[:20]),
+                inline=False
+            )
+
+        # Whitelist roles
+        if self.immune_role_ids:
+            roles = "\n".join(f"<@&{rid}>" for rid in self.immune_role_ids)
+            embed.add_field(
+                name="🛡 Whitelist Roles",
+                value=roles,
+                inline=False
+            )
+
+        embed.set_footer(text="Active filter system")
+
+        await ctx.send(embed=embed)
