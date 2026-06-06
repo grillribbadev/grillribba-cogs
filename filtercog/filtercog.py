@@ -6,7 +6,7 @@ from redbot.core.bot import Red
 
 
 class FilterCog(commands.Cog):
-    """Persistent keyword + regex filter with whitelist role support."""
+    """Persistent keyword + regex filter with multi-role whitelist support."""
 
     def __init__(self, bot: Red):
         self.bot = bot
@@ -18,7 +18,7 @@ class FilterCog(commands.Cog):
 
         self.banned_keywords = []
         self.banned_patterns = []
-        self.immune_role_id = None
+        self.immune_role_ids = []
 
         self.load_words()
 
@@ -37,25 +37,25 @@ class FilterCog(commands.Cog):
 
             self.banned_keywords = data.get("keywords", [])
             self.banned_patterns = data.get("patterns", [])
-            self.immune_role_id = data.get("immune_role_id", None)
+            self.immune_role_ids = data.get("immune_role_ids", [])
 
         except Exception:
             self.banned_keywords = []
             self.banned_patterns = []
-            self.immune_role_id = None
+            self.immune_role_ids = []
 
     def save_words(self):
         data = {
             "keywords": self.banned_keywords,
             "patterns": self.banned_patterns,
-            "immune_role_id": self.immune_role_id
+            "immune_role_ids": self.immune_role_ids
         }
 
         with open(self.file_path, "w") as f:
             json.dump(data, f, indent=4)
 
     # =========================
-    # EMBED PARSER
+    # EMBED EXTRACTION
     # =========================
 
     def extract_embed_text(self, message):
@@ -73,7 +73,7 @@ class FilterCog(commands.Cog):
         return text
 
     # =========================
-    # MAIN FILTER
+    # MAIN FILTER LOGIC
     # =========================
 
     @commands.Cog.listener()
@@ -82,11 +82,11 @@ class FilterCog(commands.Cog):
         if not message.guild:
             return
 
-        # ---- whitelist role check ----
-        if self.immune_role_id:
-            role = message.guild.get_role(self.immune_role_id)
-            if role and role in message.author.roles:
-                return
+        # ---- whitelist role check (MULTI ROLE) ----
+        if self.immune_role_ids:
+            for role in message.author.roles:
+                if role.id in self.immune_role_ids:
+                    return
 
         content = (message.content or "").lower()
         embeds = self.extract_embed_text(message).lower()
@@ -163,20 +163,28 @@ class FilterCog(commands.Cog):
             self.save_words()
             await ctx.send(f"❌ Removed regex: `{pattern}`")
 
-    # ---- whitelist role ----
+    # ---- MULTI WHITELIST ROLES ----
 
     @filter.command()
     async def whitelist(self, ctx, role: commands.RoleConverter = None):
         """
-        Set or clear whitelist role.
+        Toggle whitelist role.
+        - Add if not present
+        - Remove if already present
+        - No role = clear all
         """
 
         if role is None:
-            self.immune_role_id = None
+            self.immune_role_ids = []
             self.save_words()
-            await ctx.send("🟡 Whitelist role cleared.")
+            await ctx.send("🟡 Cleared all whitelist roles.")
             return
 
-        self.immune_role_id = role.id
-        self.save_words()
-        await ctx.send(f"🟢 Whitelist role set to: {role.name}")
+        if role.id in self.immune_role_ids:
+            self.immune_role_ids.remove(role.id)
+            self.save_words()
+            await ctx.send(f"❌ Removed whitelist role: {role.name}")
+        else:
+            self.immune_role_ids.append(role.id)
+            self.save_words()
+            await ctx.send(f"🟢 Added whitelist role: {role.name}")
