@@ -1,8 +1,8 @@
+import json
 import aiohttp
 import discord
 from datetime import datetime, timezone
 from redbot.core import commands
-
 
 API_URL = "https://worldcup26.ir/get/games"
 
@@ -18,15 +18,27 @@ class WorldCup(commands.Cog):
             async with session.get(API_URL, timeout=20) as response:
                 if response.status != 200:
                     raise Exception(f"API returned status {response.status}")
-                return await response.json()
 
-    def get_value(self, data, *keys, default=None):
+                data = await response.json()
+
+        if isinstance(data, dict):
+            return (
+                data.get("data")
+                or data.get("games")
+                or data.get("matches")
+                or data.get("response")
+                or []
+            )
+
+        return data if isinstance(data, list) else []
+
+    def v(self, data, *keys, default=None):
         for key in keys:
             if isinstance(data, dict) and key in data and data[key] not in [None, ""]:
                 return data[key]
         return default
 
-    def get_team_name(self, team):
+    def team_name(self, team):
         if isinstance(team, dict):
             return (
                 team.get("name_en")
@@ -37,94 +49,85 @@ class WorldCup(commands.Cog):
             )
         return str(team) if team else "Unknown"
 
-    def get_match_time(self, game):
-        raw = self.get_value(
-            game,
-            "date",
-            "datetime",
-            "time",
-            "kickoff",
-            "match_date",
-            "start_time",
-            default=""
-        )
+    def home_team(self, game):
+        return self.team_name(self.v(game, "home_team", "home", "team_home", "team1", default={}))
 
-        if not raw:
-            return "Unknown time"
+    def away_team(self, game):
+        return self.team_name(self.v(game, "away_team", "away", "team_away", "team2", default={}))
 
+    def home_score(self, game):
+        return self.v(game, "home_score", "score_home", "home_goals", "team1_score", default=0)
+
+    def away_score(self, game):
+        return self.v(game, "away_score", "score_away", "away_goals", "team2_score", default=0)
+
+    def minute(self, game):
+        return self.v(game, "minute", "elapsed", "time_elapsed", "match_minute", default="?")
+
+    def status(self, game):
+        return str(
+            self.v(
+                game,
+                "status",
+                "match_status",
+                "state",
+                "status_short",
+                "status_long",
+                "game_status",
+                default="",
+            )
+        ).lower()
+
+    def is_finished(self, game):
+        return self.status(game) in [
+            "finished", "complete", "completed", "ft", "fulltime", "full-time"
+        ]
+
+    def is_live(self, game):
+        status = self.status(game)
+
+        if status in [
+            "live", "in_play", "playing", "first_half", "second_half",
+            "halftime", "1h", "2h", "ht", "et", "p"
+        ]:
+            return True
+
+        minute = self.minute(game)
+
+        try:
+            minute = int(str(minute).replace("'", "").strip())
+            return 0 < minute < 130 and not self.is_finished(game)
+        except Exception:
+            return False
+
+    def is_upcoming(self, game):
+        status = self.status(game)
+
+        if self.is_live(game) or self.is_finished(game):
+            return False
+
+        return status in [
+            "", "scheduled", "upcoming", "not_started", "not started",
+            "pending", "ns", "tbd"
+        ]
+
+    def sort_key(self, game):
+        raw = self.v(game, "date", "datetime", "time", "kickoff", "match_date", "start_time", default="")
+        try:
+            return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except Exception:
+            return datetime.max.replace(tzinfo=timezone.utc)
+
+    def match_time(self, game):
+        raw = self.v(game, "date", "datetime", "time", "kickoff", "match_date", "start_time", default="Unknown")
         try:
             dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
             return dt.strftime("%d %b %Y, %H:%M")
         except Exception:
             return str(raw)
 
-    def get_status(self, game):
-        status = str(
-            self.get_value(
-                game,
-                "status",
-                "match_status",
-                "state",
-                default=""
-            )
-        ).lower()
-
-        return status
-
-    def is_live(self, game):
-        status = self.get_status(game)
-        return status in ["live", "in_play", "playing", "first_half", "second_half", "halftime"]
-
-    def is_finished(self, game):
-        status = self.get_status(game)
-        return status in ["finished", "complete", "completed", "ft", "fulltime"]
-
-    def is_upcoming(self, game):
-        status = self.get_status(game)
-        return status in ["scheduled", "upcoming", "not_started", "pending", ""]
-
-    def get_home_team(self, game):
-        return self.get_team_name(
-            self.get_value(game, "home_team", "home", "team_home", "team1", default={})
-        )
-
-    def get_away_team(self, game):
-        return self.get_team_name(
-            self.get_value(game, "away_team", "away", "team_away", "team2", default={})
-        )
-
-    def get_home_score(self, game):
-        return self.get_value(
-            game,
-            "home_score",
-            "score_home",
-            "home_goals",
-            "team1_score",
-            default=0
-        )
-
-    def get_away_score(self, game):
-        return self.get_value(
-            game,
-            "away_score",
-            "score_away",
-            "away_goals",
-            "team2_score",
-            default=0
-        )
-
-    def get_minute(self, game):
-        return self.get_value(
-            game,
-            "minute",
-            "elapsed",
-            "time_elapsed",
-            "match_minute",
-            default="?"
-        )
-
-    def get_goals(self, game):
-        events = self.get_value(game, "events", "goals", "match_events", default=[])
+    def goals(self, game):
+        events = self.v(game, "events", "goals", "match_events", default=[])
 
         if not isinstance(events, list):
             return []
@@ -150,16 +153,14 @@ class WorldCup(commands.Cog):
             if isinstance(team, dict):
                 team = team.get("name") or team.get("name_en") or ""
 
-            goals.append(f"{minute}' — {player} {f'({team})' if team else ''}")
+            goals.append(f"⚽ **{minute}'** — {player} {f'({team})' if team else ''}")
 
         return goals
 
-    def sort_key(self, game):
-        raw = self.get_value(game, "date", "datetime", "time", "kickoff", "match_date", "start_time", default="")
-        try:
-            return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-        except Exception:
-            return datetime.max.replace(tzinfo=timezone.utc)
+    def base_embed(self, title, color):
+        embed = discord.Embed(title=title, color=color)
+        embed.set_footer(text="FIFA World Cup 2026")
+        return embed
 
     @commands.group()
     async def wc(self, ctx):
@@ -168,46 +169,45 @@ class WorldCup(commands.Cog):
 
     @wc.command()
     async def current(self, ctx):
-        """Show live World Cup match."""
+        """Show current live World Cup match."""
         try:
             games = await self.fetch_games()
         except Exception as e:
-            return await ctx.send(f"Could not fetch World Cup data: `{e}`")
-
-        if isinstance(games, dict):
-            games = games.get("data") or games.get("games") or games.get("matches") or []
+            return await ctx.send(f"❌ Could not fetch World Cup data: `{e}`")
 
         live_games = [game for game in games if self.is_live(game)]
 
         if not live_games:
-            return await ctx.send("No World Cup match is live right now.")
+            embed = self.base_embed("No live match right now", discord.Color.red())
+            embed.description = "I could not find any match marked as live by the API."
+            embed.add_field(
+                name="Tip",
+                value="Run `.wc debug` to check what the API is actually returning.",
+                inline=False,
+            )
+            return await ctx.send(embed=embed)
 
         for game in live_games[:3]:
-            home = self.get_home_team(game)
-            away = self.get_away_team(game)
-            home_score = self.get_home_score(game)
-            away_score = self.get_away_score(game)
-            minute = self.get_minute(game)
-            goals = self.get_goals(game)
+            home = self.home_team(game)
+            away = self.away_team(game)
+            hs = self.home_score(game)
+            as_ = self.away_score(game)
+            minute = self.minute(game)
+            goals = self.goals(game)
 
-            embed = discord.Embed(
-                title=f"{home} {home_score} - {away_score} {away}",
-                description=f"⏱️ Minute: **{minute}'**",
-                color=discord.Color.green()
+            embed = self.base_embed(
+                f"🔴 LIVE — {home} {hs} - {as_} {away}",
+                discord.Color.green(),
             )
 
-            if goals:
-                embed.add_field(
-                    name="Goals",
-                    value="\n".join(goals[:10]),
-                    inline=False
-                )
-            else:
-                embed.add_field(
-                    name="Goals",
-                    value="No goal data available yet.",
-                    inline=False
-                )
+            embed.add_field(name="⏱️ Minute", value=f"**{minute}'**", inline=True)
+            embed.add_field(name="📌 Status", value=f"`{self.status(game) or 'live'}`", inline=True)
+
+            embed.add_field(
+                name="⚽ Goals",
+                value="\n".join(goals) if goals else "No goal data available.",
+                inline=False,
+            )
 
             await ctx.send(embed=embed)
 
@@ -217,31 +217,22 @@ class WorldCup(commands.Cog):
         try:
             games = await self.fetch_games()
         except Exception as e:
-            return await ctx.send(f"Could not fetch World Cup data: `{e}`")
+            return await ctx.send(f"❌ Could not fetch World Cup data: `{e}`")
 
-        if isinstance(games, dict):
-            games = games.get("data") or games.get("games") or games.get("matches") or []
-
-        upcoming = sorted(
-            [game for game in games if self.is_upcoming(game)],
-            key=self.sort_key
-        )
+        upcoming = sorted([game for game in games if self.is_upcoming(game)], key=self.sort_key)
 
         if not upcoming:
             return await ctx.send("No upcoming World Cup matches found.")
 
         game = upcoming[0]
 
-        embed = discord.Embed(
-            title="Next World Cup Match",
-            color=discord.Color.blue()
-        )
-
+        embed = self.base_embed("⏭️ Next World Cup Match", discord.Color.blue())
         embed.add_field(
-            name=f"{self.get_home_team(game)} vs {self.get_away_team(game)}",
-            value=f"🕒 {self.get_match_time(game)}",
-            inline=False
+            name=f"{self.home_team(game)} vs {self.away_team(game)}",
+            value=f"🕒 **{self.match_time(game)}**",
+            inline=False,
         )
+        embed.add_field(name="Status", value=f"`{self.status(game) or 'scheduled'}`", inline=True)
 
         await ctx.send(embed=embed)
 
@@ -253,29 +244,35 @@ class WorldCup(commands.Cog):
         try:
             games = await self.fetch_games()
         except Exception as e:
-            return await ctx.send(f"Could not fetch World Cup data: `{e}`")
+            return await ctx.send(f"❌ Could not fetch World Cup data: `{e}`")
 
-        if isinstance(games, dict):
-            games = games.get("data") or games.get("games") or games.get("matches") or []
-
-        upcoming = sorted(
-            [game for game in games if self.is_upcoming(game)],
-            key=self.sort_key
-        )[:amount]
+        upcoming = sorted([game for game in games if self.is_upcoming(game)], key=self.sort_key)[:amount]
 
         if not upcoming:
             return await ctx.send("No upcoming World Cup matches found.")
 
-        embed = discord.Embed(
-            title=f"Next {len(upcoming)} World Cup Matches",
-            color=discord.Color.gold()
-        )
+        embed = self.base_embed(f"📅 Next {len(upcoming)} World Cup Matches", discord.Color.gold())
 
         for game in upcoming:
             embed.add_field(
-                name=f"{self.get_home_team(game)} vs {self.get_away_team(game)}",
-                value=f"🕒 {self.get_match_time(game)}",
-                inline=False
+                name=f"{self.home_team(game)} vs {self.away_team(game)}",
+                value=f"🕒 {self.match_time(game)}",
+                inline=False,
             )
 
         await ctx.send(embed=embed)
+
+    @wc.command()
+    async def debug(self, ctx):
+        """Show raw API data for debugging."""
+        try:
+            games = await self.fetch_games()
+        except Exception as e:
+            return await ctx.send(f"❌ Could not fetch World Cup data: `{e}`")
+
+        text = json.dumps(games[:2], indent=2, ensure_ascii=False)
+
+        if len(text) > 1900:
+            text = text[:1900]
+
+        await ctx.send(f"```json\n{text}\n```")
