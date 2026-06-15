@@ -1,211 +1,231 @@
-import json
 import aiohttp
 import discord
 from datetime import datetime, timezone
-from redbot.core import commands
+from redbot.core import commands, Config
 
-API_URL = "https://worldcup26.ir/get/games"
+
+BASE_URL = "https://v3.football.api-sports.io"
 
 
 class WorldCup(commands.Cog):
-    """FIFA World Cup 2026 live scores and schedule."""
+    """FIFA World Cup 2026 scores, live matches and schedule."""
 
     def __init__(self, bot):
         self.bot = bot
+        self.config = Config.get_conf(self, identifier=202606261001)
+        self.config.register_global(
+            api_key=None,
+            league_id=1,
+            season=2026,
+            timezone="Europe/Oslo",
+        )
 
-    async def fetch_games(self):
-        async with aiohttp.ClientSession() as session:
-            async with session.get(API_URL, timeout=20) as response:
-                if response.status != 200:
-                    raise Exception(f"API returned status {response.status}")
+    async def api_get(self, endpoint, params=None):
+        api_key = await self.config.api_key()
+        if not api_key:
+            raise RuntimeError("No API key set. Use `.wcset key YOUR_API_KEY` first.")
 
-                data = await response.json()
+        headers = {"x-apisports-key": api_key}
 
-        if isinstance(data, dict):
-            return (
-                data.get("data")
-                or data.get("games")
-                or data.get("matches")
-                or data.get("response")
-                or []
-            )
+        async with aiohttp.ClientSession(headers=headers) as session:
+            async with session.get(f"{BASE_URL}{endpoint}", params=params or {}, timeout=25) as resp:
+                data = await resp.json(content_type=None)
 
-        return data if isinstance(data, list) else []
+                if resp.status != 200:
+                    raise RuntimeError(f"API returned status {resp.status}: {data}")
 
-    def v(self, data, *keys, default=None):
-        for key in keys:
-            if isinstance(data, dict) and key in data and data[key] not in [None, ""]:
-                return data[key]
-        return default
+                if data.get("errors"):
+                    raise RuntimeError(str(data["errors"]))
 
-    def team_name(self, team):
-        if isinstance(team, dict):
-            return (
-                team.get("name_en")
-                or team.get("name")
-                or team.get("team")
-                or team.get("title")
-                or "Unknown"
-            )
-        return str(team) if team else "Unknown"
+                return data.get("response", [])
 
-    def home_team(self, game):
-        return self.team_name(self.v(game, "home_team", "home", "team_home", "team1", default={}))
+    def make_embed(self, title, color=discord.Color.gold()):
+        embed = discord.Embed(title=title, color=color)
+        embed.set_footer(text="FIFA World Cup 2026 • API-Football")
+        return embed
 
-    def away_team(self, game):
-        return self.team_name(self.v(game, "away_team", "away", "team_away", "team2", default={}))
-
-    def home_score(self, game):
-        return self.v(game, "home_score", "score_home", "home_goals", "team1_score", default=0)
-
-    def away_score(self, game):
-        return self.v(game, "away_score", "score_away", "away_goals", "team2_score", default=0)
-
-    def minute(self, game):
-        return self.v(game, "minute", "elapsed", "time_elapsed", "match_minute", default="?")
-
-    def status(self, game):
-        return str(
-            self.v(
-                game,
-                "status",
-                "match_status",
-                "state",
-                "status_short",
-                "status_long",
-                "game_status",
-                default="",
-            )
-        ).lower()
-
-    def is_finished(self, game):
-        return self.status(game) in [
-            "finished", "complete", "completed", "ft", "fulltime", "full-time"
-        ]
-
-    def is_live(self, game):
-        status = self.status(game)
-
-        if status in [
-            "live", "in_play", "playing", "first_half", "second_half",
-            "halftime", "1h", "2h", "ht", "et", "p"
-        ]:
-            return True
-
-        minute = self.minute(game)
-
+    def fixture_time(self, fixture):
+        raw = fixture["fixture"]["date"]
         try:
-            minute = int(str(minute).replace("'", "").strip())
-            return 0 < minute < 130 and not self.is_finished(game)
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            return dt.strftime("%d %b %Y • %H:%M")
         except Exception:
-            return False
+            return raw
 
-    def is_upcoming(self, game):
-        status = self.status(game)
+    def score_line(self, fixture):
+        home = fixture["teams"]["home"]["name"]
+        away = fixture["teams"]["away"]["name"]
+        hg = fixture["goals"]["home"]
+        ag = fixture["goals"]["away"]
 
-        if self.is_live(game) or self.is_finished(game):
-            return False
+        hg = 0 if hg is None else hg
+        ag = 0 if ag is None else ag
 
-        return status in [
-            "", "scheduled", "upcoming", "not_started", "not started",
-            "pending", "ns", "tbd"
-        ]
+        return home, away, hg, ag
 
-    def sort_key(self, game):
-        raw = self.v(game, "date", "datetime", "time", "kickoff", "match_date", "start_time", default="")
-        try:
-            return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-        except Exception:
-            return datetime.max.replace(tzinfo=timezone.utc)
+    def status_text(self, fixture):
+        status = fixture["fixture"]["status"]
+        short = status.get("short") or "?"
+        elapsed = status.get("elapsed")
 
-    def match_time(self, game):
-        raw = self.v(game, "date", "datetime", "time", "kickoff", "match_date", "start_time", default="Unknown")
-        try:
-            dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-            return dt.strftime("%d %b %Y, %H:%M")
-        except Exception:
-            return str(raw)
+        if elapsed is not None:
+            return f"{short} • {elapsed}'"
 
-    def goals(self, game):
-        events = self.v(game, "events", "goals", "match_events", default=[])
+        return short
 
-        if not isinstance(events, list):
-            return []
-
+    async def get_goal_events(self, fixture_id):
+        events = await self.api_get("/fixtures/events", {"fixture": fixture_id})
         goals = []
 
         for event in events:
-            if not isinstance(event, dict):
+            if event.get("type") != "Goal":
                 continue
 
-            event_type = str(event.get("type", event.get("event", ""))).lower()
+            minute = event["time"].get("elapsed", "?")
+            extra = event["time"].get("extra")
+            player = event.get("player", {}).get("name") or "Unknown"
+            team = event.get("team", {}).get("name") or ""
+            detail = event.get("detail") or "Goal"
 
-            if "goal" not in event_type and event_type not in ["g"]:
-                continue
+            minute_text = f"{minute}'"
+            if extra:
+                minute_text = f"{minute}+{extra}'"
 
-            minute = event.get("minute") or event.get("time") or event.get("elapsed") or "?"
-            player = event.get("player") or event.get("player_name") or event.get("scorer") or "Unknown scorer"
-            team = event.get("team") or event.get("team_name") or ""
-
-            if isinstance(player, dict):
-                player = player.get("name") or player.get("name_en") or "Unknown scorer"
-
-            if isinstance(team, dict):
-                team = team.get("name") or team.get("name_en") or ""
-
-            goals.append(f"⚽ **{minute}'** — {player} {f'({team})' if team else ''}")
+            goals.append(f"⚽ **{minute_text}** — **{player}** ({team}) • {detail}")
 
         return goals
 
-    def base_embed(self, title, color):
-        embed = discord.Embed(title=title, color=color)
-        embed.set_footer(text="FIFA World Cup 2026")
-        return embed
-
     @commands.group()
     async def wc(self, ctx):
-        """World Cup 2026 commands."""
+        """World Cup commands."""
         pass
+
+    @commands.group()
+    @commands.is_owner()
+    async def wcset(self, ctx):
+        """World Cup settings."""
+        pass
+
+    @wcset.command()
+    async def key(self, ctx, api_key: str):
+        """Set API-Football key."""
+        await self.config.api_key.set(api_key)
+        await ctx.send("✅ API key saved.")
+
+    @wcset.command()
+    async def league(self, ctx, league_id: int):
+        """Set league ID."""
+        await self.config.league_id.set(league_id)
+        await ctx.send(f"✅ League ID set to `{league_id}`.")
+
+    @wcset.command()
+    async def season(self, ctx, season: int):
+        """Set season."""
+        await self.config.season.set(season)
+        await ctx.send(f"✅ Season set to `{season}`.")
+
+    @wcset.command()
+    async def timezone(self, ctx, timezone: str):
+        """Set timezone, example: Europe/Oslo."""
+        await self.config.timezone.set(timezone)
+        await ctx.send(f"✅ Timezone set to `{timezone}`.")
+
+    @wcset.command()
+    async def settings(self, ctx):
+        """Show current settings."""
+        league_id = await self.config.league_id()
+        season = await self.config.season()
+        timezone = await self.config.timezone()
+        api_key = await self.config.api_key()
+
+        embed = self.make_embed("⚙️ World Cup Settings", discord.Color.blue())
+        embed.add_field(name="API key", value="✅ Set" if api_key else "❌ Missing", inline=False)
+        embed.add_field(name="League ID", value=f"`{league_id}`", inline=True)
+        embed.add_field(name="Season", value=f"`{season}`", inline=True)
+        embed.add_field(name="Timezone", value=f"`{timezone}`", inline=False)
+
+        await ctx.send(embed=embed)
+
+    @wcset.command()
+    async def findleague(self, ctx, *, search: str = "world cup"):
+        """Find league IDs."""
+        try:
+            leagues = await self.api_get("/leagues", {"search": search})
+        except Exception as e:
+            return await ctx.send(f"❌ `{e}`")
+
+        if not leagues:
+            return await ctx.send("No leagues found.")
+
+        embed = self.make_embed(f"🔎 League search: {search}", discord.Color.blue())
+
+        for item in leagues[:10]:
+            league = item.get("league", {})
+            country = item.get("country", {})
+            seasons = item.get("seasons", [])
+
+            latest = seasons[-1]["year"] if seasons else "?"
+            embed.add_field(
+                name=f"{league.get('name')} — ID `{league.get('id')}`",
+                value=f"Country: {country.get('name', 'Unknown')} • Latest season: `{latest}`",
+                inline=False,
+            )
+
+        await ctx.send(embed=embed)
 
     @wc.command()
     async def current(self, ctx):
-        """Show current live World Cup match."""
+        """Show live World Cup match, score, minute and scorers."""
+        league_id = await self.config.league_id()
+        season = await self.config.season()
+        timezone = await self.config.timezone()
+
         try:
-            games = await self.fetch_games()
+            fixtures = await self.api_get(
+                "/fixtures",
+                {
+                    "live": "all",
+                    "league": league_id,
+                    "season": season,
+                    "timezone": timezone,
+                },
+            )
         except Exception as e:
-            return await ctx.send(f"❌ Could not fetch World Cup data: `{e}`")
+            return await ctx.send(f"❌ `{e}`")
 
-        live_games = [game for game in games if self.is_live(game)]
-
-        if not live_games:
-            embed = self.base_embed("No live match right now", discord.Color.red())
-            embed.description = "I could not find any match marked as live by the API."
+        if not fixtures:
+            embed = self.make_embed("🔴 No live World Cup match right now", discord.Color.red())
+            embed.description = "API-Football returned no live fixtures for the configured league and season."
             embed.add_field(
-                name="Tip",
-                value="Run `.wc debug` to check what the API is actually returning.",
+                name="Check settings",
+                value="Run `.wcset settings` or `.wcset findleague world cup`.",
                 inline=False,
             )
             return await ctx.send(embed=embed)
 
-        for game in live_games[:3]:
-            home = self.home_team(game)
-            away = self.away_team(game)
-            hs = self.home_score(game)
-            as_ = self.away_score(game)
-            minute = self.minute(game)
-            goals = self.goals(game)
+        for fixture in fixtures[:3]:
+            fixture_id = fixture["fixture"]["id"]
+            home, away, hg, ag = self.score_line(fixture)
+            status = fixture["fixture"]["status"]
+            elapsed = status.get("elapsed", "?")
 
-            embed = self.base_embed(
-                f"🔴 LIVE — {home} {hs} - {as_} {away}",
+            embed = self.make_embed(
+                f"🔴 LIVE: {home} {hg} - {ag} {away}",
                 discord.Color.green(),
             )
 
-            embed.add_field(name="⏱️ Minute", value=f"**{minute}'**", inline=True)
-            embed.add_field(name="📌 Status", value=f"`{self.status(game) or 'live'}`", inline=True)
+            embed.add_field(name="⏱️ Minute", value=f"**{elapsed}'**", inline=True)
+            embed.add_field(name="📌 Status", value=f"`{status.get('long', 'Live')}`", inline=True)
+            embed.add_field(name="🏟️ Venue", value=fixture["fixture"].get("venue", {}).get("name") or "Unknown", inline=False)
+
+            try:
+                goals = await self.get_goal_events(fixture_id)
+            except Exception:
+                goals = []
 
             embed.add_field(
                 name="⚽ Goals",
-                value="\n".join(goals) if goals else "No goal data available.",
+                value="\n".join(goals) if goals else "No goals yet, or goal events not available.",
                 inline=False,
             )
 
@@ -213,26 +233,35 @@ class WorldCup(commands.Cog):
 
     @wc.command()
     async def next(self, ctx):
-        """Show next upcoming World Cup match."""
+        """Show next World Cup match."""
+        league_id = await self.config.league_id()
+        season = await self.config.season()
+        timezone = await self.config.timezone()
+
         try:
-            games = await self.fetch_games()
+            fixtures = await self.api_get(
+                "/fixtures",
+                {
+                    "league": league_id,
+                    "season": season,
+                    "next": 1,
+                    "timezone": timezone,
+                },
+            )
         except Exception as e:
-            return await ctx.send(f"❌ Could not fetch World Cup data: `{e}`")
+            return await ctx.send(f"❌ `{e}`")
 
-        upcoming = sorted([game for game in games if self.is_upcoming(game)], key=self.sort_key)
+        if not fixtures:
+            return await ctx.send("No upcoming match found.")
 
-        if not upcoming:
-            return await ctx.send("No upcoming World Cup matches found.")
+        fixture = fixtures[0]
+        home, away, _, _ = self.score_line(fixture)
 
-        game = upcoming[0]
-
-        embed = self.base_embed("⏭️ Next World Cup Match", discord.Color.blue())
-        embed.add_field(
-            name=f"{self.home_team(game)} vs {self.away_team(game)}",
-            value=f"🕒 **{self.match_time(game)}**",
-            inline=False,
-        )
-        embed.add_field(name="Status", value=f"`{self.status(game) or 'scheduled'}`", inline=True)
+        embed = self.make_embed("⏭️ Next World Cup Match", discord.Color.blue())
+        embed.add_field(name="Match", value=f"**{home} vs {away}**", inline=False)
+        embed.add_field(name="🕒 Kickoff", value=self.fixture_time(fixture), inline=False)
+        embed.add_field(name="📌 Status", value=f"`{self.status_text(fixture)}`", inline=True)
+        embed.add_field(name="🏟️ Venue", value=fixture["fixture"].get("venue", {}).get("name") or "Unknown", inline=False)
 
         await ctx.send(embed=embed)
 
@@ -241,38 +270,76 @@ class WorldCup(commands.Cog):
         """Show upcoming World Cup schedule."""
         amount = max(1, min(amount, 20))
 
+        league_id = await self.config.league_id()
+        season = await self.config.season()
+        timezone = await self.config.timezone()
+
         try:
-            games = await self.fetch_games()
+            fixtures = await self.api_get(
+                "/fixtures",
+                {
+                    "league": league_id,
+                    "season": season,
+                    "next": amount,
+                    "timezone": timezone,
+                },
+            )
         except Exception as e:
-            return await ctx.send(f"❌ Could not fetch World Cup data: `{e}`")
+            return await ctx.send(f"❌ `{e}`")
 
-        upcoming = sorted([game for game in games if self.is_upcoming(game)], key=self.sort_key)[:amount]
+        if not fixtures:
+            return await ctx.send("No upcoming matches found.")
 
-        if not upcoming:
-            return await ctx.send("No upcoming World Cup matches found.")
+        embed = self.make_embed(f"📅 Next {len(fixtures)} World Cup Matches", discord.Color.gold())
 
-        embed = self.base_embed(f"📅 Next {len(upcoming)} World Cup Matches", discord.Color.gold())
-
-        for game in upcoming:
+        for fixture in fixtures:
+            home, away, _, _ = self.score_line(fixture)
+            league_round = fixture["league"].get("round", "World Cup")
             embed.add_field(
-                name=f"{self.home_team(game)} vs {self.away_team(game)}",
-                value=f"🕒 {self.match_time(game)}",
+                name=f"{home} vs {away}",
+                value=f"🕒 {self.fixture_time(fixture)}\n🏆 {league_round}",
                 inline=False,
             )
 
         await ctx.send(embed=embed)
 
     @wc.command()
-    async def debug(self, ctx):
-        """Show raw API data for debugging."""
+    async def today(self, ctx):
+        """Show today's World Cup matches."""
+        league_id = await self.config.league_id()
+        season = await self.config.season()
+        timezone_name = await self.config.timezone()
+
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
         try:
-            games = await self.fetch_games()
+            fixtures = await self.api_get(
+                "/fixtures",
+                {
+                    "league": league_id,
+                    "season": season,
+                    "date": today,
+                    "timezone": timezone_name,
+                },
+            )
         except Exception as e:
-            return await ctx.send(f"❌ Could not fetch World Cup data: `{e}`")
+            return await ctx.send(f"❌ `{e}`")
 
-        text = json.dumps(games[:2], indent=2, ensure_ascii=False)
+        if not fixtures:
+            return await ctx.send("No World Cup matches found today.")
 
-        if len(text) > 1900:
-            text = text[:1900]
+        embed = self.make_embed("📆 Today's World Cup Matches", discord.Color.purple())
 
-        await ctx.send(f"```json\n{text}\n```")
+        for fixture in fixtures:
+            home, away, hg, ag = self.score_line(fixture)
+            status = fixture["fixture"]["status"].get("short", "?")
+
+            score = f"{hg} - {ag}" if status not in ["NS", "TBD"] else "vs"
+
+            embed.add_field(
+                name=f"{home} {score} {away}",
+                value=f"🕒 {self.fixture_time(fixture)}\n📌 `{self.status_text(fixture)}`",
+                inline=False,
+            )
+
+        await ctx.send(embed=embed)
