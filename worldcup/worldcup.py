@@ -33,6 +33,7 @@ class WorldCup(commands.Cog):
             live_watch_message=None,
             live_watch_channel=None,
             announced_goal_keys=[],
+            goal_notify_dm_users=[],
             prediction_scores={},
         )
 
@@ -127,6 +128,52 @@ class WorldCup(commands.Cog):
             hg, ag = self.goals(fixture)
             return f"{home} {hg} - {ag} {away}"
         return f"{home} vs {away}"
+
+    def choose_team(self, teams: List[dict], search: str) -> Optional[dict]:
+        search_norm = search.strip().lower()
+        best = None
+
+        for item in teams:
+            team = item.get("team", {})
+            name = team.get("name", "").lower()
+            country = team.get("country", "").lower()
+            national = bool(team.get("national"))
+
+            if name == search_norm and national:
+                return item
+            if country == search_norm and national:
+                return item
+            if name == search_norm:
+                best = item
+            if national and (search_norm in name or search_norm in country):
+                best = item
+
+        if best:
+            return best
+
+        for item in teams:
+            if bool(item.get("team", {}).get("national")):
+                return item
+
+        return teams[0] if teams else None
+
+    async def send_goal_dm(self, user_id: int, embed: discord.Embed) -> None:
+        user = guild_member = None
+        try:
+            guild_member = self.bot.get_user(user_id)
+        except Exception:
+            guild_member = None
+
+        if guild_member is None:
+            try:
+                guild_member = await self.bot.fetch_user(user_id)
+            except Exception:
+                return
+
+        try:
+            await guild_member.send(embed=embed)
+        except Exception:
+            pass
 
     async def current_live_fixtures(self) -> List[dict]:
         return await self.api_get(
@@ -472,7 +519,11 @@ class WorldCup(commands.Cog):
         if not teams:
             return await ctx.send("No team found.")
 
-        team = teams[0]["team"]
+        team_item = self.choose_team(teams, team_name)
+        if not team_item:
+            return await ctx.send("No team found.")
+
+        team = team_item["team"]
         team_id = team["id"]
 
         try:
@@ -814,6 +865,26 @@ class WorldCup(commands.Cog):
         await self.config.guild(ctx.guild).goal_notifications.set(False)
         await ctx.send("✅ Goal notifications disabled.")
 
+    @notify.command()
+    async def dm(self, ctx, mode: str):
+        """Enable or disable goal DMs for yourself."""
+        mode = mode.lower()
+        if mode not in ("on", "off", "enable", "disable"):
+            return await ctx.send("Usage: `.wc notify dm on` or `.wc notify dm off`.")
+
+        async with self.config.guild(ctx.guild).all() as data:
+            users = {str(uid) for uid in data.get("goal_notify_dm_users", [])}
+            user_id = str(ctx.author.id)
+
+            if mode in ("on", "enable"):
+                users.add(user_id)
+                await ctx.send("✅ Goal DMs enabled for you.")
+            else:
+                users.discard(user_id)
+                await ctx.send("✅ Goal DMs disabled for you.")
+
+            data["goal_notify_dm_users"] = list(users)
+
     @tasks.loop(seconds=60)
     async def goal_notification_loop(self):
         await self.bot.wait_until_ready()
@@ -832,10 +903,8 @@ class WorldCup(commands.Cog):
                 continue
 
             channel = guild.get_channel(data.get("notify_channel"))
-            if not channel:
-                continue
-
             role = guild.get_role(data.get("notify_role")) if data.get("notify_role") else None
+            dm_users = [int(uid) for uid in data.get("goal_notify_dm_users", []) if uid is not None]
             announced = set(data.get("announced_goal_keys", []))
 
             for f in fixtures:
@@ -866,7 +935,16 @@ class WorldCup(commands.Cog):
                     e.add_field(name="Minute", value=f"**{minute}'**", inline=True)
 
                     content = role.mention if role else None
-                    await channel.send(content=content, embed=e)
+                    if channel:
+                        await channel.send(content=content, embed=e)
+
+                    for user_id in dm_users:
+                        try:
+                            user = guild.get_member(user_id) or self.bot.get_user(user_id)
+                            if user:
+                                await user.send(embed=e)
+                        except Exception:
+                            pass
 
             await self.config.guild(guild).announced_goal_keys.set(list(announced)[-200:])
 
