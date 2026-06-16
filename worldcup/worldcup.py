@@ -371,8 +371,17 @@ class WorldCup(commands.Cog):
     # -------------------------
 
     @wc.command()
-    async def standings(self, ctx):
-        """Show group standings."""
+    async def standings(self, ctx, *, group: str):
+        """Show standings for a specific group, e.g. `wc standings A` or `wc standings Group B`."""
+        group_key = group.strip().lower()
+        if group_key.startswith("group "):
+            group_key = group_key.split("group ", 1)[1].strip()
+        if group_key.startswith("g "):
+            group_key = group_key.split("g ", 1)[1].strip()
+
+        if not group_key:
+            return await ctx.send("Please specify a group, for example `wc standings A`.")
+
         try:
             data = await self.api_get(
                 "/standings",
@@ -388,21 +397,40 @@ class WorldCup(commands.Cog):
         if not standings:
             return await ctx.send("No standings found.")
 
-        for group in standings[:12]:
-            group_name = group[0].get("group", "Group") if group else "Group"
-            e = self.embed(f"🏆 {group_name}", discord.Color.blue())
+        selected_group = None
+        selected_group_name = None
+        available_groups = []
 
-            lines = []
-            for row in group:
-                team = row["team"]["name"]
-                rank = row["rank"]
-                pts = row["points"]
-                played = row["all"]["played"]
-                gd = row["goalsDiff"]
-                lines.append(f"**{rank}. {team}** — {pts} pts | P{played} | GD {gd:+}")
+        for group_data in standings:
+            if not group_data:
+                continue
 
-            e.description = "\n".join(lines)
-            await ctx.send(embed=e)
+            group_name = group_data[0].get("group", "").strip()
+            normalized = group_name.lower().replace("group", "").strip()
+            if normalized:
+                available_groups.append(group_name)
+
+            if normalized == group_key:
+                selected_group = group_data
+                selected_group_name = group_name
+                break
+
+        if not selected_group:
+            available = ", ".join(sorted(set(available_groups))) or "none"
+            return await ctx.send(f"Group `{group}` not found. Available groups: {available}.")
+
+        e = self.embed(f"🏆 {selected_group_name}", discord.Color.blue())
+        lines = []
+        for row in selected_group:
+            team = row["team"]["name"]
+            rank = row["rank"]
+            pts = row["points"]
+            played = row["all"]["played"]
+            gd = row["goalsDiff"]
+            lines.append(f"**{rank}. {team}** — {pts} pts | P{played} | GD {gd:+}")
+
+        e.description = "\n".join(lines)
+        await ctx.send(embed=e)
 
     @wc.command()
     async def scorers(self, ctx, amount: int = 10):
