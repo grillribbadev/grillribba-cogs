@@ -67,13 +67,13 @@ class WorldCup(commands.Cog):
 
         return data.get("response", [])
 
-    async def league_id(self):
+    async def get_league_id(self):
         return await self.config.league_id()
 
-    async def season(self):
+    async def get_season(self):
         return await self.config.season()
 
-    async def timezone_name(self):
+    async def get_timezone_name(self):
         return await self.config.timezone()
 
     # -------------------------
@@ -133,7 +133,7 @@ class WorldCup(commands.Cog):
             "/fixtures",
             {
                 "live": "all",
-                "league": await self.league_id(),
+                "league": await get.self.league_id(),
                 "season": await self.season(),
                 "timezone": await self.timezone_name(),
             },
@@ -143,10 +143,10 @@ class WorldCup(commands.Cog):
         return await self.api_get(
             "/fixtures",
             {
-                "league": await self.league_id(),
-                "season": await self.season(),
+                "league": await get.self.league_id(),
+                "season": await get.self.season(),
                 "next": amount,
-                "timezone": await self.timezone_name(),
+                "timezone": await get.self.timezone_name(),
             },
         )
 
@@ -155,10 +155,10 @@ class WorldCup(commands.Cog):
         return await self.api_get(
             "/fixtures",
             {
-                "league": await self.league_id(),
-                "season": await self.season(),
+                "league": await get.self.league_id(),
+                "season": await get.self.season(),
                 "date": today,
-                "timezone": await self.timezone_name(),
+                "timezone": await get.self.timezone_name(),
             },
         )
 
@@ -231,9 +231,9 @@ class WorldCup(commands.Cog):
         """Show settings."""
         e = self.embed("⚙️ World Cup Settings", discord.Color.blue())
         e.add_field(name="API key", value="✅ Set" if await self.config.api_key() else "❌ Missing")
-        e.add_field(name="League ID", value=f"`{await self.league_id()}`")
-        e.add_field(name="Season", value=f"`{await self.season()}`")
-        e.add_field(name="Timezone", value=f"`{await self.timezone_name()}`")
+        e.add_field(name="League ID", value=f"`{await get.self.league_id()}`")
+        e.add_field(name="Season", value=f"`{await get.self.season()}`")
+        e.add_field(name="Timezone", value=f"`{await get.self.timezone_name()}`")
         await ctx.send(embed=e)
 
     @wcset.command()
@@ -376,7 +376,7 @@ class WorldCup(commands.Cog):
         try:
             data = await self.api_get(
                 "/standings",
-                {"league": await self.league_id(), "season": await self.season()},
+                {"league": await get.self.league_id(), "season": await get.self.season()},
             )
         except Exception as e:
             return await ctx.send(f"❌ `{e}`")
@@ -412,7 +412,7 @@ class WorldCup(commands.Cog):
         try:
             players = await self.api_get(
                 "/players/topscorers",
-                {"league": await self.league_id(), "season": await self.season()},
+                {"league": await get.self.league_id(), "season": await get.self.season()},
             )
         except Exception as e:
             return await ctx.send(f"❌ `{e}`")
@@ -452,9 +452,9 @@ class WorldCup(commands.Cog):
                 "/fixtures",
                 {
                     "team": team_id,
-                    "league": await self.league_id(),
-                    "season": await self.season(),
-                    "timezone": await self.timezone_name(),
+                    "league": await get.self.league_id(),
+                    "season": await get.self.season(),
+                    "timezone": await get.self.timezone_name(),
                 },
             )
         except Exception as e:
@@ -575,8 +575,8 @@ class WorldCup(commands.Cog):
                 "/players",
                 {
                     "search": name,
-                    "league": await self.league_id(),
-                    "season": await self.season(),
+                    "league": await get.self.league_id(),
+                    "season": await get.self.season(),
                 },
             )
         except Exception as e:
@@ -630,7 +630,7 @@ class WorldCup(commands.Cog):
         try:
             injuries = await self.api_get(
                 "/injuries",
-                {"league": await self.league_id(), "season": await self.season()},
+                {"league": await get.self.league_id(), "season": await get.self.season()},
             )
         except Exception as e:
             return await ctx.send(f"❌ `{e}`")
