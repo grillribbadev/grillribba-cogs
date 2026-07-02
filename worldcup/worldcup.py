@@ -310,7 +310,7 @@ class WorldCup(commands.Cog):
     # Main commands
     # -------------------------
 
-    @wc.command(aliases=[live, current])
+    @wc.command(aliases=["live", "current"])
     async def now(self, ctx):
         """Show live match, score, minute and goals."""
         try:
