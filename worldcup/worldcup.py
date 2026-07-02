@@ -992,7 +992,7 @@ class WorldCup(commands.Cog):
 
         await ctx.send(f"✅ Prediction saved: **{self.match_title(fixture, False)}** — `{hg}-{ag}`")
 
-    @predict.command()
+    @predict.command(aliases=["lb", "top"])
     async def leaderboard(self, ctx):
         """Show prediction leaderboard."""
         await self.settle_predictions(ctx.guild)
