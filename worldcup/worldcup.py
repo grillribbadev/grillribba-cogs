@@ -311,7 +311,7 @@ class WorldCup(commands.Cog):
     # -------------------------
 
     @wc.command()
-    async def current(self, ctx):
+    async def now(self, ctx):
         """Show live match, score, minute and goals."""
         try:
             fixtures = await self.current_live_fixtures()
