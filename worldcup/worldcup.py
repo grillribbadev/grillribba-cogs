@@ -174,6 +174,34 @@ class WorldCup(commands.Cog):
 
         return players[0] if players else None
 
+    def choose_player_stat(self, stats_entries: List[dict]) -> Optional[dict]:
+        if not stats_entries:
+            return None
+
+        def season_value(entry: dict) -> int:
+            season = entry.get("league", {}).get("season") or entry.get("season")
+            try:
+                return int(season)
+            except Exception:
+                return 0
+
+        club_candidates = []
+        national_candidates = []
+        for entry in stats_entries:
+            team = entry.get("team", {}) or {}
+            if bool(team.get("national")):
+                national_candidates.append(entry)
+            else:
+                club_candidates.append(entry)
+
+        if club_candidates:
+            return max(club_candidates, key=lambda item: (season_value(item), 1))
+
+        if national_candidates:
+            return max(national_candidates, key=lambda item: (season_value(item), 1))
+
+        return stats_entries[0]
+
     async def send_goal_dm(self, user_id: int, embed: discord.Embed) -> None:
         user = guild_member = None
         try:
@@ -722,28 +750,31 @@ class WorldCup(commands.Cog):
         if photo:
             e.set_thumbnail(url=photo)
 
-        current_entry = None
-        for entry in stats_entries:
-            if entry.get("team", {}).get("name"):
-                current_entry = entry
-                break
+        current_entry = self.choose_player_stat(stats_entries)
 
         if current_entry:
             team = current_entry.get("team", {}) or {}
             league = current_entry.get("league", {}) or {}
             games = current_entry.get("games", {}) or {}
             goals = current_entry.get("goals", {}) or {}
+            cards = current_entry.get("cards", {}) or {}
 
-            e.add_field(name="Current club", value=team.get("name") or "Unknown", inline=True)
-            e.add_field(name="Current league", value=f"{league.get('name') or 'Unknown'} ({league.get('country') or 'Unknown'})", inline=True)
+            if bool(team.get("national")):
+                e.add_field(name="Current team", value=team.get("name") or "Unknown", inline=True)
+                e.add_field(name="Current league", value=f"{league.get('name') or 'Unknown'} ({league.get('country') or 'Unknown'})", inline=True)
+            else:
+                e.add_field(name="Current club", value=team.get("name") or "Unknown", inline=True)
+                e.add_field(name="Current league", value=f"{league.get('name') or 'Unknown'} ({league.get('country') or 'Unknown'})", inline=True)
+
             e.add_field(name="Position", value=games.get("position") or "?", inline=True)
-            e.add_field(name="Nationality", value=nationality, inline=True)
+            e.add_field(name="Country", value=nationality, inline=True)
             e.add_field(name="Appearances", value=games.get("appearances") or 0, inline=True)
             e.add_field(name="Goals", value=goals.get("total") or 0, inline=True)
             e.add_field(name="Assists", value=goals.get("assists") or 0, inline=True)
+            e.add_field(name="Cards", value=f"Y {cards.get('yellow') or 0} • R {cards.get('red') or 0}", inline=True)
 
         else:
-            e.add_field(name="Nationality", value=nationality, inline=True)
+            e.add_field(name="Country", value=nationality, inline=True)
 
         if birth_date:
             e.add_field(name="Born", value=birth_date, inline=True)
@@ -769,7 +800,7 @@ class WorldCup(commands.Cog):
                     line += f" • Y {cards.get('yellow') or 0} / R {cards.get('red') or 0}"
                 lines.append(line)
 
-            e.description = "Showing the available club/competition entries returned by the API:\n" + "\n".join(lines)
+            e.description = "Recent club/competition entries returned by the API:\n" + "\n".join(lines)
         else:
             e.description = "No detailed stats were returned by the API for this player."
 
