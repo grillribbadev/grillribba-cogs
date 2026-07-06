@@ -708,37 +708,35 @@ class WorldCup(commands.Cog):
         e.description = "\n".join(lines)
         await ctx.send(embed=e)
 
-    @commands.command(name="player")
+    @wc.command()
     async def player(self, ctx, *, name: str):
         """Search for a player and show the most relevant profile stats."""
         player_league_ids = await self.get_player_league_ids()
         player_season = await self.get_player_season()
 
         players = []
-        search_params = {"search": name, "season": player_season}
+        search_params = {"search": name}
+        if player_season:
+            search_params["season"] = player_season
 
         for league_id in player_league_ids:
-            try:
-                league_players = await self.api_get(
-                    "/players",
-                    {**search_params, "league": league_id},
-                )
-                if league_players:
-                    players.extend(league_players)
-            except Exception:
-                continue
-
-        if not players:
-            try:
-                players = await self.api_get("/players", {"search": name, "season": player_season})
-            except Exception:
-                players = []
+            for params in ({**search_params, "league": league_id}, {"search": name, "league": league_id}):
+                try:
+                    league_players = await self.api_get("/players", params)
+                    if league_players:
+                        players.extend(league_players)
+                        break
+                except Exception:
+                    continue
 
         if not players:
             try:
                 players = await self.api_get("/players", {"search": name})
-            except Exception as e:
-                return await ctx.send(f"❌ `{e}`")
+            except Exception:
+                players = []
+
+        if not players:
+            return await ctx.send("No player found for that search.")
 
         if not players:
             return await ctx.send("No player found.")
@@ -835,15 +833,21 @@ class WorldCup(commands.Cog):
         pass
 
     @playerset.command()
-    async def league(self, ctx, league_ids: str):
-        """Set one or more league/tournament IDs for player lookups, separated by commas."""
-        values = [item.strip() for item in league_ids.split(",") if item.strip()]
+    async def league(self, ctx, *league_ids: str):
+        """Set one or more league/tournament IDs for player lookups, separated by commas or spaces."""
+        values = []
+        for arg in league_ids:
+            values.extend([item.strip() for item in arg.split(",") if item.strip()])
+
         parsed = []
         for value in values:
             try:
                 parsed.append(int(value))
             except ValueError:
                 return await ctx.send(f"❌ Invalid league ID: `{value}`")
+
+        if not parsed:
+            return await ctx.send("❌ Please provide at least one league ID.")
 
         await self.config.player_league_ids.set(parsed)
         await ctx.send(f"✅ Player lookup leagues set to `{', '.join(str(item) for item in parsed)}`.")
