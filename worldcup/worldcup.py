@@ -714,17 +714,25 @@ class WorldCup(commands.Cog):
         player_league_ids = await self.get_player_league_ids()
         player_season = await self.get_player_season()
 
-        try:
-            players = await self.api_get(
-                "/players",
-                {
-                    "search": name,
-                    "league": ",".join(str(item) for item in player_league_ids),
-                    "season": player_season,
-                },
-            )
-        except Exception:
-            players = []
+        players = []
+        search_params = {"search": name, "season": player_season}
+
+        for league_id in player_league_ids:
+            try:
+                league_players = await self.api_get(
+                    "/players",
+                    {**search_params, "league": league_id},
+                )
+                if league_players:
+                    players.extend(league_players)
+            except Exception:
+                continue
+
+        if not players:
+            try:
+                players = await self.api_get("/players", {"search": name, "season": player_season})
+            except Exception:
+                players = []
 
         if not players:
             try:
@@ -843,16 +851,31 @@ class WorldCup(commands.Cog):
     @playerset.command()
     async def findleague(self, ctx, *, search: str = "league"):
         """Search available leagues for player lookups."""
-        try:
-            leagues = await self.api_get("/leagues", {"search": search})
-        except Exception as e:
-            return await ctx.send(f"❌ `{e}`")
+        search_terms = [search]
+        if search.lower() not in {"bundesliga", "la liga", "laliga", "serie a", "premier league", "ligue 1"}:
+            search_terms.extend(["bundesliga", "la liga", "serie a", "premier league", "ligue 1", "eredivisie"]) 
 
-        if not leagues:
+        seen = set()
+        results = []
+
+        for term in search_terms:
+            try:
+                leagues = await self.api_get("/leagues", {"search": term})
+            except Exception:
+                continue
+            for item in leagues:
+                league = item.get("league", {})
+                league_id = league.get("id")
+                if not league_id or league_id in seen:
+                    continue
+                seen.add(league_id)
+                results.append(item)
+
+        if not results:
             return await ctx.send("No leagues found.")
 
         e = self.embed(f"🔎 League search: {search}", discord.Color.blue())
-        for item in leagues[:10]:
+        for item in results[:20]:
             league = item.get("league", {})
             country = item.get("country", {})
             e.add_field(
