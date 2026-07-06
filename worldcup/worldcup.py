@@ -159,18 +159,39 @@ class WorldCup(commands.Cog):
 
     def choose_player(self, players: List[dict], search: str) -> Optional[dict]:
         search_norm = search.strip().lower()
+        search_tokens = [token for token in search_norm.replace("-", " ").split() if token]
 
-        for item in players:
-            player = item.get("player", {}) or {}
-            name = (player.get("name") or "").strip().lower()
+        def name_score(player_name: str) -> Tuple[int, int, int]:
+            name = (player_name or "").strip().lower()
+            if not name:
+                return (0, 0, 0)
+
             if name == search_norm:
-                return item
+                return (10, 0, 0)
+
+            name_tokens = [token for token in name.replace("-", " ").split() if token]
+            token_overlap = sum(1 for token in search_tokens if token in name_tokens)
+            exact_last = int(name_tokens[-1] == search_tokens[-1]) if search_tokens and name_tokens else 0
+            prefix_match = int(name.startswith(search_norm))
+            contains = int(search_norm in name)
+            return (token_overlap, exact_last, prefix_match + contains)
+
+        best_item = None
+        best_score = None
 
         for item in players:
             player = item.get("player", {}) or {}
             name = (player.get("name") or "").strip().lower()
-            if search_norm in name:
-                return item
+            score = name_score(name)
+            if best_score is None or score > best_score:
+                best_score = score
+                best_item = item
+
+        if best_item is None:
+            return players[0] if players else None
+
+        if best_score and best_score[0] > 0:
+            return best_item
 
         return players[0] if players else None
 
