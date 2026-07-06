@@ -24,7 +24,7 @@ class WorldCup(commands.Cog):
             league_id=1,
             season=2026,
             timezone="Europe/Oslo",
-            player_league_id=None,
+            player_league_ids=[],
             player_season=None,
         )
 
@@ -79,8 +79,11 @@ class WorldCup(commands.Cog):
     async def get_timezone_name(self):
         return await self.config.timezone()
 
-    async def get_player_league_id(self):
-        return await self.config.player_league_id() or await self.get_league_id()
+    async def get_player_league_ids(self) -> List[int]:
+        leagues = await self.config.player_league_ids()
+        if leagues:
+            return [int(item) for item in leagues if str(item).strip()]
+        return [await self.get_league_id()]
 
     async def get_player_season(self):
         return await self.config.player_season() or await self.get_season()
@@ -182,7 +185,7 @@ class WorldCup(commands.Cog):
 
         return players[0] if players else None
 
-    def choose_player_stat(self, stats_entries: List[dict], preferred_league_id: Optional[int] = None) -> Optional[dict]:
+    def choose_player_stat(self, stats_entries: List[dict], preferred_league_ids: Optional[List[int]] = None) -> Optional[dict]:
         if not stats_entries:
             return None
 
@@ -193,10 +196,10 @@ class WorldCup(commands.Cog):
             except Exception:
                 return 0
 
-        if preferred_league_id is not None:
+        if preferred_league_ids:
             for entry in stats_entries:
                 league = entry.get("league", {}) or {}
-                if league.get("id") == preferred_league_id:
+                if league.get("id") in preferred_league_ids:
                     return entry
 
         club_candidates = []
@@ -708,7 +711,7 @@ class WorldCup(commands.Cog):
     @commands.command(name="player")
     async def player(self, ctx, *, name: str):
         """Search for a player and show the most relevant profile stats."""
-        player_league_id = await self.get_player_league_id()
+        player_league_ids = await self.get_player_league_ids()
         player_season = await self.get_player_season()
 
         try:
@@ -716,7 +719,7 @@ class WorldCup(commands.Cog):
                 "/players",
                 {
                     "search": name,
-                    "league": player_league_id,
+                    "league": ",".join(str(item) for item in player_league_ids),
                     "season": player_season,
                 },
             )
@@ -767,7 +770,7 @@ class WorldCup(commands.Cog):
         if photo:
             e.set_thumbnail(url=photo)
 
-        current_entry = self.choose_player_stat(stats_entries, preferred_league_id=player_league_id)
+        current_entry = self.choose_player_stat(stats_entries, preferred_league_ids=player_league_ids)
 
         if current_entry:
             team = current_entry.get("team", {}) or {}
@@ -824,10 +827,41 @@ class WorldCup(commands.Cog):
         pass
 
     @playerset.command()
-    async def league(self, ctx, league_id: int):
-        """Set the league/tournament used for player lookups."""
-        await self.config.player_league_id.set(league_id)
-        await ctx.send(f"✅ Player lookup league set to `{league_id}`.")
+    async def league(self, ctx, league_ids: str):
+        """Set one or more league/tournament IDs for player lookups, separated by commas."""
+        values = [item.strip() for item in league_ids.split(",") if item.strip()]
+        parsed = []
+        for value in values:
+            try:
+                parsed.append(int(value))
+            except ValueError:
+                return await ctx.send(f"❌ Invalid league ID: `{value}`")
+
+        await self.config.player_league_ids.set(parsed)
+        await ctx.send(f"✅ Player lookup leagues set to `{', '.join(str(item) for item in parsed)}`.")
+
+    @playerset.command()
+    async def findleague(self, ctx, *, search: str = "league"):
+        """Search available leagues for player lookups."""
+        try:
+            leagues = await self.api_get("/leagues", {"search": search})
+        except Exception as e:
+            return await ctx.send(f"❌ `{e}`")
+
+        if not leagues:
+            return await ctx.send("No leagues found.")
+
+        e = self.embed(f"🔎 League search: {search}", discord.Color.blue())
+        for item in leagues[:10]:
+            league = item.get("league", {})
+            country = item.get("country", {})
+            e.add_field(
+                name=f"{league.get('name')} — ID `{league.get('id')}`",
+                value=f"Country: {country.get('name', 'Unknown')}",
+                inline=False,
+            )
+
+        await ctx.send(embed=e)
 
     @wc.command()
     async def h2h(self, ctx, team1_id: int, team2_id: int):
