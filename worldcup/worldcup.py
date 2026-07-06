@@ -691,24 +691,60 @@ class WorldCup(commands.Cog):
         if not search_name:
             return await ctx.send("Please provide a player name.")
 
-        try:
-            players = await self.api_get(
-                "/players",
-                {
-                    "search": search_name,
-                    "league": await self.get_league_id(),
-                    "season": await self.get_season(),
-                },
-            )
-        except Exception as e:
-            return await ctx.send(f"❌ `{e}`")
+        players = []
+        search_terms = [search_name]
+        if " " in search_name:
+            parts = search_name.split()
+            search_terms.append(parts[-1])
+            search_terms.append(parts[0])
+        search_terms = list(dict.fromkeys(search_terms))
+
+        for term in search_terms:
+            try:
+                players = await self.api_get(
+                    "/players",
+                    {
+                        "search": term,
+                        "league": await self.get_league_id(),
+                        "season": await self.get_season(),
+                    },
+                )
+                if players:
+                    break
+            except Exception:
+                continue
+
+        if not players:
+            try:
+                players = await self.api_get("/players", {"search": search_name})
+            except Exception as e:
+                return await ctx.send(f"❌ `{e}`")
 
         if not players:
             return await ctx.send("No player found for that World Cup search.")
 
         p = self.choose_player(players, name) or players[0]
         player = p.get("player", {}) or {}
-        stat = (p.get("statistics") or [{}])[0] or {}
+
+        profile = None
+        player_id = player.get("id")
+        if player_id:
+            try:
+                profiles = await self.api_get("/players/profiles", {"player": player_id})
+                if profiles:
+                    profile = profiles[0]
+            except Exception:
+                profile = None
+
+        profile_player = profile.get("player", {}) if profile else {}
+        if profile_player:
+            player = {**player, **profile_player}
+
+        stat = None
+        if profile:
+            stat = (profile.get("statistics") or [{}])[0] or {}
+        if not stat:
+            stat = (p.get("statistics") or [{}])[0] or {}
 
         player_name = player.get("name") or "Unknown"
         photo = player.get("photo") or player.get("image")
