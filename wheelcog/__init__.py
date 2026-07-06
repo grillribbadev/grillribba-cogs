@@ -1,4 +1,5 @@
-from .wheelcog import WheelCog
+from .worldcup import WorldCup
+
 
 async def setup(bot):
-    await bot.add_cog(WheelCog(bot))
+    await bot.add_cog(WorldCup(bot))
