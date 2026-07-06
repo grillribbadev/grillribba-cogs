@@ -24,6 +24,8 @@ class WorldCup(commands.Cog):
             league_id=1,
             season=2026,
             timezone="Europe/Oslo",
+            player_league_id=None,
+            player_season=None,
         )
 
         self.config.register_guild(
@@ -76,6 +78,12 @@ class WorldCup(commands.Cog):
 
     async def get_timezone_name(self):
         return await self.config.timezone()
+
+    async def get_player_league_id(self):
+        return await self.config.player_league_id() or await self.get_league_id()
+
+    async def get_player_season(self):
+        return await self.config.player_season() or await self.get_season()
 
     # -------------------------
     # Format helpers
@@ -174,7 +182,7 @@ class WorldCup(commands.Cog):
 
         return players[0] if players else None
 
-    def choose_player_stat(self, stats_entries: List[dict]) -> Optional[dict]:
+    def choose_player_stat(self, stats_entries: List[dict], preferred_league_id: Optional[int] = None) -> Optional[dict]:
         if not stats_entries:
             return None
 
@@ -184,6 +192,12 @@ class WorldCup(commands.Cog):
                 return int(season)
             except Exception:
                 return 0
+
+        if preferred_league_id is not None:
+            for entry in stats_entries:
+                league = entry.get("league", {}) or {}
+                if league.get("id") == preferred_league_id:
+                    return entry
 
         club_candidates = []
         national_candidates = []
@@ -694,21 +708,24 @@ class WorldCup(commands.Cog):
     @wc.command()
     async def player(self, ctx, *, name: str):
         """Search for a player and show the most relevant profile stats."""
+        player_league_id = await self.get_player_league_id()
+        player_season = await self.get_player_season()
+
         try:
-            players = await self.api_get("/players", {"search": name})
+            players = await self.api_get(
+                "/players",
+                {
+                    "search": name,
+                    "league": player_league_id,
+                    "season": player_season,
+                },
+            )
         except Exception:
             players = []
 
         if not players:
             try:
-                players = await self.api_get(
-                    "/players",
-                    {
-                        "search": name,
-                        "league": await self.get_league_id(),
-                        "season": await self.get_season(),
-                    },
-                )
+                players = await self.api_get("/players", {"search": name})
             except Exception as e:
                 return await ctx.send(f"❌ `{e}`")
 
@@ -750,7 +767,7 @@ class WorldCup(commands.Cog):
         if photo:
             e.set_thumbnail(url=photo)
 
-        current_entry = self.choose_player_stat(stats_entries)
+        current_entry = self.choose_player_stat(stats_entries, preferred_league_id=player_league_id)
 
         if current_entry:
             team = current_entry.get("team", {}) or {}
@@ -759,15 +776,10 @@ class WorldCup(commands.Cog):
             goals = current_entry.get("goals", {}) or {}
             cards = current_entry.get("cards", {}) or {}
 
-            if bool(team.get("national")):
-                e.add_field(name="Current team", value=team.get("name") or "Unknown", inline=True)
-                e.add_field(name="Current league", value=f"{league.get('name') or 'Unknown'} ({league.get('country') or 'Unknown'})", inline=True)
-            else:
-                e.add_field(name="Current club", value=team.get("name") or "Unknown", inline=True)
-                e.add_field(name="Current league", value=f"{league.get('name') or 'Unknown'} ({league.get('country') or 'Unknown'})", inline=True)
-
-            e.add_field(name="Position", value=games.get("position") or "?", inline=True)
             e.add_field(name="Country", value=nationality, inline=True)
+            e.add_field(name="Tournament", value=f"{league.get('name') or 'Unknown'} ({league.get('country') or 'Unknown'})", inline=True)
+            e.add_field(name="Team", value=team.get("name") or "Unknown", inline=True)
+            e.add_field(name="Position", value=games.get("position") or "?", inline=True)
             e.add_field(name="Appearances", value=games.get("appearances") or 0, inline=True)
             e.add_field(name="Goals", value=goals.get("total") or 0, inline=True)
             e.add_field(name="Assists", value=goals.get("assists") or 0, inline=True)
@@ -805,6 +817,17 @@ class WorldCup(commands.Cog):
             e.description = "No detailed stats were returned by the API for this player."
 
         await ctx.send(embed=e)
+
+    @wc.group()
+    async def playerset(self, ctx):
+        """Settings for player lookups."""
+        pass
+
+    @playerset.command()
+    async def league(self, ctx, league_id: int):
+        """Set the league/tournament used for player lookups."""
+        await self.config.player_league_id.set(league_id)
+        await ctx.send(f"✅ Player lookup league set to `{league_id}`.")
 
     @wc.command()
     async def h2h(self, ctx, team1_id: int, team2_id: int):
