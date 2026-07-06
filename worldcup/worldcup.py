@@ -157,6 +157,23 @@ class WorldCup(commands.Cog):
 
         return teams[0] if teams else None
 
+    def choose_player(self, players: List[dict], search: str) -> Optional[dict]:
+        search_norm = search.strip().lower()
+
+        for item in players:
+            player = item.get("player", {}) or {}
+            name = (player.get("name") or "").strip().lower()
+            if name == search_norm:
+                return item
+
+        for item in players:
+            player = item.get("player", {}) or {}
+            name = (player.get("name") or "").strip().lower()
+            if search_norm in name:
+                return item
+
+        return players[0] if players else None
+
     async def send_goal_dm(self, user_id: int, embed: discord.Embed) -> None:
         user = guild_member = None
         try:
@@ -648,36 +665,93 @@ class WorldCup(commands.Cog):
 
     @wc.command()
     async def player(self, ctx, *, name: str):
-        """Search player tournament stats."""
+        """Search for a player and show a detailed profile embed."""
         try:
-            players = await self.api_get(
-                "/players",
-                {
-                    "search": name,
-                    "league": await self.get_league_id(),
-                    "season": await self.get_season(),
-                },
-            )
-        except Exception as e:
-            return await ctx.send(f"❌ `{e}`")
+            players = await self.api_get("/players", {"search": name})
+        except Exception:
+            players = []
+
+        if not players:
+            try:
+                players = await self.api_get(
+                    "/players",
+                    {
+                        "search": name,
+                        "league": await self.get_league_id(),
+                        "season": await self.get_season(),
+                    },
+                )
+            except Exception as e:
+                return await ctx.send(f"❌ `{e}`")
 
         if not players:
             return await ctx.send("No player found.")
 
-        p = players[0]
-        player = p["player"]
-        stat = p["statistics"][0]
+        p = self.choose_player(players, name) or players[0]
+        player = p.get("player", {}) or {}
+        stat = (p.get("statistics") or [{}])[0] or {}
 
-        e = self.embed(f"👤 {player['name']}", discord.Color.blue())
-        if player.get("photo"):
-            e.set_thumbnail(url=player["photo"])
+        profile = None
+        player_id = player.get("id")
+        if player_id:
+            try:
+                profiles = await self.api_get("/players/profiles", {"player": player_id})
+                if profiles:
+                    profile = profiles[0]
+            except Exception:
+                profile = None
 
-        e.add_field(name="Team", value=stat["team"]["name"], inline=True)
-        e.add_field(name="Position", value=stat["games"].get("position") or "?", inline=True)
-        e.add_field(name="Appearances", value=stat["games"].get("appearences") or 0, inline=True)
-        e.add_field(name="Goals", value=stat["goals"].get("total") or 0, inline=True)
-        e.add_field(name="Assists", value=stat["goals"].get("assists") or 0, inline=True)
-        e.add_field(name="Rating", value=stat["games"].get("rating") or "N/A", inline=True)
+        profile_player = profile.get("player", {}) if profile else {}
+        if profile_player:
+            player = {**player, **profile_player}
+
+        if profile:
+            profile_stats = (profile.get("statistics") or [{}])[0] or {}
+            if profile_stats:
+                stat = profile_stats
+
+        team = stat.get("team", {}) or {}
+        league = stat.get("league", {}) or {}
+        games = stat.get("games", {}) or {}
+        goals = stat.get("goals", {}) or {}
+        shots = stat.get("shots", {}) or {}
+        passes = stat.get("passes", {}) or {}
+        cards = stat.get("cards", {}) or {}
+        substitutes = stat.get("substitutes", {}) or {}
+
+        player_name = player.get("name") or "Unknown"
+        photo = player.get("photo") or player.get("image")
+        nationality = player.get("nationality") or team.get("country") or "Unknown"
+        birth_date = None
+        birth_data = player.get("birth") or {}
+        if isinstance(birth_data, dict):
+            birth_date = birth_data.get("date")
+
+        e = self.embed(f"👤 {player_name}", discord.Color.blue())
+        if photo:
+            e.set_thumbnail(url=photo)
+
+        e.add_field(name="Current team", value=team.get("name") or "Unknown", inline=True)
+        e.add_field(name="League", value=f"{league.get('name') or 'Unknown'} ({league.get('country') or 'Unknown'})", inline=True)
+        e.add_field(name="Nationality", value=nationality, inline=True)
+        e.add_field(name="Position", value=games.get("position") or "?", inline=True)
+        e.add_field(name="Appearances", value=games.get("appearences") or 0, inline=True)
+        e.add_field(name="Goals", value=goals.get("total") or 0, inline=True)
+        e.add_field(name="Assists", value=goals.get("assists") or 0, inline=True)
+        e.add_field(name="Minutes", value=games.get("minutes") or 0, inline=True)
+        e.add_field(name="Rating", value=games.get("rating") or "N/A", inline=True)
+        e.add_field(name="Shots", value=f"{shots.get('total') or 0} total / {shots.get('on') or 0} on target", inline=True)
+        e.add_field(name="Passes", value=f"{passes.get('total') or 0} total", inline=True)
+        e.add_field(name="Cards", value=f"Y {cards.get('yellow') or 0} • R {cards.get('red') or 0}", inline=True)
+        e.add_field(name="Substitutes", value=f"In {substitutes.get('in') or 0} • Out {substitutes.get('out') or 0}", inline=True)
+
+        if birth_date:
+            e.add_field(name="Born", value=birth_date, inline=True)
+
+        e.description = (
+            f"Profile pulled for {player_name}. This shows the most relevant club-season stats available from the API, "
+            f"including current team, league, nationality, and goal/assist output."
+        )
 
         await ctx.send(embed=e)
 
