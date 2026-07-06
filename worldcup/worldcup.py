@@ -687,11 +687,15 @@ class WorldCup(commands.Cog):
     @wc.command()
     async def player(self, ctx, *, name: str):
         """Show World Cup player stats for a player name."""
+        search_name = name.strip().strip('"').strip("'")
+        if not search_name:
+            return await ctx.send("Please provide a player name.")
+
         try:
             players = await self.api_get(
                 "/players",
                 {
-                    "search": name,
+                    "search": search_name,
                     "league": await self.get_league_id(),
                     "season": await self.get_season(),
                 },
