@@ -665,7 +665,7 @@ class WorldCup(commands.Cog):
 
     @wc.command()
     async def player(self, ctx, *, name: str):
-        """Search for a player and show a detailed profile embed."""
+        """Search for a player and show the most relevant profile stats."""
         try:
             players = await self.api_get("/players", {"search": name})
         except Exception:
@@ -689,7 +689,6 @@ class WorldCup(commands.Cog):
 
         p = self.choose_player(players, name) or players[0]
         player = p.get("player", {}) or {}
-        stat = (p.get("statistics") or [{}])[0] or {}
 
         profile = None
         player_id = player.get("id")
@@ -705,23 +704,15 @@ class WorldCup(commands.Cog):
         if profile_player:
             player = {**player, **profile_player}
 
+        stats_entries = []
         if profile:
-            profile_stats = (profile.get("statistics") or [{}])[0] or {}
-            if profile_stats:
-                stat = profile_stats
-
-        team = stat.get("team", {}) or {}
-        league = stat.get("league", {}) or {}
-        games = stat.get("games", {}) or {}
-        goals = stat.get("goals", {}) or {}
-        shots = stat.get("shots", {}) or {}
-        passes = stat.get("passes", {}) or {}
-        cards = stat.get("cards", {}) or {}
-        substitutes = stat.get("substitutes", {}) or {}
+            stats_entries = profile.get("statistics") or []
+        if not stats_entries and p.get("statistics"):
+            stats_entries = p.get("statistics") or []
 
         player_name = player.get("name") or "Unknown"
         photo = player.get("photo") or player.get("image")
-        nationality = player.get("nationality") or team.get("country") or "Unknown"
+        nationality = player.get("nationality") or "Unknown"
         birth_date = None
         birth_data = player.get("birth") or {}
         if isinstance(birth_data, dict):
@@ -731,27 +722,56 @@ class WorldCup(commands.Cog):
         if photo:
             e.set_thumbnail(url=photo)
 
-        e.add_field(name="Current team", value=team.get("name") or "Unknown", inline=True)
-        e.add_field(name="League", value=f"{league.get('name') or 'Unknown'} ({league.get('country') or 'Unknown'})", inline=True)
-        e.add_field(name="Nationality", value=nationality, inline=True)
-        e.add_field(name="Position", value=games.get("position") or "?", inline=True)
-        e.add_field(name="Appearances", value=games.get("appearences") or 0, inline=True)
-        e.add_field(name="Goals", value=goals.get("total") or 0, inline=True)
-        e.add_field(name="Assists", value=goals.get("assists") or 0, inline=True)
-        e.add_field(name="Minutes", value=games.get("minutes") or 0, inline=True)
-        e.add_field(name="Rating", value=games.get("rating") or "N/A", inline=True)
-        e.add_field(name="Shots", value=f"{shots.get('total') or 0} total / {shots.get('on') or 0} on target", inline=True)
-        e.add_field(name="Passes", value=f"{passes.get('total') or 0} total", inline=True)
-        e.add_field(name="Cards", value=f"Y {cards.get('yellow') or 0} • R {cards.get('red') or 0}", inline=True)
-        e.add_field(name="Substitutes", value=f"In {substitutes.get('in') or 0} • Out {substitutes.get('out') or 0}", inline=True)
+        current_entry = None
+        for entry in stats_entries:
+            if entry.get("team", {}).get("name"):
+                current_entry = entry
+                break
+
+        if current_entry:
+            team = current_entry.get("team", {}) or {}
+            league = current_entry.get("league", {}) or {}
+            games = current_entry.get("games", {}) or {}
+            goals = current_entry.get("goals", {}) or {}
+
+            e.add_field(name="Current club", value=team.get("name") or "Unknown", inline=True)
+            e.add_field(name="Current league", value=f"{league.get('name') or 'Unknown'} ({league.get('country') or 'Unknown'})", inline=True)
+            e.add_field(name="Position", value=games.get("position") or "?", inline=True)
+            e.add_field(name="Nationality", value=nationality, inline=True)
+            e.add_field(name="Appearances", value=games.get("appearances") or 0, inline=True)
+            e.add_field(name="Goals", value=goals.get("total") or 0, inline=True)
+            e.add_field(name="Assists", value=goals.get("assists") or 0, inline=True)
+
+        else:
+            e.add_field(name="Nationality", value=nationality, inline=True)
 
         if birth_date:
             e.add_field(name="Born", value=birth_date, inline=True)
 
-        e.description = (
-            f"Profile pulled for {player_name}. This shows the most relevant club-season stats available from the API, "
-            f"including current team, league, nationality, and goal/assist output."
-        )
+        if stats_entries:
+            lines = []
+            for entry in stats_entries[:8]:
+                team = entry.get("team", {}) or {}
+                league = entry.get("league", {}) or {}
+                games = entry.get("games", {}) or {}
+                goals = entry.get("goals", {}) or {}
+                cards = entry.get("cards", {}) or {}
+                season = league.get("season") or entry.get("season") or ""
+
+                team_name = team.get("name") or "Unknown"
+                league_name = league.get("name") or "Unknown"
+                label = f"{team_name}"
+                if season:
+                    label += f" • {season}"
+
+                line = f"• {label} — {league_name} • Apps {games.get('appearances') or 0} • G {goals.get('total') or 0} • A {goals.get('assists') or 0}"
+                if cards:
+                    line += f" • Y {cards.get('yellow') or 0} / R {cards.get('red') or 0}"
+                lines.append(line)
+
+            e.description = "Showing the available club/competition entries returned by the API:\n" + "\n".join(lines)
+        else:
+            e.description = "No detailed stats were returned by the API for this player."
 
         await ctx.send(embed=e)
 
