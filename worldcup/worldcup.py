@@ -24,8 +24,6 @@ class WorldCup(commands.Cog):
             league_id=1,
             season=2026,
             timezone="Europe/Oslo",
-            player_league_ids=[],
-            player_season=None,
         )
 
         self.config.register_guild(
@@ -78,15 +76,6 @@ class WorldCup(commands.Cog):
 
     async def get_timezone_name(self):
         return await self.config.timezone()
-
-    async def get_player_league_ids(self) -> List[int]:
-        leagues = await self.config.player_league_ids()
-        if leagues:
-            return [int(item) for item in leagues if str(item).strip()]
-        return [await self.get_league_id()]
-
-    async def get_player_season(self):
-        return await self.config.player_season() or await self.get_season()
 
     # -------------------------
     # Format helpers
@@ -184,40 +173,6 @@ class WorldCup(commands.Cog):
                 return item
 
         return players[0] if players else None
-
-    def choose_player_stat(self, stats_entries: List[dict], preferred_league_ids: Optional[List[int]] = None) -> Optional[dict]:
-        if not stats_entries:
-            return None
-
-        def season_value(entry: dict) -> int:
-            season = entry.get("league", {}).get("season") or entry.get("season")
-            try:
-                return int(season)
-            except Exception:
-                return 0
-
-        if preferred_league_ids:
-            for entry in stats_entries:
-                league = entry.get("league", {}) or {}
-                if league.get("id") in preferred_league_ids:
-                    return entry
-
-        club_candidates = []
-        national_candidates = []
-        for entry in stats_entries:
-            team = entry.get("team", {}) or {}
-            if bool(team.get("national")):
-                national_candidates.append(entry)
-            else:
-                club_candidates.append(entry)
-
-        if club_candidates:
-            return max(club_candidates, key=lambda item: (season_value(item), 1))
-
-        if national_candidates:
-            return max(national_candidates, key=lambda item: (season_value(item), 1))
-
-        return stats_entries[0]
 
     async def send_goal_dm(self, user_id: int, embed: discord.Embed) -> None:
         user = guild_member = None
@@ -710,183 +665,47 @@ class WorldCup(commands.Cog):
 
     @wc.command()
     async def player(self, ctx, *, name: str):
-        """Search for a player and show the most relevant profile stats."""
-        player_league_ids = await self.get_player_league_ids()
-        player_season = await self.get_player_season()
-
-        players = []
-        search_params = {"search": name}
-        if player_season:
-            search_params["season"] = player_season
-
-        for league_id in player_league_ids:
-            for params in ({**search_params, "league": league_id}, {"search": name, "league": league_id}):
-                try:
-                    league_players = await self.api_get("/players", params)
-                    if league_players:
-                        players.extend(league_players)
-                        break
-                except Exception:
-                    continue
+        """Show World Cup player stats for a player name."""
+        try:
+            players = await self.api_get(
+                "/players",
+                {
+                    "search": name,
+                    "league": await self.get_league_id(),
+                    "season": await self.get_season(),
+                },
+            )
+        except Exception as e:
+            return await ctx.send(f"❌ `{e}`")
 
         if not players:
-            try:
-                players = await self.api_get("/players", {"search": name})
-            except Exception:
-                players = []
-
-        if not players:
-            return await ctx.send("No player found for that search.")
-
-        if not players:
-            return await ctx.send("No player found.")
+            return await ctx.send("No player found for that World Cup search.")
 
         p = self.choose_player(players, name) or players[0]
         player = p.get("player", {}) or {}
-
-        profile = None
-        player_id = player.get("id")
-        if player_id:
-            try:
-                profiles = await self.api_get("/players/profiles", {"player": player_id})
-                if profiles:
-                    profile = profiles[0]
-            except Exception:
-                profile = None
-
-        profile_player = profile.get("player", {}) if profile else {}
-        if profile_player:
-            player = {**player, **profile_player}
-
-        stats_entries = []
-        if profile:
-            stats_entries = profile.get("statistics") or []
-        if not stats_entries and p.get("statistics"):
-            stats_entries = p.get("statistics") or []
+        stat = (p.get("statistics") or [{}])[0] or {}
 
         player_name = player.get("name") or "Unknown"
         photo = player.get("photo") or player.get("image")
-        nationality = player.get("nationality") or "Unknown"
-        birth_date = None
-        birth_data = player.get("birth") or {}
-        if isinstance(birth_data, dict):
-            birth_date = birth_data.get("date")
+        team = stat.get("team", {}) or {}
+        league = stat.get("league", {}) or {}
+        games = stat.get("games", {}) or {}
+        goals = stat.get("goals", {}) or {}
+        cards = stat.get("cards", {}) or {}
+        nationality = player.get("nationality") or team.get("country") or "Unknown"
 
         e = self.embed(f"👤 {player_name}", discord.Color.blue())
         if photo:
-            e.set_thumbnail(url=photo)
+            e.set_image(url=photo)
 
-        current_entry = self.choose_player_stat(stats_entries, preferred_league_ids=player_league_ids)
-
-        if current_entry:
-            team = current_entry.get("team", {}) or {}
-            league = current_entry.get("league", {}) or {}
-            games = current_entry.get("games", {}) or {}
-            goals = current_entry.get("goals", {}) or {}
-            cards = current_entry.get("cards", {}) or {}
-
-            e.add_field(name="Country", value=nationality, inline=True)
-            e.add_field(name="Tournament", value=f"{league.get('name') or 'Unknown'} ({league.get('country') or 'Unknown'})", inline=True)
-            e.add_field(name="Team", value=team.get("name") or "Unknown", inline=True)
-            e.add_field(name="Position", value=games.get("position") or "?", inline=True)
-            e.add_field(name="Appearances", value=games.get("appearances") or 0, inline=True)
-            e.add_field(name="Goals", value=goals.get("total") or 0, inline=True)
-            e.add_field(name="Assists", value=goals.get("assists") or 0, inline=True)
-            e.add_field(name="Cards", value=f"Y {cards.get('yellow') or 0} • R {cards.get('red') or 0}", inline=True)
-
-        else:
-            e.add_field(name="Country", value=nationality, inline=True)
-
-        if birth_date:
-            e.add_field(name="Born", value=birth_date, inline=True)
-
-        if stats_entries:
-            lines = []
-            for entry in stats_entries[:8]:
-                team = entry.get("team", {}) or {}
-                league = entry.get("league", {}) or {}
-                games = entry.get("games", {}) or {}
-                goals = entry.get("goals", {}) or {}
-                cards = entry.get("cards", {}) or {}
-                season = league.get("season") or entry.get("season") or ""
-
-                team_name = team.get("name") or "Unknown"
-                league_name = league.get("name") or "Unknown"
-                label = f"{team_name}"
-                if season:
-                    label += f" • {season}"
-
-                line = f"• {label} — {league_name} • Apps {games.get('appearances') or 0} • G {goals.get('total') or 0} • A {goals.get('assists') or 0}"
-                if cards:
-                    line += f" • Y {cards.get('yellow') or 0} / R {cards.get('red') or 0}"
-                lines.append(line)
-
-            e.description = "Recent club/competition entries returned by the API:\n" + "\n".join(lines)
-        else:
-            e.description = "No detailed stats were returned by the API for this player."
-
-        await ctx.send(embed=e)
-
-    @commands.group(name="playerset")
-    async def playerset(self, ctx):
-        """Settings for player lookups."""
-        pass
-
-    @playerset.command()
-    async def league(self, ctx, *league_ids: str):
-        """Set one or more league/tournament IDs for player lookups, separated by commas or spaces."""
-        values = []
-        for arg in league_ids:
-            values.extend([item.strip() for item in arg.split(",") if item.strip()])
-
-        parsed = []
-        for value in values:
-            try:
-                parsed.append(int(value))
-            except ValueError:
-                return await ctx.send(f"❌ Invalid league ID: `{value}`")
-
-        if not parsed:
-            return await ctx.send("❌ Please provide at least one league ID.")
-
-        await self.config.player_league_ids.set(parsed)
-        await ctx.send(f"✅ Player lookup leagues set to `{', '.join(str(item) for item in parsed)}`.")
-
-    @playerset.command()
-    async def findleague(self, ctx, *, search: str = "league"):
-        """Search available leagues for player lookups."""
-        search_terms = [search]
-        if search.lower() not in {"bundesliga", "la liga", "laliga", "serie a", "premier league", "ligue 1"}:
-            search_terms.extend(["bundesliga", "la liga", "serie a", "premier league", "ligue 1", "eredivisie"]) 
-
-        seen = set()
-        results = []
-
-        for term in search_terms:
-            try:
-                leagues = await self.api_get("/leagues", {"search": term})
-            except Exception:
-                continue
-            for item in leagues:
-                league = item.get("league", {})
-                league_id = league.get("id")
-                if not league_id or league_id in seen:
-                    continue
-                seen.add(league_id)
-                results.append(item)
-
-        if not results:
-            return await ctx.send("No leagues found.")
-
-        e = self.embed(f"🔎 League search: {search}", discord.Color.blue())
-        for item in results[:20]:
-            league = item.get("league", {})
-            country = item.get("country", {})
-            e.add_field(
-                name=f"{league.get('name')} — ID `{league.get('id')}`",
-                value=f"Country: {country.get('name', 'Unknown')}",
-                inline=False,
-            )
+        e.add_field(name="Country", value=nationality, inline=True)
+        e.add_field(name="Tournament", value=f"{league.get('name') or 'Unknown'} ({league.get('country') or 'Unknown'})", inline=True)
+        e.add_field(name="Team", value=team.get("name") or "Unknown", inline=True)
+        e.add_field(name="Position", value=games.get("position") or "?", inline=True)
+        e.add_field(name="Appearances", value=games.get("appearances") or 0, inline=True)
+        e.add_field(name="Goals", value=goals.get("total") or 0, inline=True)
+        e.add_field(name="Assists", value=goals.get("assists") or 0, inline=True)
+        e.add_field(name="Cards", value=f"Y {cards.get('yellow') or 0} • R {cards.get('red') or 0}", inline=True)
 
         await ctx.send(embed=e)
 
