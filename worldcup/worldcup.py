@@ -705,7 +705,7 @@ class WorldCup(commands.Cog):
         e.description = "\n".join(lines)
         await ctx.send(embed=e)
 
-    @wc.command()
+    @commands.command(name="player")
     async def player(self, ctx, *, name: str):
         """Search for a player and show the most relevant profile stats."""
         player_league_id = await self.get_player_league_id()
@@ -818,7 +818,7 @@ class WorldCup(commands.Cog):
 
         await ctx.send(embed=e)
 
-    @wc.group()
+    @commands.group(name="playerset")
     async def playerset(self, ctx):
         """Settings for player lookups."""
         pass
