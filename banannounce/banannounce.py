@@ -159,26 +159,46 @@ class BanAnnounce(commands.Cog):
             f"GIF/Image: `{data['image_url'] or 'None'}`"
         )
 
-    @commands.Cog.listener()
-    async def on_member_ban(
+    @commands.command(name="ben")
+    @commands.guild_only()
+    @commands.admin_or_permissions(manage_guild=True)
+    async def ben(
+        self,
+        ctx: commands.Context,
+        user: discord.User,
+    ):
+        """Send a fake ban announcement for a user or ID."""
+
+        sent = await self._send_ban_announcement(ctx.guild, user)
+
+        if sent:
+            await ctx.send(
+                f"✅ Fake ban announcement sent for {user.mention}."
+            )
+        else:
+            await ctx.send(
+                "⚠️ Ban announcements are disabled or not configured for this server."
+            )
+
+    async def _send_ban_announcement(
         self,
         guild: discord.Guild,
         user: discord.User,
-    ):
+    ) -> bool:
         data = await self.config.guild(guild).all()
 
         if not data["enabled"]:
-            return
+            return False
 
         channel_id = data["channel_id"]
 
         if not channel_id:
-            return
+            return False
 
         channel = guild.get_channel(channel_id)
 
         if channel is None:
-            return
+            return False
 
         title = data["title"].format(
             user=str(user),
@@ -227,12 +247,19 @@ class BanAnnounce(commands.Cog):
             )
 
         try:
-            await channel.send(
-                embed=embed
-            )
-
+            await channel.send(embed=embed)
         except discord.Forbidden:
-            pass
+            return False
+
+        return True
+
+    @commands.Cog.listener()
+    async def on_member_ban(
+        self,
+        guild: discord.Guild,
+        user: discord.User,
+    ):
+        await self._send_ban_announcement(guild, user)
 
 
 async def setup(bot: Red):
