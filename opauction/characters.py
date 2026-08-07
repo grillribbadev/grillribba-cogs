@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 
 class CharacterManager:
@@ -16,16 +16,22 @@ class CharacterManager:
         self.load()
 
     # -----------------------
-    # Loading
+    # File and persistence helpers
     # -----------------------
+
+    @property
+    def data_path(self) -> Path:
+        return Path(__file__).parent / "data" / "characters.json"
 
     def load(self):
         """Load all characters from the JSON file."""
 
-        path = Path(__file__).parent / "data" / "characters.json"
+        path = self.data_path
 
         if not path.exists():
             self.characters = {}
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("[]", encoding="utf-8")
             return
 
         with path.open("r", encoding="utf-8") as fp:
@@ -33,11 +39,91 @@ class CharacterManager:
 
         self.characters = {}
 
+        seen_ids: set[int] = set()
         for character in data:
-            self.characters[int(character["id"])] = character
+            character_id = int(character["id"])
+            if character_id in seen_ids:
+                continue
+            seen_ids.add(character_id)
+            char = dict(character)
+            char.setdefault("rarity", "Common")
+            char.setdefault("arc", "Unknown")
+            char.setdefault("wiki", "")
+            self.characters[character_id] = char
+
+    def save(self):
+        """Persist the canonical roster back to characters.json."""
+        path = self.data_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as fp:
+            json.dump(self.all(), fp, indent=2, ensure_ascii=False)
+            fp.write("\n")
 
     def reload(self):
         self.load()
+
+    def export_json(self) -> str:
+        """Return a JSON payload suitable for import/export commands."""
+        return json.dumps(self.all(), indent=2, ensure_ascii=False)
+
+    def import_json(self, payload: str) -> bool:
+        """Replace the roster from a JSON payload."""
+        raw = json.loads(payload)
+        if not isinstance(raw, list):
+            return False
+
+        imported: dict[int, dict] = {}
+        for item in raw:
+            if not isinstance(item, dict):
+                return False
+            if "id" not in item or "name" not in item:
+                return False
+            character_id = int(item["id"])
+            imported[character_id] = {
+                "id": character_id,
+                "name": str(item["name"]),
+                "rarity": str(item.get("rarity", "Common")),
+                "arc": str(item.get("arc", "Unknown")),
+                "wiki": str(item.get("wiki", "")),
+            }
+
+        self.characters = imported
+        self.save()
+        return True
+
+    def add(self, *, name: str, rarity: str = "Common", arc: str = "Unknown", wiki: str = "") -> Optional[dict]:
+        """Add a new character to the roster and persist it."""
+        normalized_name = " ".join(name.strip().split())
+        if not normalized_name:
+            return None
+
+        if any(entry.get("name", "").lower() == normalized_name.lower() for entry in self.characters.values()):
+            return None
+
+        next_id = 1
+        if self.characters:
+            next_id = max(self.characters.keys()) + 1
+
+        character = {
+            "id": next_id,
+            "name": normalized_name,
+            "rarity": rarity or "Common",
+            "arc": arc or "Unknown",
+            "wiki": wiki or "",
+        }
+
+        self.characters[next_id] = character
+        self.save()
+        return character
+
+    def remove(self, character_id: int) -> bool:
+        """Remove a character from the canonical roster."""
+        if character_id not in self.characters:
+            return False
+        removed = self.characters.pop(character_id)
+        self.owners.pop(character_id, None)
+        self.save()
+        return removed is not None
 
     # -----------------------
     # Character Lookup

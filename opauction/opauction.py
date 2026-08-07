@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import io
+
 import discord
 
 from redbot.core import Config, commands
@@ -39,6 +41,7 @@ class OPAuction(commands.Cog):
             "current_auction": {},
             "queue": [],
             "last_auction_started": 0,
+            "blocked_users": [],
         }
 
         default_user = {
@@ -66,10 +69,18 @@ class OPAuction(commands.Cog):
         """Redbot data cleanup hook."""
         pass
 
+    async def is_blocked(self, user_id: int) -> bool:
+        """Return True when a user is explicitly banned from live auction bidding."""
+        blocked = await self.config.blocked_users()
+        return int(user_id) in [int(item) for item in blocked]
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         """Listen only in the configured auction channel for bid messages."""
         if message.author.bot:
+            return
+
+        if await self.is_blocked(message.author.id):
             return
 
         if await self.config.auction_running() is False:
@@ -199,6 +210,47 @@ class OPAuction(commands.Cog):
         await self.auction.skip()
         await ctx.send(embed=AuctionEmbeds.success("Current auction skipped."))
 
+    @auction_group.command(name="block")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def block_user(self, ctx, member: discord.Member):
+        """Block a member from bidding in auction chat."""
+        blocked = await self.config.blocked_users()
+        if member.id in [int(item) for item in blocked]:
+            return await ctx.send(embed=AuctionEmbeds.error(f"{member.mention} is already blocked."))
+
+        blocked.append(member.id)
+        await self.config.blocked_users.set(blocked)
+        await ctx.send(embed=AuctionEmbeds.success(f"{member.mention} has been blocked from auctioning."))
+
+    @auction_group.command(name="unblock")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def unblock_user(self, ctx, member: discord.Member):
+        """Remove a member from the auction block list."""
+        blocked = await self.config.blocked_users()
+        if member.id not in [int(item) for item in blocked]:
+            return await ctx.send(embed=AuctionEmbeds.error(f"{member.mention} is not blocked."))
+
+        blocked = [user_id for user_id in blocked if int(user_id) != member.id]
+        await self.config.blocked_users.set(blocked)
+        await ctx.send(embed=AuctionEmbeds.success(f"{member.mention} has been removed from the block list."))
+
+    @auction_group.command(name="blocklist")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def blocklist(self, ctx):
+        """Show the configured auction block list."""
+        blocked = await self.config.blocked_users()
+        if not blocked:
+            return await ctx.send(embed=AuctionEmbeds.success("The auction block list is empty."))
+
+        lines = []
+        for user_id in blocked:
+            user = self.bot.get_user(int(user_id))
+            lines.append(f"• <@{user_id}>" if user else f"• `{user_id}`")
+
+        embed = discord.Embed(title="Auction Block List", color=discord.Color.orange())
+        embed.description = "\n".join(lines)
+        await ctx.send(embed=embed)
+
     @auction_group.command(name="status")
     @commands.admin_or_permissions(manage_guild=True)
     async def status(self, ctx):
@@ -211,6 +263,61 @@ class OPAuction(commands.Cog):
         embed.add_field(name="Interval", value=str(state["interval"]))
         embed.add_field(name="Current", value="Yes" if state["current"] else "No")
         await ctx.send(embed=embed)
+
+    @auction_group.command(name="addcharacter", aliases=["addchar"])
+    @commands.admin_or_permissions(manage_guild=True)
+    async def add_character(self, ctx, name: str, rarity: str = "Common", arc: str = "Unknown", wiki: str = ""):
+        """Add a new character to the persistent roster."""
+        character = self.characters.add(name=name, rarity=rarity, arc=arc, wiki=wiki)
+        if not character:
+            return await ctx.send(embed=AuctionEmbeds.error("That character already exists or the name was empty."))
+        await ctx.send(embed=AuctionEmbeds.success(f"Added {character['name']} to the roster."))
+
+    @auction_group.command(name="removecharacter", aliases=["rmchar"])
+    @commands.admin_or_permissions(manage_guild=True)
+    async def remove_character(self, ctx, *, name: str):
+        """Remove a character from the persistent roster."""
+        target = self.characters.get_by_name(name)
+        if not target:
+            return await ctx.send(embed=AuctionEmbeds.error("I could not find that character in the roster."))
+
+        self.characters.remove(int(target["id"]))
+        await ctx.send(embed=AuctionEmbeds.success(f"Removed {target['name']} from the roster."))
+
+    @auction_group.command(name="exportcharacters", aliases=["exportchars", "exportjson"])
+    @commands.admin_or_permissions(manage_guild=True)
+    async def export_characters(self, ctx):
+        """Export the full roster as characters.json."""
+        payload = self.characters.export_json().encode("utf-8")
+        await ctx.send(file=discord.File(io.BytesIO(payload), filename="characters.json"))
+
+    @auction_group.command(name="importcharacters", aliases=["importchars", "importjson"])
+    @commands.admin_or_permissions(manage_guild=True)
+    async def import_characters(self, ctx, *, payload: str = None):
+        """Import a characters.json payload from a command argument or attachment."""
+        if not payload:
+            if ctx.message.attachments:
+                attachment = ctx.message.attachments[0]
+                payload = (await attachment.read()).decode("utf-8")
+            else:
+                return await ctx.send(embed=AuctionEmbeds.error("Provide a JSON payload or attach a characters.json file."))
+
+        if not self.characters.import_json(payload):
+            return await ctx.send(embed=AuctionEmbeds.error("The supplied payload is not a valid character JSON array."))
+
+        await ctx.send(embed=AuctionEmbeds.success("Character roster imported successfully."))
+
+    @auction_group.command(name="wipe", aliases=["resetusers", "reset"])
+    @commands.admin_or_permissions(manage_guild=True)
+    async def wipe(self, ctx):
+        """Reset all registered player data in the cog."""
+        users = await self.config.all_users()
+        for user_id in list(users.keys()):
+            player = self.config.user_from_id(int(user_id))
+            await player.clear()
+
+        await self.characters.rebuild_owners()
+        await ctx.send(embed=AuctionEmbeds.success("Auction user-state wipe completed."))
 
     @auction_group.command(name="channel")
     @commands.admin_or_permissions(manage_guild=True)

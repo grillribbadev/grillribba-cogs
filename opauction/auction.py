@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import random
+import re
 from typing import Any
+from urllib.parse import quote
 
 import aiohttp
 import discord
@@ -14,12 +16,14 @@ from .constants import (
     ANTI_SNIPE_THRESHOLD,
     AUCTION_TAX,
     BID_COOLDOWN,
-    CHARACTER_DATA_FILE,
     DEFAULT_AUCTION_DURATION,
     DEFAULT_AUCTION_INTERVAL,
+    GOING_ONCE_SECONDS,
+    GOING_TWICE_SECONDS,
     INVALID_BID_LIMIT,
     MAX_ANTI_SNIPE,
     MINIMUM_BID_INCREMENT,
+    NO_BID_CLOSE_SECONDS,
 )
 from .utils import clean_name, format_berries, format_duration, utc_timestamp
 from .views import AuctionEmbeds
@@ -47,8 +51,37 @@ class AuctionManager:
                 current = await self.get_current_auction()
 
                 if current:
-                    if current.get("ends_at", 0) <= utc_timestamp():
-                        await self.finish_auction()
+                    now = utc_timestamp()
+                    started_at = int(current.get("started_at", now))
+
+                    # Dynamic live-auction rule:
+                    # - if a bid has arrived, keep it open and let the highest bid settle the sale
+                    # - if nobody has bid yet, the no-bid countdown drives the normal auction close
+                    if int(current.get("bid", 1)) <= 1:
+                        elapsed = now - started_at
+
+                        if elapsed >= GOING_ONCE_SECONDS and not current.get("going_once_issued"):
+                            channel = self.cog.bot.get_channel(int(current.get("channel_id", 0)))
+                            if channel:
+                                try:
+                                    await channel.send("Going once...")
+                                except discord.HTTPException:
+                                    pass
+                            current["going_once_issued"] = True
+                            await self.config.current_auction.set(current)
+
+                        if elapsed >= GOING_TWICE_SECONDS and not current.get("going_twice_issued"):
+                            channel = self.cog.bot.get_channel(int(current.get("channel_id", 0)))
+                            if channel:
+                                try:
+                                    await channel.send("Going twice...")
+                                except discord.HTTPException:
+                                    pass
+                            current["going_twice_issued"] = True
+                            await self.config.current_auction.set(current)
+
+                        if elapsed >= NO_BID_CLOSE_SECONDS:
+                            await self.finish_auction()
                     continue
 
                 interval = await self.config.auction_interval()
@@ -131,13 +164,16 @@ class AuctionManager:
             "highest_bidder_id": None,
             "seller_id": seller_id,
             "started_at": utc_timestamp(),
-            "ends_at": ending,
+            "ends_at": None,
             "message_id": None,
             "channel_id": channel_id,
             "invalid_counts": {},
             "ignored_users": [],
             "last_bid_at": {},
             "image_url": await self.get_image_url(character),
+            "going_once_issued": False,
+            "going_twice_issued": False,
+            "sold": False,
         }
 
         # Preserve queue changes when an auction is pulled from it.
@@ -254,14 +290,18 @@ class AuctionManager:
             await self.count_invalid_bid(state, bidder_id)
             return
 
-        if bidder_id in state.get("last_bid_at", {}):
-            elapsed = utc_timestamp() - int(state["last_bid_at"].get(str(bidder_id), 0))
+        last_bid_at = state.get("last_bid_at", {})
+        last_bid_key = str(bidder_id)
+        if last_bid_key in last_bid_at:
+            elapsed = utc_timestamp() - int(last_bid_at.get(last_bid_key, 0))
             if elapsed < BID_COOLDOWN:
                 await self.count_invalid_bid(state, bidder_id)
+                await message.reply("You are bidding too quickly. Please wait a moment.")
                 return
 
         if not await self.cog.economy.reserve(bidder_id, bid):
             await self.count_invalid_bid(state, bidder_id)
+            await message.reply("You do not have enough available beri for that bid.")
             return
 
         old_highest = state.get("highest_bidder_id")
@@ -270,8 +310,11 @@ class AuctionManager:
 
         state["bid"] = bid
         state["highest_bidder_id"] = bidder_id
-        state["last_bid_at"][str(bidder_id)] = utc_timestamp()
+        state["last_bid_at"][last_bid_key] = utc_timestamp()
 
+        # The auction now remains live until sale is resolved, but a bid can still
+        # trigger a final no-bid slowdown path if it arrives in the closing window.
+        state["ends_at"] = utc_timestamp() + (await self.config.auction_duration())
         if state.get("ends_at", 0) - utc_timestamp() <= ANTI_SNIPE_THRESHOLD:
             new_ends = state.get("ends_at", 0) + ANTI_SNIPE_EXTENSION
             max_allowed = state.get("started_at", utc_timestamp()) + (await self.config.auction_duration()) + MAX_ANTI_SNIPE
@@ -281,6 +324,7 @@ class AuctionManager:
 
         await self.config.current_auction.set(state)
         await self.update_current_embed(state)
+        await message.add_reaction("✅")
 
     async def count_invalid_bid(self, state: dict[str, Any], user_id: int) -> None:
         """Track invalid bid attempts and ban a user from the current auction."""
@@ -388,30 +432,50 @@ class AuctionManager:
         if not wiki_title:
             return None
 
-        url = (
+        title = quote(str(wiki_title).replace(" ", "_"), safe="")
+        api_url = (
             "https://onepiece.fandom.com/api.php"
             "?action=query&prop=pageimages&format=json&origin=*&"
             "piprop=original&titles="
-            f"{wiki_title}"
+            f"{title}"
         )
 
+        headers = {"User-Agent": "OPAuction/1.0 (+https://github.com/Grillribba)"}
+
+        payload = None
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=10) as response:
+            async with aiohttp.ClientSession(headers=headers) as session:
+                async with session.get(api_url, timeout=10) as response:
+                    if response.status == 200:
+                        payload = await response.json()
+                    else:
+                        payload = None
+        except (aiohttp.ClientError, asyncio.TimeoutError):
+            payload = None
+
+        if payload:
+            pages = payload.get("query", {}).get("pages", {})
+            for page_data in pages.values():
+                image = page_data.get("original", {}).get("source")
+                if image:
+                    self.image_cache[character_id] = image
+                    return image
+
+        # Fallback: scrape the wiki page HTML for its OpenGraph image metadata.
+        page_url = f"https://onepiece.fandom.com/wiki/{title}"
+        try:
+            async with aiohttp.ClientSession(headers=headers) as session:
+                async with session.get(page_url, timeout=10) as response:
                     if response.status != 200:
                         return None
-                    payload = await response.json()
+                    html = await response.text()
         except (aiohttp.ClientError, asyncio.TimeoutError):
             return None
 
-        pages = payload.get("query", {}).get("pages", {})
-        if not pages:
-            return None
-
-        for page_data in pages.values():
-            image = page_data.get("original", {}).get("source")
-            if image:
-                self.image_cache[character_id] = image
-                return image
+        match = re.search(r'<meta\s+property="og:image"\s+content="([^"]+)"', html, re.IGNORECASE)
+        if match:
+            image_url = match.group(1)
+            self.image_cache[character_id] = image_url
+            return image_url
 
         return None
