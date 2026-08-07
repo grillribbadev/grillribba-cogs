@@ -13,7 +13,7 @@ from .utils import format_berries, format_duration
 
 class AuctionEmbeds:
     @staticmethod
-    def auction_start(character: dict, ending: int) -> discord.Embed:
+    def auction_start(character: dict, ending: int, image_url: str | None = None) -> discord.Embed:
         embed = discord.Embed(
             title=f"🔨 {character['name']}",
             description="A new auction has begun!",
@@ -38,8 +38,8 @@ class AuctionEmbeds:
             inline=True,
         )
 
-        if character.get("image"):
-            embed.set_thumbnail(url=character["image"])
+        if image_url:
+            embed.set_thumbnail(url=image_url)
 
         embed.set_footer(text=f"Auction ends <t:{ending}:R>")
 
@@ -51,6 +51,7 @@ class AuctionEmbeds:
         bidder: discord.Member,
         bid: int,
         ending: int,
+        image_url: str | None = None,
     ) -> discord.Embed:
 
         embed = discord.Embed(
@@ -64,8 +65,8 @@ class AuctionEmbeds:
             f"Current Bid: **{format_berries(bid)}**"
         )
 
-        if character.get("image"):
-            embed.set_thumbnail(url=character["image"])
+        if image_url:
+            embed.set_thumbnail(url=image_url)
 
         embed.set_footer(text=f"Ends <t:{ending}:R>")
 
@@ -76,6 +77,7 @@ class AuctionEmbeds:
         character: dict,
         winner: discord.Member,
         price: int,
+        image_url: str | None = None,
     ) -> discord.Embed:
 
         embed = discord.Embed(
@@ -89,13 +91,13 @@ class AuctionEmbeds:
             f"Price: **{format_berries(price)}**"
         )
 
-        if character.get("image"):
-            embed.set_thumbnail(url=character["image"])
+        if image_url:
+            embed.set_thumbnail(url=image_url)
 
         return embed
 
     @staticmethod
-    def no_bids(character: dict) -> discord.Embed:
+    def no_bids(character: dict, image_url: str | None = None) -> discord.Embed:
 
         embed = discord.Embed(
             title="❌ No Bids",
@@ -103,8 +105,8 @@ class AuctionEmbeds:
             color=COLOR_ERROR,
         )
 
-        if character.get("image"):
-            embed.set_thumbnail(url=character["image"])
+        if image_url:
+            embed.set_thumbnail(url=image_url)
 
         return embed
 

@@ -179,7 +179,8 @@ class AuctionManager:
         # Preserve queue changes when an auction is pulled from it.
         await self.config.queue.set(queue)
 
-        embed = AuctionEmbeds.auction_start(character, ending)
+        image_url = state.get("image_url")
+        embed = AuctionEmbeds.auction_start(character, ending, image_url=image_url)
         try:
             message = await channel.send(embed=embed)
         except discord.HTTPException:
@@ -354,7 +355,8 @@ class AuctionManager:
         bid = int(state["bid"])
         highest_bidder_id = state.get("highest_bidder_id")
         bidder = self.cog.bot.get_user(highest_bidder_id) if highest_bidder_id else None
-        embed = AuctionEmbeds.new_bid(character, bidder, bid, int(state["ends_at"])) if bidder else AuctionEmbeds.auction_start(character, int(state["ends_at"]))
+        image_url = state.get("image_url")
+        embed = AuctionEmbeds.new_bid(character, bidder, bid, int(state["ends_at"]), image_url=image_url) if bidder else AuctionEmbeds.auction_start(character, int(state["ends_at"]), image_url=image_url)
 
         try:
             message = await channel.fetch_message(message_id)
@@ -400,11 +402,11 @@ class AuctionManager:
                     await self.cog.economy.deposit(seller_id, seller_share)
                     await self.cog.economy.remove_character(seller_id, character_id)
 
-                embed = AuctionEmbeds.sold(character, winner, price)
+                embed = AuctionEmbeds.sold(character, winner, price, image_url=state.get("image_url"))
             else:
-                embed = AuctionEmbeds.no_bids(character)
+                embed = AuctionEmbeds.no_bids(character, image_url=state.get("image_url"))
         else:
-            embed = AuctionEmbeds.no_bids(character)
+            embed = AuctionEmbeds.no_bids(character, image_url=state.get("image_url"))
 
             # A no-bid queue auction should leave the character with the seller.
             # A pool auction should leave the character unowned in the character cache.
@@ -456,7 +458,10 @@ class AuctionManager:
         if payload:
             pages = payload.get("query", {}).get("pages", {})
             for page_data in pages.values():
-                image = page_data.get("original", {}).get("source")
+                image = (
+                    page_data.get("original", {}).get("source")
+                    or page_data.get("thumbnail", {}).get("source")
+                )
                 if image:
                     self.image_cache[character_id] = image
                     return image
