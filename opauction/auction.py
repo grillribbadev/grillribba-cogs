@@ -180,12 +180,9 @@ class AuctionManager:
         if not channel_id:
             return False
 
-        channel = self.cog.bot.get_channel(channel_id)
+        channel = await self.resolve_channel(channel_id)
         if not channel:
-            try:
-                channel = await self.cog.bot.fetch_channel(channel_id)
-            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                return False
+            return False
 
         if not isinstance(channel, discord.TextChannel):
             return False
@@ -264,6 +261,21 @@ class AuctionManager:
             return None
         return current
 
+    async def resolve_channel(self, channel_id: int) -> discord.TextChannel | None:
+        """Resolve a configured channel from cache or fetch it from Discord when needed."""
+        channel = self.cog.bot.get_channel(channel_id)
+        if channel:
+            return channel
+
+        try:
+            channel = await self.cog.bot.fetch_channel(channel_id)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            return None
+
+        if isinstance(channel, discord.TextChannel):
+            return channel
+        return None
+
     async def clear_current_auction(self) -> None:
         """Clear active auction state from storage."""
         await self.config.current_auction.set({})
@@ -273,7 +285,7 @@ class AuctionManager:
         channel_id = await self.config.auction_channel()
         if not channel_id:
             return None
-        return self.cog.bot.get_channel(channel_id)
+        return await self.resolve_channel(int(channel_id))
 
     async def handle_bid(self, message: discord.Message) -> bool:
         """Handle a numeric bid sent in the configured auction channel."""
@@ -397,7 +409,7 @@ class AuctionManager:
         if not channel_id or not message_id:
             return
 
-        channel = self.cog.bot.get_channel(channel_id)
+        channel = await self.resolve_channel(channel_id)
         if not channel:
             return
 
@@ -431,7 +443,7 @@ class AuctionManager:
 
         channel_id = state.get("channel_id")
         message_id = state.get("message_id")
-        channel = self.cog.bot.get_channel(channel_id) if channel_id else None
+        channel = await self.resolve_channel(int(channel_id)) if channel_id else None
 
         winner_id = state.get("highest_bidder_id")
         bid = int(state.get("bid", 1))
