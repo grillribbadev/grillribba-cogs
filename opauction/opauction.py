@@ -193,9 +193,15 @@ class OPAuction(commands.Cog):
     @auction_group.command(name="begin")
     @commands.admin_or_permissions(manage_guild=True)
     async def begin_auction(self, ctx):
-        """Start the automatic auction loop."""
-        await self.auction.begin()
-        await ctx.send(embed=AuctionEmbeds.success("Auction automation has started."))
+        """Start the automatic auction loop and post the first live auction."""
+        if not await self.config.auction_channel():
+            return await ctx.send(embed=AuctionEmbeds.error("No auction channel has been configured yet. Use `auction channel #...` first."))
+
+        started = await self.auction.begin()
+        if not started:
+            return await ctx.send(embed=AuctionEmbeds.error("Auction automation is running, but no auction embed could be posted to the configured channel."))
+
+        await ctx.send(embed=AuctionEmbeds.success("Auction automation has started and the first auction is live."))
 
     @auction_group.command(name="stop")
     @commands.admin_or_permissions(manage_guild=True)

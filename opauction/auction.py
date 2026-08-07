@@ -135,11 +135,11 @@ class AuctionManager:
             pass
 
     async def begin(self) -> bool:
-        """Start the automatic auction loop."""
+        """Start the automatic auction loop and immediately post a live auction when possible."""
         await self.config.auction_running.set(True)
         await self.config.last_auction_started.set(utc_timestamp())
         if not await self.get_current_auction():
-            await self.start_auction()
+            return await self.start_auction()
         return True
 
     async def stop(self) -> None:
