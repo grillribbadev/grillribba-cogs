@@ -86,6 +86,9 @@ class OPAuction(commands.Cog):
         if await self.config.auction_running() is False:
             return
 
+        if not await self.economy.exists(message.author.id):
+            return
+
         state = await self.auction.get_current_auction()
         if not state:
             return
@@ -117,19 +120,19 @@ class OPAuction(commands.Cog):
 
         created = await self.economy.register_player(ctx.author.id)
         if not created:
-            return await ctx.send("You have already joined the game.")
+            return await ctx.send(embed=AuctionEmbeds.error("You have already joined the game."))
 
-        await ctx.send("Welcome to the auction!\nYou received ฿250.")
+        await ctx.send(embed=AuctionEmbeds.success("Welcome to the auction!\nYou received ฿250."))
 
-    @auction_group.command(name="balance")
+    @auction_group.command(name="balance", aliases=["wallet", "beri"])
     async def balance(self, ctx):
         """View your balance."""
 
         if not await self.economy.exists(ctx.author.id):
-            return await ctx.send("Use `.auction start` first.")
+            return await ctx.send(embed=AuctionEmbeds.error("Use `.auction start` first."))
 
         balance = await self.economy.balance(ctx.author.id)
-        await ctx.send(f"Balance: ฿{balance}")
+        await ctx.send(embed=AuctionEmbeds.balance(ctx.author, balance))
 
     @auction_group.command(name="collection")
     async def collection(self, ctx):

@@ -53,10 +53,15 @@ class AuctionManager:
                 if current:
                     now = utc_timestamp()
                     started_at = int(current.get("started_at", now))
+                    ends_at = int(current.get("ends_at", now + 1))
+
+                    if now >= ends_at:
+                        await self.finish_auction()
+                        continue
 
                     # Dynamic live-auction rule:
-                    # - if a bid has arrived, keep it open and let the highest bid settle the sale
-                    # - if nobody has bid yet, the no-bid countdown drives the normal auction close
+                    # - Going once and going twice are the public countdown landmarks.
+                    # - The sale closes at the persisted end timestamp.
                     if int(current.get("bid", 1)) <= 1:
                         elapsed = now - started_at
 
@@ -79,9 +84,6 @@ class AuctionManager:
                                     pass
                             current["going_twice_issued"] = True
                             await self.config.current_auction.set(current)
-
-                        if elapsed >= NO_BID_CLOSE_SECONDS:
-                            await self.finish_auction()
                     continue
 
                 interval = await self.config.auction_interval()
@@ -149,7 +151,8 @@ class AuctionManager:
             return False
 
         duration = await self.config.auction_duration()
-        ending = utc_timestamp() + duration
+        started_at = utc_timestamp()
+        ends_at = started_at + duration
 
         seller_id = None
         queue = await self.config.queue()
@@ -163,8 +166,8 @@ class AuctionManager:
             "bid": 1,
             "highest_bidder_id": None,
             "seller_id": seller_id,
-            "started_at": utc_timestamp(),
-            "ends_at": None,
+            "started_at": started_at,
+            "ends_at": ends_at,
             "message_id": None,
             "channel_id": channel_id,
             "invalid_counts": {},
@@ -180,7 +183,7 @@ class AuctionManager:
         await self.config.queue.set(queue)
 
         image_url = state.get("image_url")
-        embed = AuctionEmbeds.auction_start(character, ending, image_url=image_url)
+        embed = AuctionEmbeds.auction_start(character, int(state["ends_at"]), image_url=image_url)
         try:
             message = await channel.send(embed=embed)
         except discord.HTTPException:
@@ -313,15 +316,18 @@ class AuctionManager:
         state["highest_bidder_id"] = bidder_id
         state["last_bid_at"][last_bid_key] = utc_timestamp()
 
-        # The auction now remains live until sale is resolved, but a bid can still
-        # trigger a final no-bid slowdown path if it arrives in the closing window.
-        state["ends_at"] = utc_timestamp() + (await self.config.auction_duration())
-        if state.get("ends_at", 0) - utc_timestamp() <= ANTI_SNIPE_THRESHOLD:
-            new_ends = state.get("ends_at", 0) + ANTI_SNIPE_EXTENSION
-            max_allowed = state.get("started_at", utc_timestamp()) + (await self.config.auction_duration()) + MAX_ANTI_SNIPE
-            if new_ends > max_allowed:
-                new_ends = max_allowed
-            state["ends_at"] = new_ends
+        # Preserve the auction's hard deadline. A new bid can extend the
+        # close timestamp only when the auction is in the anti-snipe window.
+        if not state.get("ends_at"):
+            state["ends_at"] = utc_timestamp() + (await self.config.auction_duration())
+        else:
+            remaining = int(state.get("ends_at", 0)) - utc_timestamp()
+            if remaining <= ANTI_SNIPE_THRESHOLD:
+                new_ends = int(state.get("ends_at", 0)) + ANTI_SNIPE_EXTENSION
+                max_allowed = int(state.get("started_at", utc_timestamp())) + (await self.config.auction_duration()) + MAX_ANTI_SNIPE
+                if new_ends > max_allowed:
+                    new_ends = max_allowed
+                state["ends_at"] = new_ends
 
         await self.config.current_auction.set(state)
         await self.update_current_embed(state)
