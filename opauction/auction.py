@@ -62,28 +62,27 @@ class AuctionManager:
                     # Dynamic live-auction rule:
                     # - Going once and going twice are the public countdown landmarks.
                     # - The sale closes at the persisted end timestamp.
-                    if int(current.get("bid", 1)) <= 1:
-                        elapsed = now - started_at
+                    elapsed = now - started_at
 
-                        if elapsed >= GOING_ONCE_SECONDS and not current.get("going_once_issued"):
-                            channel = self.cog.bot.get_channel(int(current.get("channel_id", 0)))
-                            if channel:
-                                try:
-                                    await channel.send("Going once...")
-                                except discord.HTTPException:
-                                    pass
-                            current["going_once_issued"] = True
-                            await self.config.current_auction.set(current)
+                    if elapsed >= GOING_ONCE_SECONDS and not current.get("going_once_issued"):
+                        channel = self.cog.bot.get_channel(int(current.get("channel_id", 0)))
+                        if channel:
+                            try:
+                                await channel.send("Going once...")
+                            except discord.HTTPException:
+                                pass
+                        current["going_once_issued"] = True
+                        await self.config.current_auction.set(current)
 
-                        if elapsed >= GOING_TWICE_SECONDS and not current.get("going_twice_issued"):
-                            channel = self.cog.bot.get_channel(int(current.get("channel_id", 0)))
-                            if channel:
-                                try:
-                                    await channel.send("Going twice...")
-                                except discord.HTTPException:
-                                    pass
-                            current["going_twice_issued"] = True
-                            await self.config.current_auction.set(current)
+                    if elapsed >= GOING_TWICE_SECONDS and not current.get("going_twice_issued"):
+                        channel = self.cog.bot.get_channel(int(current.get("channel_id", 0)))
+                        if channel:
+                            try:
+                                await channel.send("Going twice...")
+                            except discord.HTTPException:
+                                pass
+                        current["going_twice_issued"] = True
+                        await self.config.current_auction.set(current)
                     continue
 
                 interval = await self.config.auction_interval()
@@ -319,19 +318,23 @@ class AuctionManager:
         # Preserve the auction's hard deadline. A new bid can extend the
         # close timestamp only when the auction is in the anti-snipe window.
         if not state.get("ends_at"):
-            state["ends_at"] = utc_timestamp() + (await self.config.auction_duration())
+            state["ends_at"] = int(utc_timestamp()) + int(await self.config.auction_duration())
         else:
             remaining = int(state.get("ends_at", 0)) - utc_timestamp()
             if remaining <= ANTI_SNIPE_THRESHOLD:
                 new_ends = int(state.get("ends_at", 0)) + ANTI_SNIPE_EXTENSION
-                max_allowed = int(state.get("started_at", utc_timestamp())) + (await self.config.auction_duration()) + MAX_ANTI_SNIPE
+                max_allowed = int(state.get("started_at", utc_timestamp())) + int(await self.config.auction_duration()) + MAX_ANTI_SNIPE
                 if new_ends > max_allowed:
                     new_ends = max_allowed
                 state["ends_at"] = new_ends
 
         await self.config.current_auction.set(state)
         await self.update_current_embed(state)
-        await message.add_reaction("✅")
+
+        try:
+            await message.add_reaction("✅")
+        except (discord.Forbidden, discord.HTTPException):
+            pass
 
     async def count_invalid_bid(self, state: dict[str, Any], user_id: int) -> None:
         """Track invalid bid attempts and ban a user from the current auction."""
