@@ -1,0 +1,36 @@
+{
+    "author": [
+        "Grillribba"
+    ],
+    "description": "A One Piece auction game where players collect unique characters through timed auctions.",
+    "disabled": false,
+    "end_user_data_statement": "This cog stores Discord user IDs, balances, owned characters, auction history, and configuration data required for gameplay.",
+    "hidden": false,
+    "install_msg": "Thank you for installing OPAuction! Configure the auction channel with `[p]auction channel` and start the game with `[p]auction start`.",
+    "min_bot_version": "3.5.0",
+    "min_python_version": [
+        3,
+        10,
+        0
+    ],
+    "name": "OPAuction",
+    "permissions": [
+        "embed_links",
+        "attach_files",
+        "read_message_history",
+        "manage_messages",
+        "add_reactions"
+    ],
+    "requirements": [
+        "aiohttp"
+    ],
+    "short": "One Piece character auction game",
+    "tags": [
+        "onepiece",
+        "auction",
+        "economy",
+        "game",
+        "collectibles"
+    ],
+    "type": "COG"
+}

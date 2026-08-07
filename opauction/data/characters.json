@@ -1,0 +1,352 @@
+[
+    {
+        "id": 1,
+        "name": "Monkey D. Luffy",
+        "rarity": "Legendary",
+        "arc": "Egghead",
+        "wiki": "Monkey_D._Luffy"
+    },
+    {
+        "id": 2,
+        "name": "Roronoa Zoro",
+        "rarity": "Legendary",
+        "arc": "Egghead",
+        "wiki": "Roronoa_Zoro"
+    },
+    {
+        "id": 3,
+        "name": "Sanji",
+        "rarity": "Legendary",
+        "arc": "Egghead",
+        "wiki": "Sanji"
+    },
+    {
+        "id": 4,
+        "name": "Nami",
+        "rarity": "Epic",
+        "arc": "Egghead",
+        "wiki": "Nami"
+    },
+    {
+        "id": 5,
+        "name": "Nico Robin",
+        "rarity": "Legendary",
+        "arc": "Egghead",
+        "wiki": "Nico_Robin"
+    },
+    {
+        "id": 6,
+        "name": "Jinbe",
+        "rarity": "Epic",
+        "arc": "Egghead",
+        "wiki": "Jinbe"
+    },
+    {
+        "id": 7,
+        "name": "Tony Tony Chopper",
+        "rarity": "Epic",
+        "arc": "Egghead",
+        "wiki": "Tony_Tony_Chopper"
+    },
+    {
+        "id": 8,
+        "name": "Franky",
+        "rarity": "Epic",
+        "arc": "Egghead",
+        "wiki": "Franky"
+    },
+    {
+        "id": 9,
+        "name": "Brook",
+        "rarity": "Epic",
+        "arc": "Egghead",
+        "wiki": "Brook"
+    },
+    {
+        "id": 10,
+        "name": "Usopp",
+        "rarity": "Rare",
+        "arc": "Egghead",
+        "wiki": "Usopp"
+    },
+    {
+        "id": 11,
+        "name": "Shanks",
+        "rarity": "Legendary",
+        "arc": "Wano",
+        "wiki": "Shanks"
+    },
+    {
+        "id": 12,
+        "name": "Marshall D. Teach",
+        "rarity": "Legendary",
+        "arc": "Egghead",
+        "wiki": "Marshall_D._Teach"
+    },
+    {
+        "id": 13,
+        "name": "Kaido",
+        "rarity": "Legendary",
+        "arc": "Wano",
+        "wiki": "Kaidou"
+    },
+    {
+        "id": 14,
+        "name": "Charlotte Linlin",
+        "rarity": "Legendary",
+        "arc": "Wano",
+        "wiki": "Charlotte_Linlin"
+    },
+    {
+        "id": 15,
+        "name": "Gol D. Roger",
+        "rarity": "Legendary",
+        "arc": "Wano",
+        "wiki": "Gol_D._Roger"
+    },
+    {
+        "id": 16,
+        "name": "Edward Newgate",
+        "rarity": "Legendary",
+        "arc": "Marineford",
+        "wiki": "Edward_Newgate"
+    },
+    {
+        "id": 17,
+        "name": "Portgas D. Ace",
+        "rarity": "Legendary",
+        "arc": "Marineford",
+        "wiki": "Portgas_D._Ace"
+    },
+    {
+        "id": 18,
+        "name": "Sabo",
+        "rarity": "Legendary",
+        "arc": "Egghead",
+        "wiki": "Sabo"
+    },
+    {
+        "id": 19,
+        "name": "Trafalgar D. Water Law",
+        "rarity": "Legendary",
+        "arc": "Wano",
+        "wiki": "Trafalgar_D._Water_Law"
+    },
+    {
+        "id": 20,
+        "name": "Eustass Kid",
+        "rarity": "Legendary",
+        "arc": "Wano",
+        "wiki": "Eustass_Kid"
+    },
+    {
+        "id": 21,
+        "name": "Yamato",
+        "rarity": "Legendary",
+        "arc": "Wano",
+        "wiki": "Yamato"
+    },
+    {
+        "id": 22,
+        "name": "Boa Hancock",
+        "rarity": "Legendary",
+        "arc": "Amazon Lily",
+        "wiki": "Boa_Hancock"
+    },
+    {
+        "id": 23,
+        "name": "Dracule Mihawk",
+        "rarity": "Legendary",
+        "arc": "Marineford",
+        "wiki": "Dracule_Mihawk"
+    },
+    {
+        "id": 24,
+        "name": "Buggy",
+        "rarity": "Epic",
+        "arc": "Egghead",
+        "wiki": "Buggy"
+    },
+    {
+        "id": 25,
+        "name": "Crocodile",
+        "rarity": "Legendary",
+        "arc": "Marineford",
+        "wiki": "Crocodile"
+    },
+    {
+        "id": 26,
+        "name": "Donquixote Doflamingo",
+        "rarity": "Legendary",
+        "arc": "Dressrosa",
+        "wiki": "Donquixote_Doflamingo"
+    },
+    {
+        "id": 27,
+        "name": "Rob Lucci",
+        "rarity": "Epic",
+        "arc": "Egghead",
+        "wiki": "Rob_Lucci"
+    },
+    {
+        "id": 28,
+        "name": "Kaku",
+        "rarity": "Rare",
+        "arc": "Egghead",
+        "wiki": "Kaku"
+    },
+    {
+        "id": 29,
+        "name": "Koby",
+        "rarity": "Epic",
+        "arc": "Egghead",
+        "wiki": "Koby"
+    },
+    {
+        "id": 30,
+        "name": "Monkey D. Garp",
+        "rarity": "Legendary",
+        "arc": "Egghead",
+        "wiki": "Monkey_D._Garp"
+    },
+    {
+        "id": 31,
+        "name": "Silvers Rayleigh",
+        "rarity": "Legendary",
+        "arc": "Amazon Lily",
+        "wiki": "Silvers_Rayleigh"
+    },
+    {
+        "id": 32,
+        "name": "Kozuki Oden",
+        "rarity": "Legendary",
+        "arc": "Wano",
+        "wiki": "Kozuki_Oden"
+    },
+    {
+        "id": 33,
+        "name": "King",
+        "rarity": "Epic",
+        "arc": "Wano",
+        "wiki": "King"
+    },
+    {
+        "id": 34,
+        "name": "Queen",
+        "rarity": "Epic",
+        "arc": "Wano",
+        "wiki": "Queen"
+    },
+    {
+        "id": 35,
+        "name": "Katakuri",
+        "rarity": "Legendary",
+        "arc": "Whole Cake Island",
+        "wiki": "Charlotte_Katakuri"
+    },
+    {
+        "id": 36,
+        "name": "Marco",
+        "rarity": "Legendary",
+        "arc": "Wano",
+        "wiki": "Marco"
+    },
+    {
+        "id": 37,
+        "name": "Jewelry Bonney",
+        "rarity": "Legendary",
+        "arc": "Egghead",
+        "wiki": "Jewelry_Bonney"
+    },
+    {
+        "id": 38,
+        "name": "Bartholomew Kuma",
+        "rarity": "Legendary",
+        "arc": "Egghead",
+        "wiki": "Bartholomew_Kuma"
+    },
+    {
+        "id": 39,
+        "name": "Vegapunk",
+        "rarity": "Legendary",
+        "arc": "Egghead",
+        "wiki": "Vegapunk"
+    },
+    {
+        "id": 40,
+        "name": "Kizaru",
+        "rarity": "Legendary",
+        "arc": "Egghead",
+        "wiki": "Borsalino"
+    },
+    {
+        "id": 41,
+        "name": "Akainu",
+        "rarity": "Legendary",
+        "arc": "Marineford",
+        "wiki": "Sakazuki"
+    },
+    {
+        "id": 42,
+        "name": "Aokiji",
+        "rarity": "Legendary",
+        "arc": "Egghead",
+        "wiki": "Kuzan"
+    },
+    {
+        "id": 43,
+        "name": "Fujitora",
+        "rarity": "Legendary",
+        "arc": "Dressrosa",
+        "wiki": "Issho"
+    },
+    {
+        "id": 44,
+        "name": "Green Bull",
+        "rarity": "Legendary",
+        "arc": "Wano",
+        "wiki": "Aramaki"
+    },
+    {
+        "id": 45,
+        "name": "Shiryu",
+        "rarity": "Epic",
+        "arc": "Egghead",
+        "wiki": "Shiryu"
+    },
+    {
+        "id": 46,
+        "name": "Benn Beckman",
+        "rarity": "Legendary",
+        "arc": "Wano",
+        "wiki": "Benn_Beckman"
+    },
+    {
+        "id": 47,
+        "name": "Lucky Roux",
+        "rarity": "Epic",
+        "arc": "Wano",
+        "wiki": "Lucky_Roux"
+    },
+    {
+        "id": 48,
+        "name": "Scopper Gaban",
+        "rarity": "Legendary",
+        "arc": "Wano",
+        "wiki": "Scopper_Gaban"
+    },
+    {
+        "id": 49,
+        "name": "Enel",
+        "rarity": "Legendary",
+        "arc": "Skypiea",
+        "wiki": "Enel"
+    },
+    {
+        "id": 50,
+        "name": "Perona",
+        "rarity": "Epic",
+        "arc": "Hachinosu",
+        "wiki": "Perona"
+    }
+]
