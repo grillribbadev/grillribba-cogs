@@ -61,7 +61,8 @@ class AuctionManager:
 
                     # Dynamic live-auction rule:
                     # - Going once and going twice are the public countdown landmarks.
-                    # - The sale closes at the persisted end timestamp.
+                    # - They must continue to trigger while the auction is open, even
+                    #   after a legitimate bid has arrived and raised the bid field.
                     elapsed = now - started_at
 
                     if elapsed >= GOING_ONCE_SECONDS and not current.get("going_once_issued"):
@@ -232,66 +233,66 @@ class AuctionManager:
             return None
         return self.cog.bot.get_channel(channel_id)
 
-    async def handle_bid(self, message: discord.Message) -> None:
+    async def handle_bid(self, message: discord.Message) -> bool:
         """Handle a numeric bid sent in the configured auction channel."""
         if message.author.bot:
-            return
+            return False
 
         if not await self.config.auction_running():
-            return
+            return False
 
         state = await self.get_current_auction()
         if not state:
-            return
+            return False
 
         if message.channel.id != state.get("channel_id"):
-            return
+            return False
 
         if not message.content or not message.content.strip().isdigit():
-            return
+            return False
 
         bid = int(message.content.strip())
         bidder_id = message.author.id
 
         if not await self.cog.economy.exists(bidder_id):
-            return
+            return False
 
         character_id = int(state.get("character_id", 0))
 
         if bidder_id == state.get("seller_id"):
             await self.count_invalid_bid(state, bidder_id)
-            return
+            return False
 
         owner = self.cog.characters.owner_of(character_id)
         if owner == bidder_id:
             await self.count_invalid_bid(state, bidder_id)
-            return
+            return False
 
         if bidder_id == state.get("highest_bidder_id"):
             await self.count_invalid_bid(state, bidder_id)
-            return
+            return False
 
         if len(await self.cog.economy.get_characters(bidder_id)):
             if character_id in await self.cog.economy.get_characters(bidder_id):
                 await self.count_invalid_bid(state, bidder_id)
-                return
+                return False
 
         if bidder_id in state.get("ignored_users", []):
-            return
+            return False
 
         if not await self.cog.economy.available_balance(bidder_id) >= bid:
             await self.count_invalid_bid(state, bidder_id)
-            return
+            return False
 
         if bid < 1:
             await self.count_invalid_bid(state, bidder_id)
-            return
+            return False
 
         current_bid = int(state.get("bid", 1))
         minimum_acceptable = current_bid + MINIMUM_BID_INCREMENT
         if bid < minimum_acceptable:
             await self.count_invalid_bid(state, bidder_id)
-            return
+            return False
 
         last_bid_at = state.get("last_bid_at", {})
         last_bid_key = str(bidder_id)
@@ -300,12 +301,12 @@ class AuctionManager:
             if elapsed < BID_COOLDOWN:
                 await self.count_invalid_bid(state, bidder_id)
                 await message.reply("You are bidding too quickly. Please wait a moment.")
-                return
+                return False
 
         if not await self.cog.economy.reserve(bidder_id, bid):
             await self.count_invalid_bid(state, bidder_id)
             await message.reply("You do not have enough available beri for that bid.")
-            return
+            return False
 
         old_highest = state.get("highest_bidder_id")
         if old_highest and old_highest != bidder_id:
@@ -331,10 +332,7 @@ class AuctionManager:
         await self.config.current_auction.set(state)
         await self.update_current_embed(state)
 
-        try:
-            await message.add_reaction("✅")
-        except (discord.Forbidden, discord.HTTPException):
-            pass
+        return True
 
     async def count_invalid_bid(self, state: dict[str, Any], user_id: int) -> None:
         """Track invalid bid attempts and ban a user from the current auction."""

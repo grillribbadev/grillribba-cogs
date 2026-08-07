@@ -97,7 +97,12 @@ class OPAuction(commands.Cog):
             return
 
         if message.content and message.content.strip().isdigit():
-            await self.auction.handle_bid(message)
+            bid_accepted = await self.auction.handle_bid(message)
+            if bid_accepted:
+                try:
+                    await message.add_reaction("✅")
+                except (discord.Forbidden, discord.HTTPException):
+                    pass
 
     @commands.Cog.listener()
     async def on_message_edit(self, before: discord.Message, after: discord.Message):
