@@ -456,10 +456,13 @@ class AuctionManager:
                     await self.cog.economy.remove_character(seller_id, character_id)
 
                 embed = AuctionEmbeds.sold(character, winner, price, image_url=state.get("image_url"))
+                sold_text = f"Sold to {winner.mention} for {format_berries(price)}."
             else:
                 embed = AuctionEmbeds.no_bids(character, image_url=state.get("image_url"))
+                sold_text = None
         else:
             embed = AuctionEmbeds.no_bids(character, image_url=state.get("image_url"))
+            sold_text = None
 
             # A no-bid queue auction should leave the character with the seller.
             # A pool auction should leave the character unowned in the character cache.
@@ -472,6 +475,8 @@ class AuctionManager:
             try:
                 message = await channel.fetch_message(message_id)
                 await message.edit(embed=embed)
+                if sold_text:
+                    await channel.send(sold_text)
             except (discord.NotFound, discord.HTTPException):
                 pass
 
