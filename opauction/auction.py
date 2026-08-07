@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import random
 import re
 from typing import Any
@@ -29,6 +30,8 @@ from .constants import (
 from .utils import clean_name, format_berries, format_duration, utc_timestamp
 from .views import AuctionEmbeds
 
+log = logging.getLogger("red.opauction")
+
 
 class AuctionManager:
     """Controller for the active auction lifecycle and bid processing."""
@@ -42,49 +45,56 @@ class AuctionManager:
         """Background loop that owns automatic auction scheduling."""
         await self.cog.bot.wait_until_ready()
 
-        try:
-            while True:
-                await asyncio.sleep(1)
+        while True:
+            await asyncio.sleep(1)
 
-                if not await self.config.auction_running():
-                    continue
+            try:
+                await self._tick()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # A single bad tick must never kill the whole scheduling loop.
+                log.exception("Unhandled error in OPAuction background loop tick")
 
-                current = await self.get_current_auction()
+    async def _tick(self) -> None:
+        """Run one iteration of the auction scheduling/countdown logic."""
+        if not await self.config.auction_running():
+            return
 
-                if current:
-                    now = utc_timestamp()
-                    started_at = int(current.get("started_at", now))
-                    ends_at = int(current.get("ends_at", now + 1))
+        current = await self.get_current_auction()
 
-                    if now >= ends_at:
-                        await self.finish_auction()
-                        continue
+        if current:
+            now = utc_timestamp()
+            started_at = int(current.get("started_at", now))
+            ends_at = int(current.get("ends_at", now + 1))
 
-                    bid = int(current.get("bid", 1))
-                    if bid <= 1:
-                        elapsed = now - started_at
-                    else:
-                        elapsed = now - int(current.get("last_bid_time", started_at))
+            if now >= ends_at:
+                await self.finish_auction()
+                return
 
-                    await self._announce_countdown(current, elapsed)
+            bid = int(current.get("bid", 1))
+            if bid <= 1:
+                elapsed = now - started_at
+            else:
+                elapsed = now - int(current.get("last_bid_time", started_at))
 
-                    # No bids at all close on the shorter no-bid timer; an active
-                    # bid closes once "going three" has been reached and held.
-                    close_after = NO_BID_CLOSE_SECONDS if bid <= 1 else GOING_THREE_SECONDS
-                    if elapsed >= close_after:
-                        await self.finish_auction()
-                    continue
+            await self._announce_countdown(current, elapsed)
 
-                interval = await self.config.auction_interval()
-                last_started = await self.config.last_auction_started()
-                if not last_started:
-                    await self.start_auction()
-                    continue
+            # No bids at all close on the shorter no-bid timer; an active
+            # bid closes once "going three" has been reached and held.
+            close_after = NO_BID_CLOSE_SECONDS if bid <= 1 else GOING_THREE_SECONDS
+            if elapsed >= close_after:
+                await self.finish_auction()
+            return
 
-                if utc_timestamp() - last_started >= interval:
-                    await self.start_auction()
-        except asyncio.CancelledError:
-            pass
+        interval = await self.config.auction_interval()
+        last_started = await self.config.last_auction_started()
+        if not last_started:
+            await self.start_auction()
+            return
+
+        if utc_timestamp() - last_started >= interval:
+            await self.start_auction()
 
     async def _announce_countdown(self, current: dict[str, Any], elapsed: int) -> None:
         """Send any due 'going once/twice/three' messages, each only once per auction."""
@@ -108,18 +118,39 @@ class AuctionManager:
     async def begin(self) -> bool:
         """Start the automatic auction loop and immediately post a live auction when possible."""
         await self.config.auction_running.set(True)
-        await self.config.last_auction_started.set(utc_timestamp())
 
         current = await self.get_current_auction()
         if current:
-            # The command is allowed to say automation is running, but it may not
-            # claim a new live embed is posted when one already exists.
-            if current.get("message_id"):
+            # Only trust leftover state if its message is real and not expired;
+            # otherwise it's a stale auction from a prior run and must be cleared.
+            if await self._current_auction_is_live(current):
                 return True
-            # This only happens when config is inconsistent with message state.
             await self.clear_current_auction()
 
+        # Don't stamp last_auction_started here: if start_auction fails below,
+        # the background loop must be free to retry on its very next tick.
         return await self.start_auction()
+
+    async def _current_auction_is_live(self, current: dict[str, Any]) -> bool:
+        """Return True only when the stored auction still has a real, unexpired message."""
+        message_id = current.get("message_id")
+        channel_id = current.get("channel_id")
+        if not message_id or not channel_id:
+            return False
+
+        if utc_timestamp() >= int(current.get("ends_at", 0)):
+            return False
+
+        channel = await self.resolve_channel(int(channel_id))
+        if not channel:
+            return False
+
+        try:
+            await channel.fetch_message(int(message_id))
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            return False
+
+        return True
 
     async def stop(self) -> None:
         """Stop the automatic loop and leave any active auction intact."""
@@ -154,7 +185,22 @@ class AuctionManager:
         if await self.get_current_auction():
             return False
 
-        character: dict[str, Any] | None = await self.select_character_for_auction()
+        queue = await self.config.queue()
+
+        # Only treat this as a queued sale when the queued character still
+        # resolves; otherwise the seller/character pairing below would mismatch.
+        character: dict[str, Any] | None = None
+        from_queue = False
+        if queue:
+            queued_character_id = int(queue[0]["character_id"])
+            character = self.cog.characters.get(queued_character_id)
+            from_queue = character is not None
+
+        if not character:
+            available_pool = [cid for cid in self.cog.characters.all_ids() if not self.cog.characters.owned(cid)]
+            if available_pool:
+                character = self.cog.characters.get(random.choice(available_pool))
+
         if not character:
             return False
 
@@ -174,11 +220,11 @@ class AuctionManager:
         ends_at = started_at + duration
 
         seller_id = None
-        queue = await self.config.queue()
-        queue_entry = None
-        if queue:
+        if from_queue:
             queue_entry = queue.pop(0)
             seller_id = int(queue_entry.get("seller_id", 0) or 0)
+            # Only persist the pop once we're committed to this queue entry.
+            await self.config.queue.set(queue)
 
         state = {
             "character_id": int(character["id"]),
@@ -200,9 +246,6 @@ class AuctionManager:
             "sold": False,
         }
 
-        # Preserve queue changes when an auction is pulled from it.
-        await self.config.queue.set(queue)
-
         image_url = state.get("image_url")
         embed = AuctionEmbeds.auction_start(character, int(state["ends_at"]), image_url=image_url)
         try:
@@ -214,27 +257,6 @@ class AuctionManager:
         await self.config.current_auction.set(state)
         await self.config.last_auction_started.set(utc_timestamp())
         return True
-
-    async def select_character_for_auction(self) -> dict[str, Any] | None:
-        """Return a character chosen for the live auction."""
-        queue = await self.config.queue()
-        if queue:
-            character_id = int(queue[0]["character_id"])
-            character = self.cog.characters.get(character_id)
-            if character:
-                return character
-
-        available_pool = [cid for cid in self.cog.characters.all_ids() if not self.cog.characters.owned(cid)]
-        if available_pool:
-            selected_id = random.choice(available_pool)
-            return self.cog.characters.get(selected_id)
-
-        # Fallback: only player-listed auctions are available once the pool is empty.
-        if queue:
-            character_id = int(queue[0]["character_id"])
-            return self.cog.characters.get(character_id)
-
-        return None
 
     async def get_current_auction(self) -> dict[str, Any] | None:
         """Return the active auction configuration dictionary."""
@@ -447,50 +469,61 @@ class AuctionManager:
         bid = int(state.get("bid", 1))
         seller_id = state.get("seller_id")
 
-        if winner_id and bid > 1:
-            winner = self.cog.bot.get_user(winner_id)
-            if winner:
-                price = bid
-                owner_before = self.cog.characters.owner_of(character_id)
-                if owner_before is not None:
-                    self.cog.characters.unassign(character_id)
+        try:
+            if winner_id and bid > 1:
+                winner = self.cog.bot.get_user(winner_id)
+                if not winner:
+                    try:
+                        winner = await self.cog.bot.fetch_user(winner_id)
+                    except (discord.NotFound, discord.HTTPException):
+                        winner = None
+                if winner:
+                    price = bid
+                    owner_before = self.cog.characters.owner_of(character_id)
+                    if owner_before is not None:
+                        self.cog.characters.unassign(character_id)
 
-                await self.cog.economy.finalize_purchase(winner_id)
-                await self.cog.economy.add_character(winner_id, character_id)
-                await self.cog.characters.assign(character_id, winner_id)
+                    await self.cog.economy.finalize_purchase(winner_id)
+                    await self.cog.economy.add_character(winner_id, character_id)
+                    self.cog.characters.assign(character_id, winner_id)
 
-                # Tax payout to original seller if this came from the queue.
-                if seller_id:
-                    seller_share = int(round(price * (1 - AUCTION_TAX)))
-                    await self.cog.economy.deposit(seller_id, seller_share)
-                    await self.cog.economy.remove_character(seller_id, character_id)
+                    # Tax payout to original seller if this came from the queue.
+                    if seller_id:
+                        seller_share = int(round(price * (1 - AUCTION_TAX)))
+                        await self.cog.economy.deposit(seller_id, seller_share)
+                        await self.cog.economy.remove_character(seller_id, character_id)
 
-                embed = AuctionEmbeds.sold(character, winner, price, image_url=state.get("image_url"))
-                sold_text = f"Sold to {winner.mention} for {format_berries(price)}."
+                    embed = AuctionEmbeds.sold(character, winner, price, image_url=state.get("image_url"))
+                    sold_text = f"Sold to {winner.mention} for {format_berries(price)}."
+                else:
+                    # The winner could not be resolved at all (left every mutual
+                    # guild); free their reserved beri instead of locking it forever.
+                    await self.cog.economy.release(winner_id)
+                    embed = AuctionEmbeds.no_bids(character, image_url=state.get("image_url"))
+                    sold_text = None
             else:
                 embed = AuctionEmbeds.no_bids(character, image_url=state.get("image_url"))
                 sold_text = None
-        else:
-            embed = AuctionEmbeds.no_bids(character, image_url=state.get("image_url"))
-            sold_text = None
 
-            # A no-bid queue auction should leave the character with the seller.
-            # A pool auction should leave the character unowned in the character cache.
-            if seller_id:
-                self.cog.characters.assign(character_id, seller_id)
-            else:
-                self.cog.characters.unassign(character_id)
+                # A no-bid queue auction should leave the character with the seller.
+                # A pool auction should leave the character unowned in the character cache.
+                if seller_id:
+                    self.cog.characters.assign(character_id, seller_id)
+                else:
+                    self.cog.characters.unassign(character_id)
 
-        if channel and message_id:
-            try:
-                message = await channel.fetch_message(message_id)
-                await message.edit(embed=embed)
-                if sold_text:
-                    await channel.send(sold_text)
-            except (discord.NotFound, discord.HTTPException):
-                pass
-
-        await self.clear_current_auction()
+            if channel and message_id:
+                try:
+                    message = await channel.fetch_message(message_id)
+                    await message.edit(embed=embed)
+                    if sold_text:
+                        await channel.send(sold_text)
+                except (discord.NotFound, discord.HTTPException):
+                    pass
+        finally:
+            # Always clear, even on error: an uncleared auction would otherwise
+            # re-run this settlement (and re-charge the winner) every tick forever.
+            await self.clear_current_auction()
 
     async def get_image_url(self, character: dict[str, Any]) -> str | None:
         """Fetch and cache a One Piece Wiki image URL for the character."""

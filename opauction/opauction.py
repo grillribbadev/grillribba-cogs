@@ -62,6 +62,11 @@ class OPAuction(commands.Cog):
 
         self.auction_task = self.bot.loop.create_task(self.auction.background_loop())
 
+    async def cog_load(self):
+        # self.owners is in-memory only; without this, every character looks
+        # unowned after a restart until the destructive `wipe` command runs.
+        await self.characters.rebuild_owners()
+
     def cog_unload(self):
         self.auction_task.cancel()
 
