@@ -406,10 +406,10 @@ class AuctionManager:
         """Edit the live message embed after a bid update."""
         channel_id = state.get("channel_id")
         message_id = state.get("message_id")
-        if not channel_id or not message_id:
+        if not channel_id:
             return
 
-        channel = await self.resolve_channel(channel_id)
+        channel = await self.resolve_channel(int(channel_id))
         if not channel:
             return
 
@@ -423,10 +423,26 @@ class AuctionManager:
         image_url = state.get("image_url")
         embed = AuctionEmbeds.new_bid(character, bidder, bid, int(state["ends_at"]), image_url=image_url) if bidder else AuctionEmbeds.auction_start(character, int(state["ends_at"]), image_url=image_url)
 
+        if not message_id:
+            try:
+                message = await channel.send(embed=embed)
+                state["message_id"] = message.id
+                await self.config.current_auction.set(state)
+            except (discord.Forbidden, discord.HTTPException, discord.NotFound):
+                pass
+            return
+
         try:
             message = await channel.fetch_message(message_id)
             await message.edit(embed=embed)
-        except (discord.NotFound, discord.HTTPException):
+        except discord.NotFound:
+            try:
+                message = await channel.send(embed=embed)
+                state["message_id"] = message.id
+                await self.config.current_auction.set(state)
+            except (discord.Forbidden, discord.HTTPException, discord.NotFound):
+                pass
+        except (discord.HTTPException, discord.Forbidden):
             pass
 
     async def finish_auction(self) -> None:
