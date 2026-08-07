@@ -201,7 +201,11 @@ class OPAuction(commands.Cog):
         if not started:
             return await ctx.send(embed=AuctionEmbeds.error("Auction automation is running, but no auction embed could be posted to the configured channel."))
 
-        await ctx.send(embed=AuctionEmbeds.success("Auction automation has started and the first auction is live."))
+        current = await self.auction.get_current_auction()
+        if current and current.get("message_id"):
+            await ctx.send(embed=AuctionEmbeds.success("Auction automation has started and the first auction is live."))
+        else:
+            await ctx.send(embed=AuctionEmbeds.error("Auction automation is supposed to be live, but the live auction message is not materialized."))
 
     @auction_group.command(name="stop")
     @commands.admin_or_permissions(manage_guild=True)

@@ -135,9 +135,17 @@ class AuctionManager:
         """Start the automatic auction loop and immediately post a live auction when possible."""
         await self.config.auction_running.set(True)
         await self.config.last_auction_started.set(utc_timestamp())
-        if not await self.get_current_auction():
-            return await self.start_auction()
-        return True
+
+        current = await self.get_current_auction()
+        if current:
+            # The command is allowed to say automation is running, but it may not
+            # claim a new live embed is posted when one already exists.
+            if current.get("message_id"):
+                return True
+            # This only happens when config is inconsistent with message state.
+            await self.clear_current_auction()
+
+        return await self.start_auction()
 
     async def stop(self) -> None:
         """Stop the automatic loop and leave any active auction intact."""
