@@ -19,6 +19,7 @@ from .constants import (
     DEFAULT_AUCTION_DURATION,
     DEFAULT_AUCTION_INTERVAL,
     GOING_ONCE_SECONDS,
+    GOING_THREE_SECONDS,
     GOING_TWICE_SECONDS,
     INVALID_BID_LIMIT,
     MAX_ANTI_SNIPE,
@@ -59,31 +60,67 @@ class AuctionManager:
                         await self.finish_auction()
                         continue
 
-                    # Dynamic live-auction rule:
-                    # - Going once and going twice are the public countdown landmarks.
-                    # - They must continue to trigger while the auction is open, even
-                    #   after a legitimate bid has arrived and raised the bid field.
-                    elapsed = now - started_at
+                    bid = int(current.get("bid", 1))
+                    if bid <= 1:
+                        elapsed = now - started_at
+                        if elapsed >= GOING_ONCE_SECONDS and not current.get("going_once_issued"):
+                            channel = self.cog.bot.get_channel(int(current.get("channel_id", 0)))
+                            if channel:
+                                try:
+                                    await channel.send("Going once...")
+                                except discord.HTTPException:
+                                    pass
+                            current["going_once_issued"] = True
+                            await self.config.current_auction.set(current)
 
-                    if elapsed >= GOING_ONCE_SECONDS and not current.get("going_once_issued"):
-                        channel = self.cog.bot.get_channel(int(current.get("channel_id", 0)))
-                        if channel:
-                            try:
-                                await channel.send("Going once...")
-                            except discord.HTTPException:
-                                pass
-                        current["going_once_issued"] = True
-                        await self.config.current_auction.set(current)
+                        if elapsed >= GOING_TWICE_SECONDS and not current.get("going_twice_issued"):
+                            channel = self.cog.bot.get_channel(int(current.get("channel_id", 0)))
+                            if channel:
+                                try:
+                                    await channel.send("Going twice...")
+                                except discord.HTTPException:
+                                    pass
+                            current["going_twice_issued"] = True
+                            await self.config.current_auction.set(current)
 
-                    if elapsed >= GOING_TWICE_SECONDS and not current.get("going_twice_issued"):
-                        channel = self.cog.bot.get_channel(int(current.get("channel_id", 0)))
-                        if channel:
-                            try:
-                                await channel.send("Going twice...")
-                            except discord.HTTPException:
-                                pass
-                        current["going_twice_issued"] = True
-                        await self.config.current_auction.set(current)
+                        if elapsed >= NO_BID_CLOSE_SECONDS:
+                            await self.finish_auction()
+                    else:
+                        last_bid_time = int(current.get("last_bid_time", started_at))
+                        elapsed = now - last_bid_time
+
+                        if elapsed >= GOING_ONCE_SECONDS and not current.get("going_once_issued"):
+                            channel = self.cog.bot.get_channel(int(current.get("channel_id", 0)))
+                            if channel:
+                                try:
+                                    await channel.send("Going once...")
+                                except discord.HTTPException:
+                                    pass
+                            current["going_once_issued"] = True
+                            await self.config.current_auction.set(current)
+
+                        if elapsed >= GOING_TWICE_SECONDS and not current.get("going_twice_issued"):
+                            channel = self.cog.bot.get_channel(int(current.get("channel_id", 0)))
+                            if channel:
+                                try:
+                                    await channel.send("Going twice...")
+                                except discord.HTTPException:
+                                    pass
+                            current["going_twice_issued"] = True
+                            await self.config.current_auction.set(current)
+
+                        if elapsed >= GOING_THREE_SECONDS and not current.get("going_three_issued"):
+                            channel = self.cog.bot.get_channel(int(current.get("channel_id", 0)))
+                            if channel:
+                                try:
+                                    await channel.send("Going three...")
+                                except discord.HTTPException:
+                                    pass
+                            current["going_three_issued"] = True
+                            await self.config.current_auction.set(current)
+
+                        if elapsed >= GOING_THREE_SECONDS:
+                            await self.finish_auction()
                     continue
 
                 interval = await self.config.auction_interval()
@@ -174,8 +211,10 @@ class AuctionManager:
             "ignored_users": [],
             "last_bid_at": {},
             "image_url": await self.get_image_url(character),
+            "last_bid_time": started_at,
             "going_once_issued": False,
             "going_twice_issued": False,
+            "going_three_issued": False,
             "sold": False,
         }
 
@@ -314,7 +353,11 @@ class AuctionManager:
 
         state["bid"] = bid
         state["highest_bidder_id"] = bidder_id
+        state["last_bid_time"] = utc_timestamp()
         state["last_bid_at"][last_bid_key] = utc_timestamp()
+        state["going_once_issued"] = False
+        state["going_twice_issued"] = False
+        state["going_three_issued"] = False
 
         # Preserve the auction's hard deadline. A new bid can extend the
         # close timestamp only when the auction is in the anti-snipe window.
