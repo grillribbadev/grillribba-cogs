@@ -185,6 +185,12 @@ class AuctionManager:
 
         channel = self.cog.bot.get_channel(channel_id)
         if not channel:
+            try:
+                channel = await self.cog.bot.fetch_channel(channel_id)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                return False
+
+        if not isinstance(channel, discord.TextChannel):
             return False
 
         duration = await self.config.auction_duration()
@@ -225,7 +231,7 @@ class AuctionManager:
         embed = AuctionEmbeds.auction_start(character, int(state["ends_at"]), image_url=image_url)
         try:
             message = await channel.send(embed=embed)
-        except discord.HTTPException:
+        except (discord.Forbidden, discord.HTTPException, discord.NotFound):
             return False
 
         state["message_id"] = message.id
