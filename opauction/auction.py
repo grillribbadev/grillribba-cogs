@@ -82,9 +82,6 @@ class AuctionManager:
                                     pass
                             current["going_twice_issued"] = True
                             await self.config.current_auction.set(current)
-
-                        if elapsed >= NO_BID_CLOSE_SECONDS:
-                            await self.finish_auction()
                     else:
                         last_bid_time = int(current.get("last_bid_time", started_at))
                         elapsed = now - last_bid_time
