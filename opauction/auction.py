@@ -63,61 +63,16 @@ class AuctionManager:
                     bid = int(current.get("bid", 1))
                     if bid <= 1:
                         elapsed = now - started_at
-                        if elapsed >= GOING_ONCE_SECONDS and not current.get("going_once_issued"):
-                            channel = self.cog.bot.get_channel(int(current.get("channel_id", 0)))
-                            if channel:
-                                try:
-                                    await channel.send("Going once...")
-                                except discord.HTTPException:
-                                    pass
-                            current["going_once_issued"] = True
-                            await self.config.current_auction.set(current)
-
-                        if elapsed >= GOING_TWICE_SECONDS and not current.get("going_twice_issued"):
-                            channel = self.cog.bot.get_channel(int(current.get("channel_id", 0)))
-                            if channel:
-                                try:
-                                    await channel.send("Going twice...")
-                                except discord.HTTPException:
-                                    pass
-                            current["going_twice_issued"] = True
-                            await self.config.current_auction.set(current)
                     else:
-                        last_bid_time = int(current.get("last_bid_time", started_at))
-                        elapsed = now - last_bid_time
+                        elapsed = now - int(current.get("last_bid_time", started_at))
 
-                        if elapsed >= GOING_ONCE_SECONDS and not current.get("going_once_issued"):
-                            channel = self.cog.bot.get_channel(int(current.get("channel_id", 0)))
-                            if channel:
-                                try:
-                                    await channel.send("Going once...")
-                                except discord.HTTPException:
-                                    pass
-                            current["going_once_issued"] = True
-                            await self.config.current_auction.set(current)
+                    await self._announce_countdown(current, elapsed)
 
-                        if elapsed >= GOING_TWICE_SECONDS and not current.get("going_twice_issued"):
-                            channel = self.cog.bot.get_channel(int(current.get("channel_id", 0)))
-                            if channel:
-                                try:
-                                    await channel.send("Going twice...")
-                                except discord.HTTPException:
-                                    pass
-                            current["going_twice_issued"] = True
-                            await self.config.current_auction.set(current)
-
-                        if elapsed >= GOING_THREE_SECONDS and not current.get("going_three_issued"):
-                            channel = self.cog.bot.get_channel(int(current.get("channel_id", 0)))
-                            if channel:
-                                try:
-                                    await channel.send("Going three...")
-                                except discord.HTTPException:
-                                    pass
-                            current["going_three_issued"] = True
-                            await self.config.current_auction.set(current)
-
-                        if elapsed >= GOING_THREE_SECONDS:
-                            await self.finish_auction()
+                    # No bids at all close on the shorter no-bid timer; an active
+                    # bid closes once "going three" has been reached and held.
+                    close_after = NO_BID_CLOSE_SECONDS if bid <= 1 else GOING_THREE_SECONDS
+                    if elapsed >= close_after:
+                        await self.finish_auction()
                     continue
 
                 interval = await self.config.auction_interval()
@@ -130,6 +85,25 @@ class AuctionManager:
                     await self.start_auction()
         except asyncio.CancelledError:
             pass
+
+    async def _announce_countdown(self, current: dict[str, Any], elapsed: int) -> None:
+        """Send any due 'going once/twice/three' messages, each only once per auction."""
+        stages = (
+            (GOING_ONCE_SECONDS, "going_once_issued", "Going once..."),
+            (GOING_TWICE_SECONDS, "going_twice_issued", "Going twice..."),
+            (GOING_THREE_SECONDS, "going_three_issued", "Going three..."),
+        )
+        for threshold, flag, text in stages:
+            if elapsed < threshold or current.get(flag):
+                continue
+            channel = self.cog.bot.get_channel(int(current.get("channel_id", 0)))
+            if channel:
+                try:
+                    await channel.send(text)
+                except discord.HTTPException:
+                    pass
+            current[flag] = True
+            await self.config.current_auction.set(current)
 
     async def begin(self) -> bool:
         """Start the automatic auction loop and immediately post a live auction when possible."""
