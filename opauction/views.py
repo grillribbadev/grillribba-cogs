@@ -163,6 +163,29 @@ class AuctionEmbeds:
         return embed
 
     @staticmethod
+    def queue(entries: list[tuple[dict, str]]) -> discord.Embed:
+
+        embed = discord.Embed(
+            title="📜 Auction Queue",
+            color=COLOR_AUCTION,
+        )
+
+        if not entries:
+            embed.description = "The auction queue is empty."
+            return embed
+
+        lines = []
+
+        for index, (character, seller_text) in enumerate(entries, start=1):
+            lines.append(
+                f"{index}. **{character['name']}** ({character.get('rarity', 'Unknown')}) — queued by {seller_text}"
+            )
+
+        embed.description = "\n".join(lines)
+
+        return embed
+
+    @staticmethod
     def error(message: str):
 
         return discord.Embed(

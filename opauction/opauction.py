@@ -26,7 +26,7 @@ from .constants import (
     STEAL_SUCCESS_CHANCE,
 )
 from .economy import Economy
-from .utils import clean_name, format_berries, utc_timestamp
+from .utils import clean_name, format_berries, format_duration, utc_timestamp
 from .views import AuctionEmbeds
 
 
@@ -63,6 +63,7 @@ class OPAuction(commands.Cog):
             "characters": [],
             "joined": 0,
             "last_daily": 0,
+            "cooldowns": {},
         }
 
         self.config.register_global(**default_global)
@@ -90,6 +91,24 @@ class OPAuction(commands.Cog):
         """Return True when a user is explicitly banned from live auction bidding."""
         blocked = await self.config.blocked_users()
         return int(user_id) in [int(item) for item in blocked]
+
+    async def start_cooldown(self, user_id: int, key: str, seconds: int) -> int:
+        """Return 0 and start the named cooldown, or the seconds remaining if still active.
+
+        Stored in Config (per user, keyed by command name) so it survives restarts
+        and each minigame command tracks its own independent timer.
+        """
+        player = self.config.user_from_id(user_id)
+        cooldowns = await player.cooldowns()
+        last_used = int(cooldowns.get(key, 0))
+        now = utc_timestamp()
+        remaining = seconds - (now - last_used)
+        if remaining > 0:
+            return remaining
+
+        cooldowns[key] = now
+        await player.cooldowns.set(cooldowns)
+        return 0
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -193,13 +212,33 @@ class OPAuction(commands.Cog):
 
         await ctx.send(embed=AuctionEmbeds.success(f"{character['name']} has been added to the auction queue."))
 
+    @auction_group.command(name="queue")
+    async def queue_list(self, ctx):
+        """Show the characters currently queued for auction."""
+        queue = await self.config.queue()
+
+        entries = []
+        for item in queue:
+            character = self.characters.get(int(item.get("character_id", 0)))
+            if not character:
+                continue
+
+            seller_id = int(item.get("seller_id", 0) or 0)
+            seller = (ctx.guild.get_member(seller_id) if ctx.guild else None) or self.bot.get_user(seller_id)
+            seller_text = seller.mention if seller else f"<@{seller_id}>"
+            entries.append((character, seller_text))
+
+        await ctx.send(embed=AuctionEmbeds.queue(entries))
+
     @auction_group.command(name="pray")
-    @commands.cooldown(1, MINIGAME_COOLDOWN_SECONDS, commands.BucketType.user)
     async def pray(self, ctx):
         """Pray for berries. Usually pays off, but it can backfire."""
         if not await self.economy.exists(ctx.author.id):
-            ctx.command.reset_cooldown(ctx)
             return await ctx.send(embed=AuctionEmbeds.error("Use `.auction start` first."))
+
+        remaining = await self.start_cooldown(ctx.author.id, "pray", MINIGAME_COOLDOWN_SECONDS)
+        if remaining > 0:
+            return await ctx.send(embed=AuctionEmbeds.error(f"You must wait {format_duration(remaining)} before praying again."))
 
         if random.random() < PRAY_SUCCESS_CHANCE:
             amount = random.randint(PRAY_MIN_REWARD, PRAY_MAX_REWARD)
@@ -211,12 +250,14 @@ class OPAuction(commands.Cog):
             await ctx.send(embed=AuctionEmbeds.error(f"⚡ Your prayer angered the heavens! You lost {format_berries(taken)}."))
 
     @auction_group.command(name="steal")
-    @commands.cooldown(1, MINIGAME_COOLDOWN_SECONDS, commands.BucketType.user)
     async def steal(self, ctx):
         """Attempt to steal some berries. Usually pays off, but it can backfire."""
         if not await self.economy.exists(ctx.author.id):
-            ctx.command.reset_cooldown(ctx)
             return await ctx.send(embed=AuctionEmbeds.error("Use `.auction start` first."))
+
+        remaining = await self.start_cooldown(ctx.author.id, "steal", MINIGAME_COOLDOWN_SECONDS)
+        if remaining > 0:
+            return await ctx.send(embed=AuctionEmbeds.error(f"You must wait {format_duration(remaining)} before stealing again."))
 
         if random.random() < STEAL_SUCCESS_CHANCE:
             amount = random.randint(STEAL_MIN_REWARD, STEAL_MAX_REWARD)
