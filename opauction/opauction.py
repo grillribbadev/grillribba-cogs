@@ -14,6 +14,7 @@ from .characters import CharacterManager
 from .constants import (
     DEFAULT_AUCTION_DURATION,
     DEFAULT_AUCTION_INTERVAL,
+    LOAN_GRACE_PERIOD_SECONDS,
     LOAN_INTEREST_RATE,
     MINIGAME_COOLDOWN_SECONDS,
     PRAY_MAX_PENALTY,
@@ -84,6 +85,7 @@ class OPAuction(commands.Cog):
             "cooldowns": {},
             "ping_rarities": [],
             "debt": 0,
+            "debt_started_at": 0,
         }
 
         self.config.register_global(**default_global)
@@ -102,6 +104,9 @@ class OPAuction(commands.Cog):
         elif not self.characters.load_roster(saved_roster):
             log.warning("Saved OPAuction character roster was invalid; using the bundled roster.")
             await self.config.character_roster.set(self.characters.all())
+        for user_id, data in (await self.config.all_users()).items():
+            if int(data.get("debt", 0) or 0) and not int(data.get("debt_started_at", 0) or 0):
+                await self.config.user_from_id(int(user_id)).debt_started_at.set(utc_timestamp())
         # self.owners is in-memory only; without this, every character looks
         # unowned after a restart until the destructive `wipe` command runs.
         await self.characters.rebuild_owners()
@@ -215,6 +220,17 @@ class OPAuction(commands.Cog):
         cooldowns = await self.config.user_from_id(user_id).cooldowns()
         last_used = int(cooldowns.get(key, 0))
         return max(0, seconds - (utc_timestamp() - last_used))
+
+    async def debt_is_overdue(self, user_id: int) -> bool:
+        """Return whether a user's unpaid loan has passed its seven-day grace period."""
+        player = self.config.user_from_id(user_id)
+        debt = int(await player.debt() or 0)
+        started_at = int(await player.debt_started_at() or 0)
+        return debt > 0 and started_at > 0 and utc_timestamp() - started_at >= LOAN_GRACE_PERIOD_SECONDS
+
+    async def debt_blocks_sales(self, user_id: int) -> bool:
+        """Return whether overdue debt blocks a user from selling characters."""
+        return await self.debt_is_overdue(user_id)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -570,6 +586,8 @@ class OPAuction(commands.Cog):
             return await ctx.send(embed=AuctionEmbeds.error("You cannot trade with yourself."))
         if not await self.economy.exists(ctx.author.id) or not await self.economy.exists(member.id):
             return await ctx.send(embed=AuctionEmbeds.error("Both members must use `.auction start` before trading."))
+        if int(await self.config.user_from_id(ctx.author.id).debt() or 0) or int(await self.config.user_from_id(member.id).debt() or 0):
+            return await ctx.send(embed=AuctionEmbeds.error("Members with outstanding loan debt cannot trade characters."))
 
         parts = [part.strip() for part in offer.split("|")]
         if len(parts) != 2:
@@ -773,6 +791,8 @@ class OPAuction(commands.Cog):
         """Queue a character with an optional trailing starting bid."""
         if not await self.economy.exists(ctx.author.id):
             return await ctx.send("Use `.auction start` first.")
+        if await self.debt_blocks_sales(ctx.author.id):
+            return await ctx.send(embed=AuctionEmbeds.error("Your loan is overdue. Repay it before selling characters."))
 
         parts = name.rsplit(maxsplit=1)
         starting_bid = 1
@@ -847,6 +867,8 @@ class OPAuction(commands.Cog):
         """Sell an owned character to the auction house for half its last sale price."""
         if not await self.economy.exists(ctx.author.id):
             return await ctx.send(embed=AuctionEmbeds.error("Use `.auction start` first."))
+        if await self.debt_blocks_sales(ctx.author.id):
+            return await ctx.send(embed=AuctionEmbeds.error("Your loan is overdue. Repay it before selling characters."))
 
         character = self.characters.get_by_name(clean_name(name))
         if not character:
@@ -1060,6 +1082,7 @@ class OPAuction(commands.Cog):
             await self.config.total_fees.set(vault_balance - amount)
             await self.economy.deposit(user_id, amount)
             await player.debt.set(debt)
+            await player.debt_started_at.set(utc_timestamp())
             await self.record_transaction("loan", user_id=user_id, amount=amount, debt=debt)
             pending_loans.pop(str(user_id), None)
             await self.config.pending_loans.set(pending_loans)
@@ -1100,6 +1123,8 @@ class OPAuction(commands.Cog):
 
             await self.economy.adjust_balance(ctx.author.id, -repayment)
             await player.debt.set(debt - repayment)
+            if debt - repayment == 0:
+                await player.debt_started_at.set(0)
             vault_balance = await self.config.total_fees()
             await self.config.total_fees.set(vault_balance + repayment)
             await self.record_transaction(
@@ -1119,6 +1144,109 @@ class OPAuction(commands.Cog):
                 f"You repaid {format_berries(repayment)}. Remaining loan debt: {format_berries(debt - repayment)}."
             )
         )
+
+    @auction_group.command(name="collectdebt")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def collect_debt(self, ctx, member: discord.Member):
+        """Collect as much of a member's available beri as possible toward their debt."""
+        async with self.auction._state_lock:
+            player = self.config.user_from_id(member.id)
+            debt = int(await player.debt() or 0)
+            if debt < 1:
+                return await ctx.send(embed=AuctionEmbeds.error("That member has no outstanding debt."))
+
+            collected = min(debt, await self.economy.available_balance(member.id))
+            if collected < 1:
+                return await ctx.send(embed=AuctionEmbeds.error("That member has no available beri to collect."))
+
+            await self.economy.adjust_balance(member.id, -collected)
+            remaining_debt = debt - collected
+            await player.debt.set(remaining_debt)
+            if remaining_debt == 0:
+                await player.debt_started_at.set(0)
+            vault_balance = await self.config.total_fees()
+            await self.config.total_fees.set(vault_balance + collected)
+            await self.record_transaction(
+                "debt_collection",
+                user_id=member.id,
+                amount=collected,
+                remaining_debt=remaining_debt,
+            )
+
+        await self.log_transaction(
+            "🏦 Debt Collection",
+            f"Member: {member.mention}\nCollected: **{format_berries(collected)}**\n"
+            f"Remaining debt: **{format_berries(remaining_debt)}**",
+        )
+        await ctx.send(embed=AuctionEmbeds.success(f"Collected {format_berries(collected)} from {member.mention}. Remaining debt: {format_berries(remaining_debt)}."))
+
+    @auction_group.command(name="repossess")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def repossess_character(self, ctx, member: discord.Member, *, name: str):
+        """Reposses an indebted member's character at its last sale value."""
+        character = self.characters.get_by_name(clean_name(name))
+        if not character:
+            return await ctx.send(embed=AuctionEmbeds.error("I could not find that character."))
+
+        character_id = int(character["id"])
+        async with self.auction._state_lock:
+            player = self.config.user_from_id(member.id)
+            debt = int(await player.debt() or 0)
+            if debt < 1:
+                return await ctx.send(embed=AuctionEmbeds.error("That member has no outstanding debt."))
+            if self.characters.owner_of(character_id) != member.id:
+                return await ctx.send(embed=AuctionEmbeds.error("That member does not own this character."))
+
+            queue = await self.config.queue()
+            current = await self.auction.get_current_auction()
+            if any(int(entry.get("character_id", 0)) == character_id for entry in queue) or (
+                current and int(current.get("character_id", 0)) == character_id
+            ):
+                return await ctx.send(embed=AuctionEmbeds.error("Queued or live-auction characters cannot be repossessed."))
+
+            last_sale_prices = await self.config.last_sale_prices()
+            value = int(last_sale_prices.get(str(character_id), 0) or 0)
+            if value < 1:
+                return await ctx.send(embed=AuctionEmbeds.error("This character has no completed sale value and cannot be repossessed automatically."))
+
+            recovered = min(value, debt)
+            remaining_debt = debt - recovered
+            await self.economy.remove_character(member.id, character_id)
+            self.characters.unassign(character_id)
+            await player.debt.set(remaining_debt)
+            if remaining_debt == 0:
+                await player.debt_started_at.set(0)
+            vault_balance = await self.config.total_fees()
+            await self.config.total_fees.set(vault_balance + recovered)
+            await self.record_transaction(
+                "repossession",
+                user_id=member.id,
+                character_id=character_id,
+                amount=recovered,
+                remaining_debt=remaining_debt,
+            )
+
+        await self.log_transaction(
+            "🏦 Character Repossession",
+            f"Member: {member.mention}\nCharacter: **{character['name']}**\n"
+            f"Recovered: **{format_berries(recovered)}**\nRemaining debt: **{format_berries(remaining_debt)}**",
+        )
+        await ctx.send(embed=AuctionEmbeds.success(f"Repossessed **{character['name']}** from {member.mention}, recovering {format_berries(recovered)}. Remaining debt: {format_berries(remaining_debt)}."))
+
+    @auction_group.command(name="forgivedebt")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def forgive_debt(self, ctx, member: discord.Member):
+        """Clear a member's remaining Auction House loan debt."""
+        player = self.config.user_from_id(member.id)
+        debt = int(await player.debt() or 0)
+        if debt < 1:
+            return await ctx.send(embed=AuctionEmbeds.error("That member has no outstanding debt."))
+
+        await player.debt.set(0)
+        await player.debt_started_at.set(0)
+        await self.record_transaction("debt_forgiveness", user_id=member.id, amount=debt)
+        await self.log_transaction("🏦 Debt Forgiven", f"Member: {member.mention}\nForgiven debt: **{format_berries(debt)}**")
+        await ctx.send(embed=AuctionEmbeds.success(f"Forgave {format_berries(debt)} of debt for {member.mention}."))
 
     @auction_group.command(name="pray")
     async def pray(self, ctx):

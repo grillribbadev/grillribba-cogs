@@ -442,6 +442,10 @@ class AuctionManager:
             await message.reply("Use `.auction start` before bidding.")
             return False
 
+        if await self.cog.debt_is_overdue(bidder_id):
+            await message.reply("Your loan is overdue. Repay it before bidding again.")
+            return False
+
         if utc_timestamp() >= int(state.get("ends_at", 0)):
             await message.reply("This auction has already ended.")
             return False
