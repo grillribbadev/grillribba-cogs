@@ -222,7 +222,7 @@ class OPAuction(commands.Cog):
         return max(0, seconds - (utc_timestamp() - last_used))
 
     async def debt_is_overdue(self, user_id: int) -> bool:
-        """Return whether a user's unpaid loan has passed its seven-day grace period."""
+        """Return whether a user's unpaid loan has passed its 48-hour grace period."""
         player = self.config.user_from_id(user_id)
         debt = int(await player.debt() or 0)
         started_at = int(await player.debt_started_at() or 0)
@@ -1055,6 +1055,49 @@ class OPAuction(commands.Cog):
             await offer_message.add_reaction("❌")
         except (discord.Forbidden, discord.HTTPException):
             pass
+
+    @auction_group.command(name="loaninfo", aliases=["debtinfo"])
+    async def loan_info(self, ctx):
+        """Explain Auction House loans, debt, and overdue collection."""
+        embed = discord.Embed(title="🏦 Auction House Loans", color=discord.Color.gold())
+        embed.add_field(
+            name="Taking a Loan",
+            value=(
+                "Use `.auction loan <amount>`, then react with ✅ to accept or ❌ to decline. "
+                "The Vault must have enough beri to fund the loan."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Interest and Repayment",
+            value=(
+                "Loans charge **25% interest**. For example, borrowing ฿1,000 creates a debt of ฿1,250. "
+                "Use `.auction repayloan [amount]` for a full or partial repayment."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="While You Owe Debt",
+            value="You cannot take another loan or participate in character trades.",
+            inline=False,
+        )
+        embed.add_field(
+            name="After 48 Hours",
+            value=(
+                "If debt remains unpaid after the 48-hour grace period, you also cannot bid, queue characters for sale, "
+                "or sell characters to the Auction House."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="If You Cannot Pay",
+            value=(
+                "Administrators can collect your available beri, repossess an eligible character at its last sale value, "
+                "or forgive debt in exceptional cases. Queued and live-auction characters cannot be repossessed."
+            ),
+            inline=False,
+        )
+        await ctx.send(embed=embed)
 
     async def _accept_loan(self, user_id: int, loan: dict, channel: discord.TextChannel) -> None:
         """Issue a reaction-confirmed loan after rechecking all mutable state."""
