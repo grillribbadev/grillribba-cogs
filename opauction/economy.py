@@ -28,7 +28,7 @@ class Economy:
         await player.reserved.set(0)
         await player.characters.set([])
         await player.joined.set(now)
-        await player.last_daily.set(now)
+        await player.last_daily.set(0)
 
         return True
 
@@ -36,7 +36,6 @@ class Economy:
         return await self.config.user_from_id(user_id).started()
 
     async def balance(self, user_id: int) -> int:
-        await self.give_daily(user_id)
         return await self.config.user_from_id(user_id).balance()
 
     async def reserved(self, user_id: int) -> int:
@@ -134,21 +133,17 @@ class Economy:
     async def get_characters(self, user_id: int):
         return await self.config.user_from_id(user_id).characters()
 
-    async def give_daily(self, user_id: int):
+    async def claim_daily(self, user_id: int) -> int:
+        """Grant one daily payment or return the seconds remaining to claim."""
         player = self.config.user_from_id(user_id)
 
         last = await player.last_daily()
-
         now = utc_timestamp()
-
-        days = (now - last) // 86400
-
-        if days <= 0:
-            return
+        remaining = 86400 - (now - last)
+        if last and remaining > 0:
+            return remaining
 
         bal = await player.balance()
-
-        bal += days * DAILY_INCOME
-
-        await player.balance.set(bal)
-        await player.last_daily.set(last + (days * 86400))
+        await player.balance.set(bal + DAILY_INCOME)
+        await player.last_daily.set(now)
+        return 0

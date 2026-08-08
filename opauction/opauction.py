@@ -233,6 +233,22 @@ class OPAuction(commands.Cog):
         reserved = await self.economy.reserved(ctx.author.id)
         await ctx.send(embed=AuctionEmbeds.balance(ctx.author, balance, reserved))
 
+    @auction_group.command(name="daily")
+    async def daily(self, ctx):
+        """Claim the daily beri payment every 24 hours."""
+        if not await self.economy.exists(ctx.author.id):
+            return await ctx.send(embed=AuctionEmbeds.error("Use `.auction start` first."))
+
+        remaining = await self.economy.claim_daily(ctx.author.id)
+        if remaining > 0:
+            return await ctx.send(
+                embed=AuctionEmbeds.error(
+                    f"Your daily beri is available again in {format_duration(remaining)}."
+                )
+            )
+
+        await ctx.send(embed=AuctionEmbeds.success(f"You claimed your daily {format_berries(250)}."))
+
     @auction_group.command(name="collection")
     async def collection(self, ctx):
         """List the characters owned by the caller."""
