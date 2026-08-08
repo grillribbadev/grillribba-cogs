@@ -60,6 +60,8 @@ class OPAuction(commands.Cog):
             "total_fees": 0,
             "next_auction_source": "queue",
             "last_auction_source": "pool",
+            "forced_next_source": None,
+            "forced_next_character_id": None,
         }
 
         default_user = {
@@ -409,6 +411,37 @@ class OPAuction(commands.Cog):
         """Force the next auction immediately."""
         await self.auction.force()
         await ctx.send(embed=AuctionEmbeds.success("Auction forced."))
+
+    @auction_group.command(name="nextpool", aliases=["poolnext"])
+    @commands.admin_or_permissions(manage_guild=True)
+    async def next_pool(self, ctx, *, name: str = None):
+        """Make the next auction draw a random or specified pool character."""
+        available_pool = await self.characters.available_pool()
+        if not available_pool:
+            return await ctx.send(embed=AuctionEmbeds.error("There are no unowned characters in the pool."))
+
+        character_id = None
+        if name:
+            character = self.characters.get_by_name(clean_name(name))
+            if not character:
+                return await ctx.send(embed=AuctionEmbeds.error("I could not find that character."))
+
+            character_id = int(character["id"])
+            if character_id not in available_pool:
+                return await ctx.send(embed=AuctionEmbeds.error("That character is not currently in the pool."))
+
+            queue = await self.config.queue()
+            if any(int(entry.get("character_id", 0)) == character_id for entry in queue):
+                return await ctx.send(embed=AuctionEmbeds.error("That character is already queued for sale."))
+
+        await self.config.forced_next_source.set("pool")
+        await self.config.forced_next_character_id.set(character_id)
+        message = (
+            f"The next auction will use **{character['name']}** from the pool."
+            if name
+            else "The next auction will use a random character from the pool."
+        )
+        await ctx.send(embed=AuctionEmbeds.success(message))
 
     @auction_group.command(name="skip")
     @commands.admin_or_permissions(manage_guild=True)

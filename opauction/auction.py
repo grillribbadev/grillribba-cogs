@@ -201,13 +201,23 @@ class AuctionManager:
 
         queue = await self.config.queue()
         last_source = await self.config.last_auction_source()
+        forced_source = await self.config.forced_next_source()
+        forced_character_id = await self.config.forced_next_character_id()
 
         character: dict[str, Any] | None = None
         from_queue = False
         queue_entry = queue[0] if queue else None
         available_pool = [cid for cid in self.cog.characters.all_ids() if not self.cog.characters.owned(cid)]
 
-        if last_source != "queue" and queue_entry:
+        if forced_source == "pool" and forced_character_id:
+            forced_character_id = int(forced_character_id)
+            if forced_character_id in available_pool:
+                character = self.cog.characters.get(forced_character_id)
+
+        if forced_source == "pool" and not character and available_pool:
+            character = self.cog.characters.get(random.choice(available_pool))
+
+        if not character and last_source != "queue" and queue_entry:
             queued_character_id = int(queue[0]["character_id"])
             character = self.cog.characters.get(queued_character_id)
             from_queue = character is not None
@@ -283,12 +293,16 @@ class AuctionManager:
 
         state["message_id"] = message.id
         await self.config.current_auction.set(state)
+        await self.config.forced_next_source.set(None)
+        await self.config.forced_next_character_id.set(None)
         if from_queue:
             queue.pop(0)
             await self.config.queue.set(queue)
             await self.config.last_auction_source.set("queue")
         else:
             await self.config.last_auction_source.set("pool")
+        if forced_source == "pool":
+            await self.config.forced_next_source.set(None)
         await self.config.last_auction_started.set(utc_timestamp())
         return True
 
