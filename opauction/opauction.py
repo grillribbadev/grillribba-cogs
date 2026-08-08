@@ -941,6 +941,18 @@ class OPAuction(commands.Cog):
 
         await ctx.send(embed=AuctionEmbeds.queue(entries))
 
+    @auction_group.command(name="clearqueue")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def clear_queue(self, ctx):
+        """Remove every pending listing from the auction queue."""
+        async with self.auction._state_lock:
+            queue = await self.config.queue()
+            if not queue:
+                return await ctx.send(embed=AuctionEmbeds.error("The auction queue is already empty."))
+            await self.config.queue.set([])
+
+        await ctx.send(embed=AuctionEmbeds.success(f"Cleared {len(queue)} queued auction listing(s)."))
+
     @auction_group.command(name="bank")
     async def bank(self, ctx):
         """Show how much beri the auction house has collected in fees."""
