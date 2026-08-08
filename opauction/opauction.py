@@ -58,6 +58,7 @@ class OPAuction(commands.Cog):
             "last_auction_started": 0,
             "blocked_users": [],
             "total_fees": 0,
+            "next_auction_source": "queue",
         }
 
         default_user = {

@@ -197,20 +197,27 @@ class AuctionManager:
             return False
 
         queue = await self.config.queue()
+        preferred_source = await self.config.next_auction_source()
 
-        # Only treat this as a queued sale when the queued character still
-        # resolves; otherwise the seller/character pairing below would mismatch.
         character: dict[str, Any] | None = None
         from_queue = False
-        if queue:
+        if preferred_source == "queue" and queue:
             queued_character_id = int(queue[0]["character_id"])
             character = self.cog.characters.get(queued_character_id)
             from_queue = character is not None
 
         if not character:
             available_pool = [cid for cid in self.cog.characters.all_ids() if not self.cog.characters.owned(cid)]
-            if available_pool:
+            if preferred_source == "pool" and available_pool:
                 character = self.cog.characters.get(random.choice(available_pool))
+
+        if not character and preferred_source == "queue" and available_pool:
+            character = self.cog.characters.get(random.choice(available_pool))
+
+        if not character and preferred_source == "pool" and queue:
+            queued_character_id = int(queue[0]["character_id"])
+            character = self.cog.characters.get(queued_character_id)
+            from_queue = character is not None
 
         if not character:
             return False
@@ -236,6 +243,11 @@ class AuctionManager:
             seller_id = int(queue_entry.get("seller_id", 0) or 0)
             # Only persist the pop once we're committed to this queue entry.
             await self.config.queue.set(queue)
+
+        if from_queue:
+            await self.config.next_auction_source.set("pool")
+        else:
+            await self.config.next_auction_source.set("queue")
 
         state = {
             "character_id": int(character["id"]),
