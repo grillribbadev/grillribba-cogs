@@ -735,14 +735,25 @@ class OPAuction(commands.Cog):
     @auction_group.command(name="wipe", aliases=["resetusers", "reset"])
     @commands.admin_or_permissions(manage_guild=True)
     async def wipe(self, ctx):
-        """Reset all registered player data in the cog."""
+        """Reset all player, queue, and auction state in the cog."""
+        await self.config.auction_running.set(False)
+        await self.auction.cancel_current_auction()
+        await self.config.queue.set([])
+        await self.config.last_auction_started.set(0)
+        await self.config.last_auction_source.set("pool")
+        await self.config.next_auction_source.set("queue")
+        await self.config.forced_next_source.set(None)
+        await self.config.forced_next_character_id.set(None)
+        await self.config.total_fees.set(0)
+        await self.config.last_sale_prices.set({})
+
         users = await self.config.all_users()
         for user_id in list(users.keys()):
             player = self.config.user_from_id(int(user_id))
             await player.clear()
 
         await self.characters.rebuild_owners()
-        await ctx.send(embed=AuctionEmbeds.success("Auction user-state wipe completed."))
+        await ctx.send(embed=AuctionEmbeds.success("All auction data, including the queue, has been wiped."))
 
     @auction_group.command(name="channel")
     @commands.admin_or_permissions(manage_guild=True)

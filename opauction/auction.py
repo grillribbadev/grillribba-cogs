@@ -345,6 +345,13 @@ class AuctionManager:
         """Clear active auction state from storage."""
         await self.config.current_auction.set({})
 
+    async def cancel_current_auction(self) -> None:
+        """Release the active bidder and remove the current auction state."""
+        state = await self.get_current_auction()
+        if state:
+            await self._release_highest_bid(state)
+        await self.clear_current_auction()
+
     async def _release_highest_bid(self, state: dict[str, Any]) -> None:
         """Release a bidder's held funds when an auction is discarded."""
         highest_bidder_id = state.get("highest_bidder_id")
