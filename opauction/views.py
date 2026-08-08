@@ -13,6 +13,31 @@ from .utils import format_berries, format_duration
 
 class AuctionEmbeds:
     @staticmethod
+    def character_view(
+        character: dict,
+        status: str,
+        last_sale_price: int,
+        image_url: str | None = None,
+    ) -> discord.Embed:
+        """Build a full character profile for the public roster viewer."""
+        embed = discord.Embed(
+            title=character["name"],
+            description=f"**{character.get('rarity', 'Unknown')} Tier**",
+            color=COLOR_AUCTION,
+        )
+        embed.add_field(name="Arc", value=character.get("arc", "Unknown"), inline=True)
+        embed.add_field(name="Status", value=status, inline=True)
+        embed.add_field(
+            name="Last Sale",
+            value=format_berries(last_sale_price) if last_sale_price else "No completed sale yet",
+            inline=True,
+        )
+        embed.set_footer(text=f"Character #{character['id']}")
+        if image_url:
+            embed.set_image(url=image_url)
+        return embed
+
+    @staticmethod
     def ping_preferences(selected: list[str]) -> discord.Embed:
         """Build the rarity-ping preference panel."""
         selected_text = ", ".join(rarity.title() for rarity in selected) if selected else "None"

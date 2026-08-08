@@ -4,6 +4,7 @@ import asyncio
 import logging
 import random
 import re
+import uuid
 from typing import Any
 from urllib.parse import quote
 
@@ -35,6 +36,11 @@ from .views import AuctionEmbeds
 
 log = logging.getLogger("red.opauction")
 
+# These locks are shared by every loaded OPAuction instance in this process.
+# A reload may briefly leave an old background task alive while a new cog loads.
+_AUCTION_START_LOCK = asyncio.Lock()
+_AUCTION_STATE_LOCK = asyncio.Lock()
+
 
 class AuctionManager:
     """Controller for the active auction lifecycle and bid processing."""
@@ -43,8 +49,26 @@ class AuctionManager:
         self.cog = cog
         self.config: Config = cog.config
         self.image_cache: dict[int, str] = {}
-        self._start_lock = asyncio.Lock()
-        self._state_lock = asyncio.Lock()
+        self._runner_id = ""
+        self._start_lock = _AUCTION_START_LOCK
+        self._state_lock = _AUCTION_STATE_LOCK
+
+    async def activate_runner(self) -> None:
+        """Mark this cog instance as the only instance allowed to update auctions."""
+        self._runner_id = uuid.uuid4().hex
+        async with self._state_lock:
+            await self.config.auction_runner_id.set(self._runner_id)
+
+    async def is_active_runner(self) -> bool:
+        """Return whether this loaded cog still owns the auction scheduler lease."""
+        return bool(self._runner_id) and await self.config.auction_runner_id() == self._runner_id
+
+    async def _write_current_auction(self, state: dict[str, Any]) -> bool:
+        """Persist auction state only while this cog owns the scheduler lease."""
+        if not await self.is_active_runner():
+            return False
+        await self.config.current_auction.set(state)
+        return True
 
     async def background_loop(self):
         """Background loop that owns automatic auction scheduling."""
@@ -54,6 +78,8 @@ class AuctionManager:
             await asyncio.sleep(1)
 
             try:
+                if not await self.is_active_runner():
+                    return
                 await self._tick()
             except asyncio.CancelledError:
                 raise
@@ -63,6 +89,9 @@ class AuctionManager:
 
     async def _tick(self) -> None:
         """Run one iteration of the auction scheduling/countdown logic."""
+        if not await self.is_active_runner():
+            return
+
         if not await self.config.auction_running():
             return
 
@@ -103,7 +132,7 @@ class AuctionManager:
 
     async def _announce_countdown(self, current: dict[str, Any], elapsed: int) -> None:
         """Send any due 'going once/twice/three' messages, each only once per auction."""
-        async with self._start_lock:
+        async with self._state_lock:
             stored_current = await self.get_current_auction()
             if not stored_current or stored_current.get("message_id") != current.get("message_id"):
                 return
@@ -123,7 +152,8 @@ class AuctionManager:
                     except discord.HTTPException:
                         pass
                 stored_current[flag] = True
-                await self.config.current_auction.set(stored_current)
+                if not await self._write_current_auction(stored_current):
+                    return
 
     async def begin(self) -> bool:
         """Start the automatic auction loop and immediately post a live auction when possible."""
@@ -194,6 +224,8 @@ class AuctionManager:
 
     async def start_auction(self) -> bool:
         """Create one auction at a time, even when several triggers arrive together."""
+        if not await self.is_active_runner():
+            return False
         async with self._start_lock:
             return await self._start_auction()
 
@@ -306,7 +338,8 @@ class AuctionManager:
             await self.cog.notify_rarity_subscribers(channel, str(character.get("rarity", "normal")))
 
         state["message_id"] = message.id
-        await self.config.current_auction.set(state)
+        if not await self._write_current_auction(state):
+            return False
         await self.config.forced_next_source.set(None)
         await self.config.forced_next_character_id.set(None)
         if from_queue:
@@ -354,7 +387,7 @@ class AuctionManager:
 
     async def clear_current_auction(self) -> None:
         """Clear active auction state from storage."""
-        await self.config.current_auction.set({})
+        await self._write_current_auction({})
 
     async def cancel_current_auction(self) -> None:
         """Release the active bidder and remove the current auction state."""
@@ -379,6 +412,8 @@ class AuctionManager:
     async def handle_bid(self, message: discord.Message) -> bool:
         """Handle a numeric bid sent in the configured auction channel."""
         async with self._state_lock:
+            if not await self.is_active_runner():
+                return False
             return await self._handle_bid(message)
 
     async def _handle_bid(self, message: discord.Message) -> bool:
@@ -497,7 +532,8 @@ class AuctionManager:
         # visible deadline must be reset with every accepted bid as well.
         state["ends_at"] = bid_time + GOING_THREE_SECONDS
 
-        await self.config.current_auction.set(state)
+        if not await self._write_current_auction(state):
+            return False
         await self.update_current_embed(state)
 
         return True
@@ -506,7 +542,7 @@ class AuctionManager:
         """Track invalid bid attempts without locking the user out of the auction."""
         invalids = state.setdefault("invalid_counts", {})
         invalids[str(user_id)] = int(invalids.get(str(user_id), 0)) + 1
-        await self.config.current_auction.set(state)
+        await self._write_current_auction(state)
 
     async def update_current_embed(self, state: dict[str, Any]) -> None:
         """Edit the live message embed after a bid update."""
@@ -539,7 +575,7 @@ class AuctionManager:
             try:
                 message = await channel.send(embed=embed)
                 state["message_id"] = message.id
-                await self.config.current_auction.set(state)
+                await self._write_current_auction(state)
             except (discord.Forbidden, discord.HTTPException, discord.NotFound):
                 pass
             return
@@ -551,7 +587,7 @@ class AuctionManager:
             try:
                 message = await channel.send(embed=embed)
                 state["message_id"] = message.id
-                await self.config.current_auction.set(state)
+                await self._write_current_auction(state)
             except (discord.Forbidden, discord.HTTPException, discord.NotFound):
                 pass
         except (discord.HTTPException, discord.Forbidden):
@@ -560,10 +596,15 @@ class AuctionManager:
     async def finish_auction(self) -> None:
         """End the current auction, transfer money, and deliver any settlement embeds."""
         async with self._state_lock:
+            if not await self.is_active_runner():
+                return
             await self._finish_auction()
 
     async def _finish_auction(self) -> None:
         """Settle the stored auction after all in-flight bids have completed."""
+        if not await self.is_active_runner():
+            return
+
         state = await self.get_current_auction()
         if not state:
             return
@@ -594,6 +635,8 @@ class AuctionManager:
                         winner = await self.cog.bot.fetch_user(winner_id)
                     except (discord.NotFound, discord.HTTPException):
                         winner = None
+                if not await self.is_active_runner():
+                    return
                 price = bid
                 owner_before = self.cog.characters.owner_of(character_id)
                 if owner_before is not None:

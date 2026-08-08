@@ -55,6 +55,7 @@ class OPAuction(commands.Cog):
             "auction_duration": DEFAULT_AUCTION_DURATION,
             "auction_interval": DEFAULT_AUCTION_INTERVAL,
             "current_auction": {},
+            "auction_runner_id": None,
             "queue": [],
             "last_auction_started": 0,
             "blocked_users": [],
@@ -87,6 +88,7 @@ class OPAuction(commands.Cog):
         self.auction_task = None
 
     async def cog_load(self):
+        await self.auction.activate_runner()
         # self.owners is in-memory only; without this, every character looks
         # unowned after a restart until the destructive `wipe` command runs.
         await self.characters.rebuild_owners()
@@ -204,9 +206,6 @@ class OPAuction(commands.Cog):
             return
 
         if await self.config.auction_running() is False:
-            return
-
-        if not await self.economy.exists(message.author.id):
             return
 
         state = await self.auction.get_current_auction()
@@ -352,6 +351,39 @@ class OPAuction(commands.Cog):
                 characters.append((character, status))
 
         await ctx.send(embed=AuctionEmbeds.collection(ctx.author, characters))
+
+    @auction_group.command(name="view")
+    async def view_character(self, ctx, *, name: str):
+        """Show a character's artwork, tier, and current auction status."""
+        character = self.characters.get_by_name(clean_name(name))
+        if not character:
+            return await ctx.send(embed=AuctionEmbeds.error("I could not find that character."))
+
+        character_id = int(character["id"])
+        current = await self.auction.get_current_auction()
+        queue = await self.config.queue()
+        owner_id = self.characters.owner_of(character_id)
+
+        if current and int(current.get("character_id", 0)) == character_id:
+            status = "Live auction"
+        elif any(int(entry.get("character_id", 0)) == character_id for entry in queue):
+            status = "Queued for auction"
+        elif owner_id:
+            status = f"Owned by <@{owner_id}>"
+        else:
+            status = "Available in the Auction House pool"
+
+        last_sale_prices = await self.config.last_sale_prices()
+        last_sale_price = int(last_sale_prices.get(str(character_id), 0) or 0)
+        image_url = await self.auction.get_image_url(character)
+        await ctx.send(
+            embed=AuctionEmbeds.character_view(
+                character,
+                status,
+                last_sale_price,
+                image_url=image_url,
+            )
+        )
 
     @auction_group.command(name="sell")
     async def sell(self, ctx, *, name: str):
@@ -815,35 +847,46 @@ class OPAuction(commands.Cog):
 
     @auction_group.command(name="repairlast")
     @commands.admin_or_permissions(manage_guild=True)
-    async def repair_last(self, ctx, count: int = 1):
+    async def repair_last(self, ctx, count: int = 1, confirmation: str = ""):
         """Safely reverse up to the requested number of latest transactions."""
         if count < 1 or count > 50:
             return await ctx.send(embed=AuctionEmbeds.error("Choose a transaction count from 1 to 50."))
 
-        history = await self.config.transaction_history()
-        reversed_count = 0
-        blocked_reason = None
+        if confirmation != "CONFIRM":
+            return await ctx.send(
+                embed=AuctionEmbeds.error(
+                    f"This reverses the latest {count} ledger transaction(s), including completed sales. "
+                    f"Use `.auction repairlast {count} CONFIRM` to proceed."
+                )
+            )
 
-        for entry_index in range(len(history) - 1, -1, -1):
-            if history[entry_index].get("reversed"):
-                continue
+        async with self.auction._state_lock:
+            history = await self.config.transaction_history()
+            reversed_count = 0
+            blocked_reason = None
 
-            error = await self._reverse_transaction(history[entry_index])
-            if error:
-                blocked_reason = error
-                break
+            for entry_index in range(len(history) - 1, -1, -1):
+                if history[entry_index].get("reversed"):
+                    continue
 
-            history[entry_index]["reversed"] = True
-            reversed_count += 1
-            if reversed_count >= count:
-                break
+                error = await self._reverse_transaction(history[entry_index])
+                if error:
+                    blocked_reason = error
+                    break
+
+                history[entry_index]["reversed"] = True
+                reversed_count += 1
+                if reversed_count >= count:
+                    break
+
+            if reversed_count:
+                await self.config.transaction_history.set(history)
 
         if not reversed_count:
             if blocked_reason:
                 return await ctx.send(embed=AuctionEmbeds.error(blocked_reason))
             return await ctx.send(embed=AuctionEmbeds.error("There is no unreversed transaction in the ledger."))
 
-        await self.config.transaction_history.set(history)
         detail = f" Reversed {reversed_count} transaction(s)."
         if blocked_reason:
             detail += f" Stopped: {blocked_reason}"
