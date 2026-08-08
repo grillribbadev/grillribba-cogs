@@ -40,6 +40,7 @@ class AuctionManager:
         self.cog = cog
         self.config: Config = cog.config
         self.image_cache: dict[int, str] = {}
+        self._start_lock = asyncio.Lock()
 
     async def background_loop(self):
         """Background loop that owns automatic auction scheduling."""
@@ -181,6 +182,11 @@ class AuctionManager:
         await self.start_auction()
 
     async def start_auction(self) -> bool:
+        """Create one auction at a time, even when several triggers arrive together."""
+        async with self._start_lock:
+            return await self._start_auction()
+
+    async def _start_auction(self) -> bool:
         """Create a new active auction instance."""
         if await self.get_current_auction():
             return False
