@@ -84,6 +84,7 @@ class OPAuction(commands.Cog):
         # self.owners is in-memory only; without this, every character looks
         # unowned after a restart until the destructive `wipe` command runs.
         await self.characters.rebuild_owners()
+        await self.rebuild_reservations()
         self.auction_task = self.bot.loop.create_task(self.auction.background_loop())
 
     def cog_unload(self):
@@ -111,6 +112,16 @@ class OPAuction(commands.Cog):
         """Return True when a user is explicitly banned from live auction bidding."""
         blocked = await self.config.blocked_users()
         return int(user_id) in [int(item) for item in blocked]
+
+    async def rebuild_reservations(self) -> None:
+        """Clear stale holds and preserve only the current highest bid."""
+        state = await self.auction.get_current_auction()
+        highest_bidder_id = int(state.get("highest_bidder_id", 0) or 0) if state else 0
+        highest_bid = int(state.get("bid", 0)) if state else 0
+
+        for user_id in (await self.config.all_users()):
+            reserved = highest_bid if int(user_id) == highest_bidder_id else 0
+            await self.config.user_from_id(int(user_id)).reserved.set(reserved)
 
     async def start_cooldown(self, user_id: int, key: str, seconds: int) -> int:
         """Return 0 and start the named cooldown, or the seconds remaining if still active.
@@ -199,7 +210,8 @@ class OPAuction(commands.Cog):
             return await ctx.send(embed=AuctionEmbeds.error("Use `.auction start` first."))
 
         balance = await self.economy.balance(ctx.author.id)
-        await ctx.send(embed=AuctionEmbeds.balance(ctx.author, balance))
+        reserved = await self.economy.reserved(ctx.author.id)
+        await ctx.send(embed=AuctionEmbeds.balance(ctx.author, balance, reserved))
 
     @auction_group.command(name="collection")
     async def collection(self, ctx):

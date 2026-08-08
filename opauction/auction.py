@@ -132,6 +132,7 @@ class AuctionManager:
             # otherwise it's a stale auction from a prior run and must be cleared.
             if await self._current_auction_is_live(current):
                 return True
+            await self._release_highest_bid(current)
             await self.clear_current_auction()
 
         # Don't stamp last_auction_started here: if start_auction fails below,
@@ -184,6 +185,7 @@ class AuctionManager:
         """Cancel the current auction and advance the queue."""
         state = await self.get_current_auction()
         if state:
+            await self._release_highest_bid(state)
             await self.clear_current_auction()
         await self.start_auction()
 
@@ -315,6 +317,12 @@ class AuctionManager:
     async def clear_current_auction(self) -> None:
         """Clear active auction state from storage."""
         await self.config.current_auction.set({})
+
+    async def _release_highest_bid(self, state: dict[str, Any]) -> None:
+        """Release a bidder's held funds when an auction is discarded."""
+        highest_bidder_id = state.get("highest_bidder_id")
+        if highest_bidder_id:
+            await self.cog.economy.release(int(highest_bidder_id))
 
     async def get_active_channel(self) -> discord.TextChannel | None:
         """Resolve the configured auction text channel."""
@@ -512,6 +520,7 @@ class AuctionManager:
         character_id = int(state.get("character_id"))
         character = self.cog.characters.get(character_id)
         if not character:
+            await self._release_highest_bid(state)
             await self.clear_current_auction()
             return
 
@@ -524,7 +533,7 @@ class AuctionManager:
         seller_id = state.get("seller_id")
 
         try:
-            if winner_id and bid > 1:
+            if winner_id:
                 winner = self.cog.bot.get_user(winner_id)
                 if not winner:
                     try:
