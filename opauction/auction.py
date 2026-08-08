@@ -25,7 +25,6 @@ from .constants import (
     GOING_TWICE_SECONDS,
     INVALID_BID_LIMIT,
     MAX_ANTI_SNIPE,
-    MAXIMUM_BID_INCREMENT,
     MINIMUM_BID_INCREMENT,
     NO_BID_CLOSE_SECONDS,
     POOL_STARTING_BIDS,
@@ -493,12 +492,6 @@ class AuctionManager:
         if bid < minimum_acceptable:
             await self.count_invalid_bid(state, bidder_id)
             await message.reply(f"The minimum valid bid is {format_berries(minimum_acceptable)}.")
-            return False
-
-        maximum_acceptable = current_bid + MAXIMUM_BID_INCREMENT
-        if bid > maximum_acceptable:
-            await self.count_invalid_bid(state, bidder_id)
-            await message.reply(f"The maximum valid bid is {format_berries(maximum_acceptable)}.")
             return False
 
         last_bid_at = state.get("last_bid_at", {})
