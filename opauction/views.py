@@ -13,7 +13,12 @@ from .utils import format_berries, format_duration
 
 class AuctionEmbeds:
     @staticmethod
-    def auction_start(character: dict, ending: int, image_url: str | None = None) -> discord.Embed:
+    def auction_start(
+        character: dict,
+        ending: int,
+        image_url: str | None = None,
+        seller: discord.abc.User | None = None,
+    ) -> discord.Embed:
         embed = discord.Embed(
             title=f"🔨 {character['name']}",
             description="A new auction has begun!",
@@ -23,6 +28,12 @@ class AuctionEmbeds:
         embed.add_field(
             name="Starting Bid",
             value=format_berries(1),
+            inline=True,
+        )
+
+        embed.add_field(
+            name="Seller",
+            value=seller.mention if seller else "🏛️ The Auction House",
             inline=True,
         )
 
@@ -52,6 +63,7 @@ class AuctionEmbeds:
         bid: int,
         ending: int,
         image_url: str | None = None,
+        seller: discord.abc.User | None = None,
     ) -> discord.Embed:
 
         embed = discord.Embed(
@@ -59,8 +71,10 @@ class AuctionEmbeds:
             color=COLOR_AUCTION,
         )
 
+        seller_text = seller.mention if seller else "🏛️ The Auction House"
         embed.description = (
             f"**{character['name']}**\n\n"
+            f"Seller: {seller_text}\n"
             f"Highest Bidder: {bidder.mention}\n"
             f"Current Bid: **{format_berries(bid)}**"
         )

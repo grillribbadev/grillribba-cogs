@@ -247,7 +247,8 @@ class AuctionManager:
         }
 
         image_url = state.get("image_url")
-        embed = AuctionEmbeds.auction_start(character, int(state["ends_at"]), image_url=image_url)
+        seller = self.cog.bot.get_user(seller_id) if seller_id else None
+        embed = AuctionEmbeds.auction_start(character, int(state["ends_at"]), image_url=image_url, seller=seller)
         try:
             message = await channel.send(embed=embed)
         except (discord.Forbidden, discord.HTTPException, discord.NotFound):
@@ -425,7 +426,13 @@ class AuctionManager:
         highest_bidder_id = state.get("highest_bidder_id")
         bidder = self.cog.bot.get_user(highest_bidder_id) if highest_bidder_id else None
         image_url = state.get("image_url")
-        embed = AuctionEmbeds.new_bid(character, bidder, bid, int(state["ends_at"]), image_url=image_url) if bidder else AuctionEmbeds.auction_start(character, int(state["ends_at"]), image_url=image_url)
+        seller_id = state.get("seller_id")
+        seller = self.cog.bot.get_user(seller_id) if seller_id else None
+        embed = (
+            AuctionEmbeds.new_bid(character, bidder, bid, int(state["ends_at"]), image_url=image_url, seller=seller)
+            if bidder
+            else AuctionEmbeds.auction_start(character, int(state["ends_at"]), image_url=image_url, seller=seller)
+        )
 
         if not message_id:
             try:

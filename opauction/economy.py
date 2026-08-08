@@ -57,6 +57,23 @@ class Economy:
         bal = await player.balance()
         await player.balance.set(bal + amount)
 
+    async def adjust_balance(self, user_id: int, delta: int) -> int:
+        """Apply a positive or negative balance change and return the amount actually applied.
+
+        Negative deltas are clamped so reserved (currently-bid) beri is never touched.
+        """
+        player = self.config.user_from_id(user_id)
+
+        bal = await player.balance()
+        reserved = await player.reserved()
+
+        if delta < 0:
+            available = max(bal - reserved, 0)
+            delta = -min(-delta, available)
+
+        await player.balance.set(bal + delta)
+        return delta
+
     async def withdraw(self, user_id: int, amount: int) -> bool:
         available = await self.available(user_id)
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import random
 
 import discord
 
@@ -11,7 +12,18 @@ from .characters import CharacterManager
 from .constants import (
     DEFAULT_AUCTION_DURATION,
     DEFAULT_AUCTION_INTERVAL,
+    MINIGAME_COOLDOWN_SECONDS,
+    PRAY_MAX_PENALTY,
+    PRAY_MAX_REWARD,
+    PRAY_MIN_PENALTY,
+    PRAY_MIN_REWARD,
+    PRAY_SUCCESS_CHANCE,
     STARTING_BALANCE,
+    STEAL_MAX_PENALTY,
+    STEAL_MAX_REWARD,
+    STEAL_MIN_PENALTY,
+    STEAL_MIN_REWARD,
+    STEAL_SUCCESS_CHANCE,
 )
 from .economy import Economy
 from .utils import clean_name, format_berries, utc_timestamp
@@ -180,6 +192,40 @@ class OPAuction(commands.Cog):
         await self.config.queue.set(queue)
 
         await ctx.send(embed=AuctionEmbeds.success(f"{character['name']} has been added to the auction queue."))
+
+    @auction_group.command(name="pray")
+    @commands.cooldown(1, MINIGAME_COOLDOWN_SECONDS, commands.BucketType.user)
+    async def pray(self, ctx):
+        """Pray for berries. Usually pays off, but it can backfire."""
+        if not await self.economy.exists(ctx.author.id):
+            ctx.command.reset_cooldown(ctx)
+            return await ctx.send(embed=AuctionEmbeds.error("Use `.auction start` first."))
+
+        if random.random() < PRAY_SUCCESS_CHANCE:
+            amount = random.randint(PRAY_MIN_REWARD, PRAY_MAX_REWARD)
+            await self.economy.adjust_balance(ctx.author.id, amount)
+            await ctx.send(embed=AuctionEmbeds.success(f"🙏 Your prayer was answered! You received {format_berries(amount)}."))
+        else:
+            amount = random.randint(PRAY_MIN_PENALTY, PRAY_MAX_PENALTY)
+            taken = -await self.economy.adjust_balance(ctx.author.id, -amount)
+            await ctx.send(embed=AuctionEmbeds.error(f"⚡ Your prayer angered the heavens! You lost {format_berries(taken)}."))
+
+    @auction_group.command(name="steal")
+    @commands.cooldown(1, MINIGAME_COOLDOWN_SECONDS, commands.BucketType.user)
+    async def steal(self, ctx):
+        """Attempt to steal some berries. Usually pays off, but it can backfire."""
+        if not await self.economy.exists(ctx.author.id):
+            ctx.command.reset_cooldown(ctx)
+            return await ctx.send(embed=AuctionEmbeds.error("Use `.auction start` first."))
+
+        if random.random() < STEAL_SUCCESS_CHANCE:
+            amount = random.randint(STEAL_MIN_REWARD, STEAL_MAX_REWARD)
+            await self.economy.adjust_balance(ctx.author.id, amount)
+            await ctx.send(embed=AuctionEmbeds.success(f"🗡️ The heist paid off! You made off with {format_berries(amount)}."))
+        else:
+            amount = random.randint(STEAL_MIN_PENALTY, STEAL_MAX_PENALTY)
+            taken = -await self.economy.adjust_balance(ctx.author.id, -amount)
+            await ctx.send(embed=AuctionEmbeds.error(f"🚨 You got caught! You paid a {format_berries(taken)} fine."))
 
     @auction_group.command(name="info")
     async def info(self, ctx):
