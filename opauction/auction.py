@@ -549,7 +549,7 @@ class AuctionManager:
         message_id = state.get("message_id")
         channel = await self.resolve_channel(int(channel_id)) if channel_id else None
 
-        winner_id = state.get("highest_bidder_id")
+        winner_id = int(state.get("highest_bidder_id", 0) or 0)
         bid = int(state.get("bid", 1))
         seller_id = state.get("seller_id")
 
@@ -561,42 +561,36 @@ class AuctionManager:
                         winner = await self.cog.bot.fetch_user(winner_id)
                     except (discord.NotFound, discord.HTTPException):
                         winner = None
-                if winner:
-                    price = bid
-                    owner_before = self.cog.characters.owner_of(character_id)
-                    if owner_before is not None:
-                        self.cog.characters.unassign(character_id)
+                price = bid
+                owner_before = self.cog.characters.owner_of(character_id)
+                if owner_before is not None:
+                    self.cog.characters.unassign(character_id)
 
-                    await self.cog.economy.finalize_purchase(winner_id)
-                    await self.cog.economy.add_character(winner_id, character_id)
-                    self.cog.characters.assign(character_id, winner_id)
-                    last_sale_prices = await self.config.last_sale_prices()
-                    last_sale_prices[str(character_id)] = price
-                    await self.config.last_sale_prices.set(last_sale_prices)
+                await self.cog.economy.finalize_purchase(winner_id)
+                await self.cog.economy.add_character(winner_id, character_id)
+                self.cog.characters.assign(character_id, winner_id)
+                last_sale_prices = await self.config.last_sale_prices()
+                last_sale_prices[str(character_id)] = price
+                await self.config.last_sale_prices.set(last_sale_prices)
 
-                    # Tax payout to original seller if this came from the queue.
-                    if seller_id:
-                        seller_share = int(round(price * (1 - AUCTION_TAX)))
-                        fee = price - seller_share
-                        await self.cog.economy.deposit(seller_id, seller_share)
-                        await self.cog.economy.remove_character(seller_id, character_id)
-                        await self._record_fee(fee)
+                # Tax payout to original seller if this came from the queue.
+                if seller_id:
+                    seller_share = int(round(price * (1 - AUCTION_TAX)))
+                    fee = price - seller_share
+                    await self.cog.economy.deposit(seller_id, seller_share)
+                    await self.cog.economy.remove_character(seller_id, character_id)
+                    await self._record_fee(fee)
 
-                    seller_text = f"<@{seller_id}>" if seller_id else "🏛️ The Auction House"
-                    await self.cog.log_transaction(
-                        "🔨 Auction Sale",
-                        f"Character: **{character['name']}**\nBuyer: {winner.mention}\n"
-                        f"Seller: {seller_text}\nSale price: **{format_berries(price)}**",
-                    )
+                winner_text = winner.mention if winner else f"<@{winner_id}>"
+                seller_text = f"<@{seller_id}>" if seller_id else "🏛️ The Auction House"
+                await self.cog.log_transaction(
+                    "🔨 Auction Sale",
+                    f"Character: **{character['name']}**\nBuyer: {winner_text}\n"
+                    f"Seller: {seller_text}\nSale price: **{format_berries(price)}**",
+                )
 
-                    embed = AuctionEmbeds.sold(character, winner, price, image_url=state.get("image_url"))
-                    sold_text = f"Sold to {winner.mention} for {format_berries(price)}."
-                else:
-                    # The winner could not be resolved at all (left every mutual
-                    # guild); free their reserved beri instead of locking it forever.
-                    await self.cog.economy.release(winner_id)
-                    embed = AuctionEmbeds.no_bids(character, image_url=state.get("image_url"))
-                    sold_text = None
+                embed = AuctionEmbeds.sold(character, winner_text, price, image_url=state.get("image_url"))
+                sold_text = f"Sold to {winner_text} for {format_berries(price)}."
             else:
                 embed = AuctionEmbeds.no_bids(character, image_url=state.get("image_url"))
                 sold_text = None

@@ -90,7 +90,7 @@ class AuctionEmbeds:
     @staticmethod
     def sold(
         character: dict,
-        winner: discord.Member,
+        winner: discord.abc.User | str,
         price: int,
         image_url: str | None = None,
     ) -> discord.Embed:
@@ -102,7 +102,7 @@ class AuctionEmbeds:
 
         embed.description = (
             f"**{character['name']}**\n\n"
-            f"Winner: {winner.mention}\n"
+            f"Winner: {winner.mention if not isinstance(winner, str) else winner}\n"
             f"Price: **{format_berries(price)}**"
         )
 
@@ -143,7 +143,7 @@ class AuctionEmbeds:
         return embed
 
     @staticmethod
-    def collection(member: discord.Member, characters: list[dict]):
+    def collection(member: discord.Member, characters: list[tuple[dict, str]]):
 
         embed = discord.Embed(
             title=f"{member.display_name}'s Collection",
@@ -156,9 +156,9 @@ class AuctionEmbeds:
 
         lines = []
 
-        for character in characters:
+        for character, status in characters:
             lines.append(
-                f"• **{character['name']}** ({character['rarity']})"
+                f"• **{character['name']}** ({character['rarity']}) - {status}"
             )
 
         embed.description = "\n".join(lines)

@@ -255,11 +255,25 @@ class OPAuction(commands.Cog):
         if not await self.economy.exists(ctx.author.id):
             return await ctx.send("Use `.auction start` first.")
 
+        queue = await self.config.queue()
+        queued_ids = {
+            int(entry.get("character_id", 0))
+            for entry in queue
+            if int(entry.get("seller_id", 0) or 0) == ctx.author.id
+        }
+        current = await self.auction.get_current_auction()
+        live_character_id = (
+            int(current.get("character_id", 0))
+            if current and int(current.get("seller_id", 0) or 0) == ctx.author.id
+            else 0
+        )
+
         characters = []
         for character_id in await self.economy.get_characters(ctx.author.id):
             character = self.characters.get(character_id)
             if character:
-                characters.append(character)
+                status = "Up for auction" if int(character_id) == live_character_id else "Queued for sale" if int(character_id) in queued_ids else "Owned"
+                characters.append((character, status))
 
         await ctx.send(embed=AuctionEmbeds.collection(ctx.author, characters))
 
@@ -624,6 +638,33 @@ class OPAuction(commands.Cog):
         if not character:
             return await ctx.send(embed=AuctionEmbeds.error("That character already exists or the name was empty."))
         await ctx.send(embed=AuctionEmbeds.success(f"Added {character['name']} to the roster."))
+
+    @auction_group.command(name="grantcharacter", aliases=["grantchar"])
+    @commands.admin_or_permissions(manage_guild=True)
+    async def grant_character(self, ctx, member: discord.Member, *, name: str):
+        """Grant an unowned pool character to a registered player."""
+        if not await self.economy.exists(member.id):
+            return await ctx.send(embed=AuctionEmbeds.error("That member has not started the auction game."))
+
+        character = self.characters.get_by_name(clean_name(name))
+        if not character:
+            return await ctx.send(embed=AuctionEmbeds.error("I could not find that character in the roster."))
+
+        character_id = int(character["id"])
+        if self.characters.owned(character_id):
+            return await ctx.send(embed=AuctionEmbeds.error("That character is already owned."))
+
+        queue = await self.config.queue()
+        if any(int(entry.get("character_id", 0)) == character_id for entry in queue):
+            return await ctx.send(embed=AuctionEmbeds.error("That character is currently queued for sale."))
+
+        current = await self.auction.get_current_auction()
+        if current and int(current.get("character_id", 0)) == character_id:
+            return await ctx.send(embed=AuctionEmbeds.error("That character is currently being auctioned."))
+
+        await self.economy.add_character(member.id, character_id)
+        self.characters.assign(character_id, member.id)
+        await ctx.send(embed=AuctionEmbeds.success(f"Granted **{character['name']}** to {member.mention}."))
 
     @auction_group.command(name="removecharacter", aliases=["rmchar"])
     @commands.admin_or_permissions(manage_guild=True)
