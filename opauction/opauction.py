@@ -230,7 +230,7 @@ class OPAuction(commands.Cog):
             return await ctx.send(embed=AuctionEmbeds.error("Use `.auction start` first."))
 
         balance = await self.economy.balance(ctx.author.id)
-        reserved = await self.economy.reserved(ctx.author.id)
+        reserved = await self.economy.reconcile_reservation(ctx.author.id)
         await ctx.send(embed=AuctionEmbeds.balance(ctx.author, balance, reserved))
 
     @auction_group.command(name="daily")

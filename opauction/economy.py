@@ -41,9 +41,21 @@ class Economy:
     async def reserved(self, user_id: int) -> int:
         return await self.config.user_from_id(user_id).reserved()
 
+    async def reconcile_reservation(self, user_id: int) -> int:
+        """Keep a user's held funds equal to their active highest bid, if any."""
+        state = await self.config.current_auction()
+        highest_bidder_id = int(state.get("highest_bidder_id", 0) or 0) if state else 0
+        expected = int(state.get("bid", 0) or 0) if highest_bidder_id == user_id else 0
+
+        player = self.config.user_from_id(user_id)
+        reserved = await player.reserved()
+        if reserved != expected:
+            await player.reserved.set(expected)
+        return expected
+
     async def available(self, user_id: int) -> int:
         bal = await self.balance(user_id)
-        res = await self.reserved(user_id)
+        res = await self.reconcile_reservation(user_id)
         return bal - res
 
     async def available_balance(self, user_id: int) -> int:
