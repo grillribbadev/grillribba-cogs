@@ -334,10 +334,12 @@ class AuctionManager:
             return False
 
         if not await self.config.auction_running():
+            await message.reply("Auctions are not currently running.")
             return False
 
         state = await self.get_current_auction()
         if not state:
+            await message.reply("There is no active auction to bid on.")
             return False
 
         if message.channel.id != state.get("channel_id"):
@@ -350,34 +352,48 @@ class AuctionManager:
         bidder_id = message.author.id
 
         if not await self.cog.economy.exists(bidder_id):
+            await message.reply("Use `.auction start` before bidding.")
+            return False
+
+        if utc_timestamp() >= int(state.get("ends_at", 0)):
+            await message.reply("This auction has already ended.")
             return False
 
         character_id = int(state.get("character_id", 0))
 
         if bidder_id == state.get("seller_id"):
             await self.count_invalid_bid(state, bidder_id)
+            await message.reply("You cannot bid on your own character.")
             return False
 
         owner = self.cog.characters.owner_of(character_id)
         if owner == bidder_id:
             await self.count_invalid_bid(state, bidder_id)
+            await message.reply("You already own this character.")
             return False
 
         if bidder_id == state.get("highest_bidder_id"):
             await self.count_invalid_bid(state, bidder_id)
+            await message.reply("You are already the highest bidder.")
             return False
 
         if len(await self.cog.economy.get_characters(bidder_id)):
             if character_id in await self.cog.economy.get_characters(bidder_id):
                 await self.count_invalid_bid(state, bidder_id)
+                await message.reply("You already own this character.")
                 return False
 
         if not await self.cog.economy.available_balance(bidder_id) >= bid:
             await self.count_invalid_bid(state, bidder_id)
+            available = await self.cog.economy.available_balance(bidder_id)
+            await message.reply(
+                f"You need {format_berries(bid)} but only have {format_berries(available)} available."
+            )
             return False
 
         if bid < 1:
             await self.count_invalid_bid(state, bidder_id)
+            await message.reply("Bids must be at least ฿1.")
             return False
 
         current_bid = int(state.get("bid", 1))
@@ -388,6 +404,7 @@ class AuctionManager:
         )
         if bid < minimum_acceptable:
             await self.count_invalid_bid(state, bidder_id)
+            await message.reply(f"The minimum valid bid is {format_berries(minimum_acceptable)}.")
             return False
 
         last_bid_at = state.get("last_bid_at", {})
