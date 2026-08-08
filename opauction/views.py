@@ -13,6 +13,30 @@ from .utils import format_berries, format_duration
 
 class AuctionEmbeds:
     @staticmethod
+    def legendary_arrival(
+        character: dict,
+        ending: int,
+        starting_bid: int,
+        image_url: str | None = None,
+    ) -> discord.Embed:
+        """Build the high-visibility announcement for a legendary pool draw."""
+        embed = discord.Embed(
+            title="A LEGENDARY CHARACTER HAS ARRIVED",
+            description=(
+                f"## {character['name']}\n\n"
+                f"Starting Bid: **{format_berries(starting_bid)}**\n"
+                f"Arc: {character.get('arc', 'Unknown')}\n"
+                f"Auction ends <t:{ending}:R>"
+            ),
+            color=COLOR_AUCTION,
+        )
+
+        if image_url:
+            embed.set_image(url=image_url)
+
+        return embed
+
+    @staticmethod
     def auction_start(
         character: dict,
         ending: int,

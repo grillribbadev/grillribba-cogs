@@ -282,13 +282,21 @@ class AuctionManager:
 
         image_url = state.get("image_url")
         seller = self.cog.bot.get_user(seller_id) if seller_id else None
-        embed = AuctionEmbeds.auction_start(
-            character,
-            int(state["ends_at"]),
-            starting_bid=starting_bid,
-            image_url=image_url,
-            seller=seller,
-        )
+        if not from_queue and str(character.get("rarity", "")).lower() == "legendary":
+            embed = AuctionEmbeds.legendary_arrival(
+                character,
+                int(state["ends_at"]),
+                starting_bid=starting_bid,
+                image_url=image_url,
+            )
+        else:
+            embed = AuctionEmbeds.auction_start(
+                character,
+                int(state["ends_at"]),
+                starting_bid=starting_bid,
+                image_url=image_url,
+                seller=seller,
+            )
         try:
             message = await channel.send(embed=embed)
         except (discord.Forbidden, discord.HTTPException, discord.NotFound):
