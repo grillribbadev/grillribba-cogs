@@ -114,6 +114,12 @@ class OPAuction(commands.Cog):
         await player.cooldowns.set(cooldowns)
         return 0
 
+    async def cooldown_remaining(self, user_id: int, key: str, seconds: int) -> int:
+        """Return remaining time for one named cooldown without changing it."""
+        cooldowns = await self.config.user_from_id(user_id).cooldowns()
+        last_used = int(cooldowns.get(key, 0))
+        return max(0, seconds - (utc_timestamp() - last_used))
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         """Listen only in the configured auction channel for bid messages."""
@@ -246,7 +252,7 @@ class OPAuction(commands.Cog):
         if not await self.economy.exists(ctx.author.id):
             return await ctx.send(embed=AuctionEmbeds.error("Use `.auction start` first."))
 
-        remaining = await self.start_cooldown(ctx.author.id, "pray", MINIGAME_COOLDOWN_SECONDS)
+        remaining = await self.cooldown_remaining(ctx.author.id, "pray", MINIGAME_COOLDOWN_SECONDS)
         if remaining > 0:
             return await ctx.send(embed=AuctionEmbeds.error(f"You must wait {format_duration(remaining)} before praying again."))
 
@@ -259,6 +265,7 @@ class OPAuction(commands.Cog):
                 amount = random.randint(PRAY_MIN_PENALTY, PRAY_MAX_PENALTY)
                 taken = -await self.economy.adjust_balance(ctx.author.id, -amount)
                 await ctx.send(embed=AuctionEmbeds.error(f"⚡ Your prayer angered the heavens! You lost {format_berries(taken)}."))
+            await self.start_cooldown(ctx.author.id, "pray", MINIGAME_COOLDOWN_SECONDS)
         except Exception:
             log.exception("pray command failed for user %s", ctx.author.id)
             await ctx.send(embed=AuctionEmbeds.error("Something went wrong with your prayer. Please try again."))
@@ -269,7 +276,7 @@ class OPAuction(commands.Cog):
         if not await self.economy.exists(ctx.author.id):
             return await ctx.send(embed=AuctionEmbeds.error("Use `.auction start` first."))
 
-        remaining = await self.start_cooldown(ctx.author.id, "steal", MINIGAME_COOLDOWN_SECONDS)
+        remaining = await self.cooldown_remaining(ctx.author.id, "steal", MINIGAME_COOLDOWN_SECONDS)
         if remaining > 0:
             return await ctx.send(embed=AuctionEmbeds.error(f"You must wait {format_duration(remaining)} before stealing again."))
 
@@ -282,6 +289,7 @@ class OPAuction(commands.Cog):
                 amount = random.randint(STEAL_MIN_PENALTY, STEAL_MAX_PENALTY)
                 taken = -await self.economy.adjust_balance(ctx.author.id, -amount)
                 await ctx.send(embed=AuctionEmbeds.error(f"🚨 You got caught! You paid a {format_berries(taken)} fine."))
+            await self.start_cooldown(ctx.author.id, "steal", MINIGAME_COOLDOWN_SECONDS)
         except Exception:
             log.exception("steal command failed for user %s", ctx.author.id)
             await ctx.send(embed=AuctionEmbeds.error("Something went wrong with your heist. Please try again."))
@@ -291,25 +299,23 @@ class OPAuction(commands.Cog):
     async def reset_cooldowns(self, ctx, member: discord.Member = None):
         """Reset everyone's (or one member's) pray/steal cooldowns."""
         if member is not None:
-            targets = {member.id: await self.config.user_from_id(member.id).all()}
-        else:
-            targets = await self.config.all_users()
+            await self.config.user_from_id(member.id).cooldowns.set({})
+            return await ctx.send(
+                embed=AuctionEmbeds.success(f"Cleared pray/steal cooldowns for {member.mention}.")
+            )
 
+        players = await self.config.all_users()
         cleared = 0
-        for user_id, data in targets.items():
-            cooldowns = dict(data.get("cooldowns", {}))
-            if not ("pray" in cooldowns or "steal" in cooldowns):
+        for user_id, data in players.items():
+            if not data.get("started"):
                 continue
 
-            cooldowns.pop("pray", None)
-            cooldowns.pop("steal", None)
-            await self.config.user_from_id(int(user_id)).cooldowns.set(cooldowns)
+            await self.config.user_from_id(int(user_id)).cooldowns.set({})
             cleared += 1
 
-        if member is not None:
-            await ctx.send(embed=AuctionEmbeds.success(f"Cleared pray/steal cooldowns for {member.mention}."))
-        else:
-            await ctx.send(embed=AuctionEmbeds.success(f"Cleared pray/steal cooldowns for {cleared} player(s)."))
+        await ctx.send(
+            embed=AuctionEmbeds.success(f"Cleared pray/steal cooldowns for {cleared} player(s).")
+        )
 
     @auction_group.command(name="info")
     async def info(self, ctx):
