@@ -302,6 +302,9 @@ class AuctionManager:
         except (discord.Forbidden, discord.HTTPException, discord.NotFound):
             return False
 
+        if not from_queue:
+            await self.cog.notify_rarity_subscribers(channel, str(character.get("rarity", "normal")))
+
         state["message_id"] = message.id
         await self.config.current_auction.set(state)
         await self.config.forced_next_source.set(None)

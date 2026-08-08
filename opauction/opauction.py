@@ -28,7 +28,7 @@ from .constants import (
 )
 from .economy import Economy
 from .utils import clean_name, format_berries, format_duration, utc_timestamp
-from .views import AuctionEmbeds
+from .views import AuctionEmbeds, AuctionPingView
 
 log = logging.getLogger("red.opauction")
 
@@ -74,6 +74,7 @@ class OPAuction(commands.Cog):
             "joined": 0,
             "last_daily": 0,
             "cooldowns": {},
+            "ping_rarities": [],
         }
 
         self.config.register_global(**default_global)
@@ -89,6 +90,7 @@ class OPAuction(commands.Cog):
         # unowned after a restart until the destructive `wipe` command runs.
         await self.characters.rebuild_owners()
         await self.rebuild_reservations()
+        self.bot.add_view(AuctionPingView(self))
         self.auction_task = self.bot.loop.create_task(self.auction.background_loop())
 
     def cog_unload(self):
@@ -132,6 +134,24 @@ class OPAuction(commands.Cog):
             await channel.send(embed=embed)
         except (discord.Forbidden, discord.HTTPException):
             pass
+
+    async def notify_rarity_subscribers(self, channel: discord.TextChannel, rarity: str) -> None:
+        """Mention users who opted in to this pool-auction rarity."""
+        rarity = rarity.lower()
+        subscribers = [
+            int(user_id)
+            for user_id, data in (await self.config.all_users()).items()
+            if rarity in data.get("ping_rarities", [])
+        ]
+        for start in range(0, len(subscribers), 50):
+            mentions = " ".join(f"<@{user_id}>" for user_id in subscribers[start:start + 50])
+            try:
+                await channel.send(
+                    f"{mentions}\nA **{rarity.title()}** character has appeared in the auction!",
+                    allowed_mentions=discord.AllowedMentions(users=True),
+                )
+            except (discord.Forbidden, discord.HTTPException):
+                return
 
     async def rebuild_reservations(self) -> None:
         """Clear stale holds and preserve only the current highest bid."""
@@ -248,6 +268,15 @@ class OPAuction(commands.Cog):
             )
 
         await ctx.send(embed=AuctionEmbeds.success(f"You claimed your daily {format_berries(250)}."))
+
+    @auction_group.command(name="ping")
+    async def ping(self, ctx):
+        """Choose rarity pings for upcoming pool auctions."""
+        selected = await self.config.user_from_id(ctx.author.id).ping_rarities()
+        await ctx.send(
+            embed=AuctionEmbeds.ping_preferences(selected),
+            view=AuctionPingView(self, selected),
+        )
 
     @auction_group.command(name="collection")
     async def collection(self, ctx):

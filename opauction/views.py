@@ -13,6 +13,19 @@ from .utils import format_berries, format_duration
 
 class AuctionEmbeds:
     @staticmethod
+    def ping_preferences(selected: list[str]) -> discord.Embed:
+        """Build the rarity-ping preference panel."""
+        selected_text = ", ".join(rarity.title() for rarity in selected) if selected else "None"
+        return discord.Embed(
+            title="Auction Rarity Pings",
+            description=(
+                "Toggle the rarities you want to be mentioned for when they enter the pool auction.\n\n"
+                f"Your selections: **{selected_text}**"
+            ),
+            color=COLOR_AUCTION,
+        )
+
+    @staticmethod
     def legendary_arrival(
         character: dict,
         ending: int,
@@ -242,4 +255,66 @@ class AuctionEmbeds:
             title="✅ Success",
             description=message,
             color=COLOR_SUCCESS,
+        )
+
+
+class AuctionPingView(discord.ui.View):
+    """Persistent buttons for selecting pool-auction rarity pings."""
+
+    RARITIES = ("normal", "rare", "epic", "legendary")
+
+    def __init__(self, cog, selected: list[str] | None = None):
+        super().__init__(timeout=None)
+        self.cog = cog
+        selected = set(selected or [])
+
+        for rarity in self.RARITIES:
+            button = discord.ui.Button(
+                label=rarity.title(),
+                style=discord.ButtonStyle.success if rarity in selected else discord.ButtonStyle.secondary,
+                custom_id=f"opauction:ping:{rarity}",
+            )
+            button.callback = self._rarity_callback(rarity)
+            self.add_item(button)
+
+        all_button = discord.ui.Button(
+            label="All",
+            style=discord.ButtonStyle.primary,
+            custom_id="opauction:ping:all",
+        )
+        all_button.callback = self._all_callback
+        self.add_item(all_button)
+
+        clear_button = discord.ui.Button(
+            label="Clear",
+            style=discord.ButtonStyle.danger,
+            custom_id="opauction:ping:clear",
+        )
+        clear_button.callback = self._clear_callback
+        self.add_item(clear_button)
+
+    def _rarity_callback(self, rarity: str):
+        async def callback(interaction: discord.Interaction):
+            preferences = await self.cog.config.user_from_id(interaction.user.id).ping_rarities()
+            selected = set(preferences)
+            if rarity in selected:
+                selected.remove(rarity)
+            else:
+                selected.add(rarity)
+            await self._save(interaction, selected)
+
+        return callback
+
+    async def _all_callback(self, interaction: discord.Interaction):
+        await self._save(interaction, set(self.RARITIES))
+
+    async def _clear_callback(self, interaction: discord.Interaction):
+        await self._save(interaction, set())
+
+    async def _save(self, interaction: discord.Interaction, selected: set[str]):
+        values = [rarity for rarity in self.RARITIES if rarity in selected]
+        await self.cog.config.user_from_id(interaction.user.id).ping_rarities.set(values)
+        await interaction.response.edit_message(
+            embed=AuctionEmbeds.ping_preferences(values),
+            view=AuctionPingView(self.cog, values),
         )
