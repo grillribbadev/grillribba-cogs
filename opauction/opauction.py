@@ -442,6 +442,28 @@ class OPAuction(commands.Cog):
             embed=AuctionEmbeds.success(f"Cleared pray/steal cooldowns for {cleared} player(s).")
         )
 
+    @auction_group.command(name="resetdaily")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def reset_daily(self, ctx, member: discord.Member = None):
+        """Reset the daily claim timer for everyone or one member."""
+        if member is not None:
+            await self.config.user_from_id(member.id).last_daily.set(0)
+            return await ctx.send(
+                embed=AuctionEmbeds.success(f"Reset the daily claim timer for {member.mention}.")
+            )
+
+        players = await self.config.all_users()
+        reset_count = 0
+        for user_id, data in players.items():
+            if not data.get("started"):
+                continue
+            await self.config.user_from_id(int(user_id)).last_daily.set(0)
+            reset_count += 1
+
+        await ctx.send(
+            embed=AuctionEmbeds.success(f"Reset the daily claim timer for {reset_count} player(s).")
+        )
+
     @auction_group.command(name="info")
     async def info(self, ctx):
         """Show the current OPAuction status summary."""
