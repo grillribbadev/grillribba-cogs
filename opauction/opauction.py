@@ -136,14 +136,21 @@ class OPAuction(commands.Cog):
             return
 
         channel = self.bot.get_channel(int(channel_id))
+        if channel is None:
+            try:
+                channel = await self.bot.fetch_channel(int(channel_id))
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                log.warning("Unable to fetch OPAuction log channel %s", channel_id)
+                return
         if not isinstance(channel, discord.TextChannel):
+            log.warning("Configured OPAuction log channel %s is not a text channel", channel_id)
             return
 
         embed = discord.Embed(title=title, description=description, color=discord.Color.gold())
         try:
             await channel.send(embed=embed)
         except (discord.Forbidden, discord.HTTPException):
-            pass
+            log.exception("Unable to send OPAuction transaction log to channel %s", channel_id)
 
     async def record_transaction(self, kind: str, **details) -> None:
         """Store a bounded history of completed economy changes."""
