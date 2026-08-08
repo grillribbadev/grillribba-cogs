@@ -205,6 +205,20 @@ class AuctionEmbeds:
         return embed
 
     @staticmethod
+    def leaderboard(entries: list[tuple[int, int]], page: int, page_size: int = 10) -> discord.Embed:
+        """Build one page of the Auction House beri leaderboard."""
+        total_pages = max(1, (len(entries) + page_size - 1) // page_size)
+        start = page * page_size
+        lines = []
+        for rank, (user_id, balance) in enumerate(entries[start:start + page_size], start=start + 1):
+            lines.append(f"**{rank}.** <@{user_id}> - **{format_berries(balance)}**")
+
+        embed = discord.Embed(title="🏆 Auction Balance Leaderboard", color=COLOR_AUCTION)
+        embed.description = "\n".join(lines) if lines else "No registered players yet."
+        embed.set_footer(text=f"Page {page + 1} of {total_pages}")
+        return embed
+
+    @staticmethod
     def collection(member: discord.Member, characters: list[tuple[dict, str]]):
 
         embed = discord.Embed(

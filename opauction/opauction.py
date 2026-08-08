@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import logging
 import random
+from typing import Union
 
 import discord
 
@@ -27,6 +28,7 @@ from .constants import (
     STEAL_SUCCESS_CHANCE,
 )
 from .economy import Economy
+from .leaderboard import BalanceLeaderboardView
 from .utils import clean_name, format_berries, format_duration, utc_timestamp
 from .views import AuctionEmbeds, AuctionPingView
 
@@ -328,8 +330,28 @@ class OPAuction(commands.Cog):
         await ctx.send(embed=AuctionEmbeds.success("Welcome to the auction!\nYou received ฿250."))
 
     @auction_group.command(name="balance", aliases=["wallet", "beri", "bal"])
-    async def balance(self, ctx, member: discord.Member = None):
+    async def balance(self, ctx, member: Union[discord.Member, str] = None):
         """View your balance, or an admin can view another member's balance."""
+        if isinstance(member, str):
+            if member.lower() != "top":
+                return await ctx.send(embed=AuctionEmbeds.error("Use a member mention or `.auction balance top`."))
+
+            users = await self.config.all_users()
+            entries = sorted(
+                (
+                    (int(user_id), int(data.get("balance", 0) or 0))
+                    for user_id, data in users.items()
+                    if data.get("started")
+                ),
+                key=lambda entry: entry[1],
+                reverse=True,
+            )
+            view = BalanceLeaderboardView(entries)
+            return await ctx.send(
+                embed=AuctionEmbeds.leaderboard(entries, page=0),
+                view=view,
+            )
+
         target = member or ctx.author
         if member and member.id != ctx.author.id:
             permissions = ctx.author.guild_permissions if ctx.guild else None
