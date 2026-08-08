@@ -1595,6 +1595,45 @@ class OPAuction(commands.Cog):
             )
         )
 
+    @auction_group.command(name="repaircollections", aliases=["synccollections"])
+    @commands.admin_or_permissions(manage_guild=True)
+    async def repair_collections(self, ctx):
+        """Globally synchronize persisted collection lists with the current ownership cache."""
+        async with self.auction._state_lock:
+            users = await self.config.all_users()
+            valid_character_ids = set(self.characters.all_ids())
+            owned_by_user: dict[int, list[int]] = {}
+            for character_id, owner_id in self.characters.owners.items():
+                if character_id in valid_character_ids:
+                    owned_by_user.setdefault(int(owner_id), []).append(int(character_id))
+
+            changed_users = 0
+            removed_entries = 0
+            restored_entries = 0
+            for user_id, data in users.items():
+                user_id = int(user_id)
+                if not data.get("started"):
+                    continue
+
+                old_collection = [int(character_id) for character_id in data.get("characters", [])]
+                new_collection = sorted(owned_by_user.get(user_id, []))
+                if old_collection == new_collection:
+                    continue
+
+                removed_entries += len(set(old_collection) - set(new_collection))
+                restored_entries += len(set(new_collection) - set(old_collection))
+                await self.config.user_from_id(user_id).characters.set(new_collection)
+                changed_users += 1
+
+            await self.characters.rebuild_owners()
+
+        await ctx.send(
+            embed=AuctionEmbeds.success(
+                f"Collections synchronized. Updated {changed_users} user(s), removed {removed_entries} stale character entry(s), "
+                f"and restored {restored_entries} missing owned character entry(s)."
+            )
+        )
+
     @auction_group.command(name="repairlast")
     @commands.admin_or_permissions(manage_guild=True)
     async def repair_last(self, ctx, count: int = 1, confirmation: str = ""):
