@@ -563,6 +563,9 @@ class AuctionManager:
                     await self.cog.economy.finalize_purchase(winner_id)
                     await self.cog.economy.add_character(winner_id, character_id)
                     self.cog.characters.assign(character_id, winner_id)
+                    last_sale_prices = await self.config.last_sale_prices()
+                    last_sale_prices[str(character_id)] = price
+                    await self.config.last_sale_prices.set(last_sale_prices)
 
                     # Tax payout to original seller if this came from the queue.
                     if seller_id:
@@ -571,6 +574,13 @@ class AuctionManager:
                         await self.cog.economy.deposit(seller_id, seller_share)
                         await self.cog.economy.remove_character(seller_id, character_id)
                         await self._record_fee(fee)
+
+                    seller_text = f"<@{seller_id}>" if seller_id else "🏛️ The Auction House"
+                    await self.cog.log_transaction(
+                        "🔨 Auction Sale",
+                        f"Character: **{character['name']}**\nBuyer: {winner.mention}\n"
+                        f"Seller: {seller_text}\nSale price: **{format_berries(price)}**",
+                    )
 
                     embed = AuctionEmbeds.sold(character, winner, price, image_url=state.get("image_url"))
                     sold_text = f"Sold to {winner.mention} for {format_berries(price)}."

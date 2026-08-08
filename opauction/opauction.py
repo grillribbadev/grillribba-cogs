@@ -50,6 +50,7 @@ class OPAuction(commands.Cog):
 
         default_global = {
             "auction_channel": None,
+            "log_channel": None,
             "auction_running": False,
             "auction_duration": DEFAULT_AUCTION_DURATION,
             "auction_interval": DEFAULT_AUCTION_INTERVAL,
@@ -58,6 +59,7 @@ class OPAuction(commands.Cog):
             "last_auction_started": 0,
             "blocked_users": [],
             "total_fees": 0,
+            "last_sale_prices": {},
             "next_auction_source": "queue",
             "last_auction_source": "pool",
             "forced_next_source": None,
@@ -114,6 +116,22 @@ class OPAuction(commands.Cog):
         """Return True when a user is explicitly banned from live auction bidding."""
         blocked = await self.config.blocked_users()
         return int(user_id) in [int(item) for item in blocked]
+
+    async def log_transaction(self, title: str, description: str) -> None:
+        """Post a completed sale or house transaction to the configured log channel."""
+        channel_id = await self.config.log_channel()
+        if not channel_id:
+            return
+
+        channel = self.bot.get_channel(int(channel_id))
+        if not isinstance(channel, discord.TextChannel):
+            return
+
+        embed = discord.Embed(title=title, description=description, color=discord.Color.gold())
+        try:
+            await channel.send(embed=embed)
+        except (discord.Forbidden, discord.HTTPException):
+            pass
 
     async def rebuild_reservations(self) -> None:
         """Clear stale holds and preserve only the current highest bid."""
@@ -268,6 +286,48 @@ class OPAuction(commands.Cog):
         await ctx.send(
             embed=AuctionEmbeds.success(
                 f"{character['name']} has been added to the auction queue with a starting bid of {format_berries(starting_bid)}."
+            )
+        )
+
+    @auction_group.command(name="sellhouse", aliases=["housesell"])
+    async def sell_house(self, ctx, *, name: str):
+        """Sell an owned character to the auction house for half its last sale price."""
+        if not await self.economy.exists(ctx.author.id):
+            return await ctx.send(embed=AuctionEmbeds.error("Use `.auction start` first."))
+
+        character = self.characters.get_by_name(clean_name(name))
+        if not character:
+            return await ctx.send(embed=AuctionEmbeds.error("I could not find that character."))
+
+        character_id = int(character["id"])
+        if self.characters.owner_of(character_id) != ctx.author.id:
+            return await ctx.send(embed=AuctionEmbeds.error("You do not own that character."))
+
+        queue = await self.config.queue()
+        if any(int(entry.get("character_id", 0)) == character_id for entry in queue):
+            return await ctx.send(embed=AuctionEmbeds.error("Remove this character from the queue before selling it to the auction house."))
+
+        current = await self.auction.get_current_auction()
+        if current and int(current.get("character_id", 0)) == character_id:
+            return await ctx.send(embed=AuctionEmbeds.error("This character is currently being auctioned."))
+
+        last_sale_prices = await self.config.last_sale_prices()
+        last_price = int(last_sale_prices.get(str(character_id), 0) or 0)
+        if last_price < 1:
+            return await ctx.send(embed=AuctionEmbeds.error("This character has no completed auction sale price yet."))
+
+        payout = last_price // 2
+        await self.economy.deposit(ctx.author.id, payout)
+        await self.economy.remove_character(ctx.author.id, character_id)
+        self.characters.unassign(character_id)
+        await self.log_transaction(
+            "🏦 Auction House Buyback",
+            f"Character: **{character['name']}**\nSeller: {ctx.author.mention}\n"
+            f"Last sale: {format_berries(last_price)}\nBuyback payout: **{format_berries(payout)}**",
+        )
+        await ctx.send(
+            embed=AuctionEmbeds.success(
+                f"The Auction House bought **{character['name']}** for {format_berries(payout)}."
             )
         )
 
@@ -449,6 +509,20 @@ class OPAuction(commands.Cog):
         """Skip the current auction and start the next."""
         await self.auction.skip()
         await ctx.send(embed=AuctionEmbeds.success("Current auction skipped."))
+
+    @auction_group.command(name="logchannel")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def set_log_channel(self, ctx, channel: discord.TextChannel):
+        """Set the channel for completed sale and buyback logs."""
+        await self.config.log_channel.set(channel.id)
+        await ctx.send(embed=AuctionEmbeds.success(f"Auction transactions will be logged in {channel.mention}."))
+
+    @auction_group.command(name="clearlogchannel")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def clear_log_channel(self, ctx):
+        """Disable transaction logging."""
+        await self.config.log_channel.set(None)
+        await ctx.send(embed=AuctionEmbeds.success("Auction transaction logging has been disabled."))
 
     @auction_group.command(name="block")
     @commands.admin_or_permissions(manage_guild=True)
