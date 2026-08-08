@@ -153,6 +153,14 @@ class AuctionManager:
                 stored_current[flag] = True
                 if not await self._write_current_auction(stored_current):
                     return
+                await self.update_current_embed(stored_current)
+
+    async def bump_current_embed(self) -> None:
+        """Repost the active auction display after a new human channel message."""
+        async with self._state_lock:
+            state = await self.get_current_auction()
+            if state:
+                await self.update_current_embed(state)
 
     async def begin(self) -> bool:
         """Start the automatic auction loop and immediately post a live auction when possible."""
@@ -542,7 +550,7 @@ class AuctionManager:
         await self._write_current_auction(state)
 
     async def update_current_embed(self, state: dict[str, Any]) -> None:
-        """Edit the live message embed after a bid update."""
+        """Repost the live embed so the active auction remains channel-bottom."""
         channel_id = state.get("channel_id")
         message_id = state.get("message_id")
         if not channel_id:
@@ -568,26 +576,22 @@ class AuctionManager:
             else AuctionEmbeds.auction_start(character, int(state["ends_at"]), image_url=image_url, seller=seller)
         )
 
-        if not message_id:
-            try:
-                message = await channel.send(embed=embed)
-                state["message_id"] = message.id
-                await self._write_current_auction(state)
-            except (discord.Forbidden, discord.HTTPException, discord.NotFound):
-                pass
+        try:
+            replacement = await channel.send(embed=embed)
+        except (discord.Forbidden, discord.HTTPException, discord.NotFound):
             return
 
+        previous_message_id = state.get("message_id")
+        state["message_id"] = replacement.id
+        if not await self._write_current_auction(state):
+            return
+
+        if not previous_message_id:
+            return
         try:
-            message = await channel.fetch_message(message_id)
-            await message.edit(embed=embed)
-        except discord.NotFound:
-            try:
-                message = await channel.send(embed=embed)
-                state["message_id"] = message.id
-                await self._write_current_auction(state)
-            except (discord.Forbidden, discord.HTTPException, discord.NotFound):
-                pass
-        except (discord.HTTPException, discord.Forbidden):
+            previous = await channel.fetch_message(int(previous_message_id))
+            await previous.delete()
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
             pass
 
     async def finish_auction(self) -> None:
