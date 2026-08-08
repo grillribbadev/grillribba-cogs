@@ -497,8 +497,10 @@ class AuctionManager:
                     # Tax payout to original seller if this came from the queue.
                     if seller_id:
                         seller_share = int(round(price * (1 - AUCTION_TAX)))
+                        fee = price - seller_share
                         await self.cog.economy.deposit(seller_id, seller_share)
                         await self.cog.economy.remove_character(seller_id, character_id)
+                        await self._record_fee(fee)
 
                     embed = AuctionEmbeds.sold(character, winner, price, image_url=state.get("image_url"))
                     sold_text = f"Sold to {winner.mention} for {format_berries(price)}."
@@ -531,6 +533,13 @@ class AuctionManager:
             # Always clear, even on error: an uncleared auction would otherwise
             # re-run this settlement (and re-charge the winner) every tick forever.
             await self.clear_current_auction()
+
+    async def _record_fee(self, amount: int) -> None:
+        """Add to the running total of 5% fees skimmed from queue sales."""
+        if amount <= 0:
+            return
+        total = await self.cog.config.total_fees()
+        await self.cog.config.total_fees.set(total + amount)
 
     async def get_image_url(self, character: dict[str, Any]) -> str | None:
         """Fetch and cache a One Piece Wiki image URL for the character."""

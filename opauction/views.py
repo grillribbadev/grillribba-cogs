@@ -163,6 +163,20 @@ class AuctionEmbeds:
         return embed
 
     @staticmethod
+    def bank(total: int) -> discord.Embed:
+
+        embed = discord.Embed(
+            title="🏦 The Auction House Vault",
+            description=(
+                f"The house has skimmed **{format_berries(total)}** in auction fees so far. 💰\n"
+                "Every queued sale pays a 5% cut straight into this vault."
+            ),
+            color=COLOR_DEFAULT,
+        )
+
+        return embed
+
+    @staticmethod
     def queue(entries: list[tuple[dict, str]]) -> discord.Embed:
 
         embed = discord.Embed(

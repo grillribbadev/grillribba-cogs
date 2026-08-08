@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import logging
 import random
 
 import discord
@@ -29,6 +30,8 @@ from .economy import Economy
 from .utils import clean_name, format_berries, format_duration, utc_timestamp
 from .views import AuctionEmbeds
 
+log = logging.getLogger("red.opauction")
+
 
 class OPAuction(commands.Cog):
     """One Piece Auction"""
@@ -54,6 +57,7 @@ class OPAuction(commands.Cog):
             "queue": [],
             "last_auction_started": 0,
             "blocked_users": [],
+            "total_fees": 0,
         }
 
         default_user = {
@@ -230,6 +234,12 @@ class OPAuction(commands.Cog):
 
         await ctx.send(embed=AuctionEmbeds.queue(entries))
 
+    @auction_group.command(name="bank")
+    async def bank(self, ctx):
+        """Show how much beri the auction house has collected in fees."""
+        total = await self.config.total_fees()
+        await ctx.send(embed=AuctionEmbeds.bank(total))
+
     @auction_group.command(name="pray")
     async def pray(self, ctx):
         """Pray for berries. Usually pays off, but it can backfire."""
@@ -240,14 +250,18 @@ class OPAuction(commands.Cog):
         if remaining > 0:
             return await ctx.send(embed=AuctionEmbeds.error(f"You must wait {format_duration(remaining)} before praying again."))
 
-        if random.random() < PRAY_SUCCESS_CHANCE:
-            amount = random.randint(PRAY_MIN_REWARD, PRAY_MAX_REWARD)
-            await self.economy.adjust_balance(ctx.author.id, amount)
-            await ctx.send(embed=AuctionEmbeds.success(f"🙏 Your prayer was answered! You received {format_berries(amount)}."))
-        else:
-            amount = random.randint(PRAY_MIN_PENALTY, PRAY_MAX_PENALTY)
-            taken = -await self.economy.adjust_balance(ctx.author.id, -amount)
-            await ctx.send(embed=AuctionEmbeds.error(f"⚡ Your prayer angered the heavens! You lost {format_berries(taken)}."))
+        try:
+            if random.random() < PRAY_SUCCESS_CHANCE:
+                amount = random.randint(PRAY_MIN_REWARD, PRAY_MAX_REWARD)
+                await self.economy.adjust_balance(ctx.author.id, amount)
+                await ctx.send(embed=AuctionEmbeds.success(f"🙏 Your prayer was answered! You received {format_berries(amount)}."))
+            else:
+                amount = random.randint(PRAY_MIN_PENALTY, PRAY_MAX_PENALTY)
+                taken = -await self.economy.adjust_balance(ctx.author.id, -amount)
+                await ctx.send(embed=AuctionEmbeds.error(f"⚡ Your prayer angered the heavens! You lost {format_berries(taken)}."))
+        except Exception:
+            log.exception("pray command failed for user %s", ctx.author.id)
+            await ctx.send(embed=AuctionEmbeds.error("Something went wrong with your prayer. Please try again."))
 
     @auction_group.command(name="steal")
     async def steal(self, ctx):
@@ -259,14 +273,43 @@ class OPAuction(commands.Cog):
         if remaining > 0:
             return await ctx.send(embed=AuctionEmbeds.error(f"You must wait {format_duration(remaining)} before stealing again."))
 
-        if random.random() < STEAL_SUCCESS_CHANCE:
-            amount = random.randint(STEAL_MIN_REWARD, STEAL_MAX_REWARD)
-            await self.economy.adjust_balance(ctx.author.id, amount)
-            await ctx.send(embed=AuctionEmbeds.success(f"🗡️ The heist paid off! You made off with {format_berries(amount)}."))
+        try:
+            if random.random() < STEAL_SUCCESS_CHANCE:
+                amount = random.randint(STEAL_MIN_REWARD, STEAL_MAX_REWARD)
+                await self.economy.adjust_balance(ctx.author.id, amount)
+                await ctx.send(embed=AuctionEmbeds.success(f"🗡️ The heist paid off! You made off with {format_berries(amount)}."))
+            else:
+                amount = random.randint(STEAL_MIN_PENALTY, STEAL_MAX_PENALTY)
+                taken = -await self.economy.adjust_balance(ctx.author.id, -amount)
+                await ctx.send(embed=AuctionEmbeds.error(f"🚨 You got caught! You paid a {format_berries(taken)} fine."))
+        except Exception:
+            log.exception("steal command failed for user %s", ctx.author.id)
+            await ctx.send(embed=AuctionEmbeds.error("Something went wrong with your heist. Please try again."))
+
+    @auction_group.command(name="resetcooldowns", aliases=["resetcd"])
+    @commands.admin_or_permissions(manage_guild=True)
+    async def reset_cooldowns(self, ctx, member: discord.Member = None):
+        """Reset everyone's (or one member's) pray/steal cooldowns."""
+        if member is not None:
+            targets = {member.id: await self.config.user_from_id(member.id).all()}
         else:
-            amount = random.randint(STEAL_MIN_PENALTY, STEAL_MAX_PENALTY)
-            taken = -await self.economy.adjust_balance(ctx.author.id, -amount)
-            await ctx.send(embed=AuctionEmbeds.error(f"🚨 You got caught! You paid a {format_berries(taken)} fine."))
+            targets = await self.config.all_users()
+
+        cleared = 0
+        for user_id, data in targets.items():
+            cooldowns = dict(data.get("cooldowns", {}))
+            if not ("pray" in cooldowns or "steal" in cooldowns):
+                continue
+
+            cooldowns.pop("pray", None)
+            cooldowns.pop("steal", None)
+            await self.config.user_from_id(int(user_id)).cooldowns.set(cooldowns)
+            cleared += 1
+
+        if member is not None:
+            await ctx.send(embed=AuctionEmbeds.success(f"Cleared pray/steal cooldowns for {member.mention}."))
+        else:
+            await ctx.send(embed=AuctionEmbeds.success(f"Cleared pray/steal cooldowns for {cleared} player(s)."))
 
     @auction_group.command(name="info")
     async def info(self, ctx):
