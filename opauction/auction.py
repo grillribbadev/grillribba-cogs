@@ -105,19 +105,20 @@ class AuctionManager:
                 await self.finish_auction()
                 return
 
-            bid = int(current.get("bid", 1))
-            if bid <= 1:
+            has_bid = bool(current.get("highest_bidder_id"))
+            if not has_bid:
                 elapsed = now - started_at
             else:
                 elapsed = now - int(current.get("last_bid_time", started_at))
 
-            await self._announce_countdown(current, elapsed)
-
             # No bids at all close on the shorter no-bid timer; an active
             # bid closes once "going three" has been reached and held.
-            close_after = NO_BID_CLOSE_SECONDS if bid <= 1 else GOING_THREE_SECONDS
+            close_after = NO_BID_CLOSE_SECONDS if not has_bid else GOING_THREE_SECONDS
             if elapsed >= close_after:
                 await self.finish_auction()
+                return
+
+            await self._announce_countdown(current, elapsed)
             return
 
         interval = await self.config.auction_interval()
@@ -133,7 +134,10 @@ class AuctionManager:
         """Send any due 'going once/twice/three' messages, each only once per auction."""
         async with self._state_lock:
             stored_current = await self.get_current_auction()
-            if not stored_current or stored_current.get("message_id") != current.get("message_id"):
+            if not stored_current or (
+                stored_current.get("character_id") != current.get("character_id")
+                or stored_current.get("started_at") != current.get("started_at")
+            ):
                 return
 
             stages = (
@@ -302,6 +306,7 @@ class AuctionManager:
         state = {
             "character_id": int(character["id"]),
             "bid": starting_bid,
+            "starting_bid": starting_bid,
             "highest_bidder_id": None,
             "seller_id": seller_id,
             "started_at": started_at,
@@ -573,7 +578,13 @@ class AuctionManager:
         embed = (
             AuctionEmbeds.new_bid(character, bidder, bid, int(state["ends_at"]), image_url=image_url, seller=seller)
             if bidder
-            else AuctionEmbeds.auction_start(character, int(state["ends_at"]), image_url=image_url, seller=seller)
+            else AuctionEmbeds.auction_start(
+                character,
+                int(state["ends_at"]),
+                starting_bid=int(state.get("starting_bid", bid)),
+                image_url=image_url,
+                seller=seller,
+            )
         )
 
         try:
