@@ -197,24 +197,25 @@ class AuctionManager:
             return False
 
         queue = await self.config.queue()
-        preferred_source = await self.config.next_auction_source()
+        last_source = await self.config.last_auction_source()
 
         character: dict[str, Any] | None = None
         from_queue = False
-        if preferred_source == "queue" and queue:
+        queue_entry = queue[0] if queue else None
+        available_pool = [cid for cid in self.cog.characters.all_ids() if not self.cog.characters.owned(cid)]
+
+        if last_source != "queue" and queue_entry:
             queued_character_id = int(queue[0]["character_id"])
             character = self.cog.characters.get(queued_character_id)
             from_queue = character is not None
 
-        if not character:
-            available_pool = [cid for cid in self.cog.characters.all_ids() if not self.cog.characters.owned(cid)]
-            if preferred_source == "pool" and available_pool:
-                character = self.cog.characters.get(random.choice(available_pool))
-
-        if not character and preferred_source == "queue" and available_pool:
+        if not character and last_source != "pool" and available_pool:
             character = self.cog.characters.get(random.choice(available_pool))
 
-        if not character and preferred_source == "pool" and queue:
+        if not character and available_pool:
+            character = self.cog.characters.get(random.choice(available_pool))
+
+        if not character and queue_entry:
             queued_character_id = int(queue[0]["character_id"])
             character = self.cog.characters.get(queued_character_id)
             from_queue = character is not None
@@ -239,15 +240,7 @@ class AuctionManager:
 
         seller_id = None
         if from_queue:
-            queue_entry = queue.pop(0)
             seller_id = int(queue_entry.get("seller_id", 0) or 0)
-            # Only persist the pop once we're committed to this queue entry.
-            await self.config.queue.set(queue)
-
-        if from_queue:
-            await self.config.next_auction_source.set("pool")
-        else:
-            await self.config.next_auction_source.set("queue")
 
         state = {
             "character_id": int(character["id"]),
@@ -279,6 +272,12 @@ class AuctionManager:
 
         state["message_id"] = message.id
         await self.config.current_auction.set(state)
+        if from_queue:
+            queue.pop(0)
+            await self.config.queue.set(queue)
+            await self.config.last_auction_source.set("queue")
+        else:
+            await self.config.last_auction_source.set("pool")
         await self.config.last_auction_started.set(utc_timestamp())
         return True
 
@@ -393,24 +392,16 @@ class AuctionManager:
 
         state["bid"] = bid
         state["highest_bidder_id"] = bidder_id
-        state["last_bid_time"] = utc_timestamp()
-        state["last_bid_at"][last_bid_key] = utc_timestamp()
+        bid_time = utc_timestamp()
+        state["last_bid_time"] = bid_time
+        state["last_bid_at"][last_bid_key] = bid_time
         state["going_once_issued"] = False
         state["going_twice_issued"] = False
         state["going_three_issued"] = False
 
-        # Preserve the auction's hard deadline. A new bid can extend the
-        # close timestamp only when the auction is in the anti-snipe window.
-        if not state.get("ends_at"):
-            state["ends_at"] = int(utc_timestamp()) + int(await self.config.auction_duration())
-        else:
-            remaining = int(state.get("ends_at", 0)) - utc_timestamp()
-            if remaining <= ANTI_SNIPE_THRESHOLD:
-                new_ends = int(state.get("ends_at", 0)) + ANTI_SNIPE_EXTENSION
-                max_allowed = int(state.get("started_at", utc_timestamp())) + int(await self.config.auction_duration()) + MAX_ANTI_SNIPE
-                if new_ends > max_allowed:
-                    new_ends = max_allowed
-                state["ends_at"] = new_ends
+        # The auction settles after the countdown from the latest bid, so its
+        # visible deadline must be reset with every accepted bid as well.
+        state["ends_at"] = bid_time + GOING_THREE_SECONDS
 
         await self.config.current_auction.set(state)
         await self.update_current_embed(state)
