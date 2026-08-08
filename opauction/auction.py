@@ -27,6 +27,8 @@ from .constants import (
     MAXIMUM_BID_INCREMENT,
     MINIMUM_BID_INCREMENT,
     NO_BID_CLOSE_SECONDS,
+    POOL_STARTING_BIDS,
+    RARITY_WEIGHTS,
 )
 from .utils import clean_name, format_berries, format_duration, utc_timestamp
 from .views import AuctionEmbeds
@@ -216,7 +218,7 @@ class AuctionManager:
                 character = self.cog.characters.get(forced_character_id)
 
         if forced_source == "pool" and not character and available_pool:
-            character = self.cog.characters.get(random.choice(available_pool))
+            character = self._choose_pool_character(available_pool)
 
         if not character and last_source != "queue" and queue_entry:
             queued_character_id = int(queue[0]["character_id"])
@@ -224,10 +226,10 @@ class AuctionManager:
             from_queue = character is not None
 
         if not character and last_source != "pool" and available_pool:
-            character = self.cog.characters.get(random.choice(available_pool))
+            character = self._choose_pool_character(available_pool)
 
         if not character and available_pool:
-            character = self.cog.characters.get(random.choice(available_pool))
+            character = self._choose_pool_character(available_pool)
 
         if not character and queue_entry:
             queued_character_id = int(queue[0]["character_id"])
@@ -253,7 +255,7 @@ class AuctionManager:
         ends_at = started_at + duration
 
         seller_id = None
-        starting_bid = 1
+        starting_bid = POOL_STARTING_BIDS.get(str(character.get("rarity", "normal")).lower(), 1)
         if from_queue:
             seller_id = int(queue_entry.get("seller_id", 0) or 0)
             starting_bid = max(1, int(queue_entry.get("starting_bid", 1) or 1))
@@ -306,6 +308,16 @@ class AuctionManager:
             await self.config.forced_next_source.set(None)
         await self.config.last_auction_started.set(utc_timestamp())
         return True
+
+    def _choose_pool_character(self, character_ids: list[int]) -> dict[str, Any] | None:
+        """Choose an unowned character using rarity-weighted odds."""
+        characters = [self.cog.characters.get(character_id) for character_id in character_ids]
+        characters = [character for character in characters if character]
+        if not characters:
+            return None
+
+        weights = [RARITY_WEIGHTS.get(str(character.get("rarity", "normal")).lower(), 60) for character in characters]
+        return random.choices(characters, weights=weights, k=1)[0]
 
     async def get_current_auction(self) -> dict[str, Any] | None:
         """Return the active auction configuration dictionary."""

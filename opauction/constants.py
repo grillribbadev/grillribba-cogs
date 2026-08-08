@@ -95,12 +95,31 @@ EMOJI_CROWN = "👑"
 #
 
 RARITIES = (
+    "Normal",
     "Common",
     "Uncommon",
     "Rare",
     "Epic",
     "Legendary",
 )
+
+RARITY_WEIGHTS = {
+    "normal": 60,
+    "common": 60,
+    "uncommon": 40,
+    "rare": 25,
+    "epic": 10,
+    "legendary": 3,
+}
+
+POOL_STARTING_BIDS = {
+    "normal": 1,
+    "common": 1,
+    "uncommon": 1,
+    "rare": 50,
+    "epic": 100,
+    "legendary": 150,
+}
 
 RARITY_COLORS = {
     "Common": discord.Color.light_grey(),

@@ -68,7 +68,10 @@ class CharacterManager:
 
     def import_json(self, payload: str) -> bool:
         """Replace the roster from a JSON payload."""
-        raw = json.loads(payload)
+        try:
+            raw = json.loads(payload.lstrip("\ufeff"))
+        except (TypeError, json.JSONDecodeError):
+            return False
         if not isinstance(raw, list):
             return False
 

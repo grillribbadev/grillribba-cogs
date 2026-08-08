@@ -319,6 +319,38 @@ class OPAuction(commands.Cog):
             )
         )
 
+    @auction_group.command(name="unsell", aliases=["withdrawsale"])
+    async def unsell(self, ctx, *, name: str):
+        """Withdraw one of your queued characters before its auction begins."""
+        if not await self.economy.exists(ctx.author.id):
+            return await ctx.send(embed=AuctionEmbeds.error("Use `.auction start` first."))
+
+        character = self.characters.get_by_name(clean_name(name))
+        if not character:
+            return await ctx.send(embed=AuctionEmbeds.error("I could not find that character."))
+
+        character_id = int(character["id"])
+        current = await self.auction.get_current_auction()
+        if current and int(current.get("character_id", 0)) == character_id:
+            return await ctx.send(embed=AuctionEmbeds.error("You cannot withdraw a character during its live auction."))
+
+        queue = await self.config.queue()
+        entry_index = next(
+            (
+                index
+                for index, entry in enumerate(queue)
+                if int(entry.get("character_id", 0)) == character_id
+                and int(entry.get("seller_id", 0) or 0) == ctx.author.id
+            ),
+            None,
+        )
+        if entry_index is None:
+            return await ctx.send(embed=AuctionEmbeds.error("That character is not in your auction queue."))
+
+        queue.pop(entry_index)
+        await self.config.queue.set(queue)
+        await ctx.send(embed=AuctionEmbeds.success(f"Removed **{character['name']}** from your auction queue."))
+
     @auction_group.command(name="sellhouse", aliases=["housesell"])
     async def sell_house(self, ctx, *, name: str):
         """Sell an owned character to the auction house for half its last sale price."""
