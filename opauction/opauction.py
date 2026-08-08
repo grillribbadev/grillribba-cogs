@@ -286,6 +286,22 @@ class OPAuction(commands.Cog):
         if expired_trades:
             await self.config.pending_trades.set(pending_trades)
 
+    async def edit_offer_status(
+        self,
+        channel: discord.TextChannel,
+        message_id: int,
+        message: str,
+        *,
+        error: bool = False,
+    ) -> None:
+        """Replace a completed offer's embed and disable its reaction controls."""
+        try:
+            offer_message = await channel.fetch_message(message_id)
+            await offer_message.edit(embed=AuctionEmbeds.error(message) if error else AuctionEmbeds.success(message))
+            await offer_message.clear_reactions()
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            pass
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         """Listen only in the configured auction channel for bid messages."""
@@ -346,16 +362,25 @@ class OPAuction(commands.Cog):
             if utc_timestamp() - int(loan.get("created_at", 0) or 0) >= OFFER_TIMEOUT_SECONDS:
                 pending_loans.pop(str(payload.user_id), None)
                 await self.config.pending_loans.set(pending_loans)
-                await channel.send(f"<@{payload.user_id}>'s loan offer expired after one minute.")
+                await self.edit_offer_status(
+                    channel,
+                    payload.message_id,
+                    f"<@{payload.user_id}>'s loan offer expired after one minute.",
+                    error=True,
+                )
                 return
 
             if str(payload.emoji) == "❌":
                 pending_loans.pop(str(payload.user_id), None)
                 await self.config.pending_loans.set(pending_loans)
-                await channel.send(f"<@{payload.user_id}> declined their Auction House loan offer.")
+                await self.edit_offer_status(
+                    channel,
+                    payload.message_id,
+                    f"<@{payload.user_id}> declined their Auction House loan offer.",
+                )
                 return
 
-            await self._accept_loan(payload.user_id, loan, channel)
+            await self._accept_loan(payload.user_id, loan, channel, payload.message_id)
             return
 
         pending_trades = await self.config.pending_trades()
@@ -386,13 +411,22 @@ class OPAuction(commands.Cog):
         if utc_timestamp() - int(trade.get("created_at", 0) or 0) >= OFFER_TIMEOUT_SECONDS:
             pending_trades.pop(str(offerer_id), None)
             await self.config.pending_trades.set(pending_trades)
-            await channel.send(f"<@{offerer_id}>'s trade offer expired after one minute.")
+            await self.edit_offer_status(
+                channel,
+                payload.message_id,
+                f"<@{offerer_id}>'s trade offer expired after one minute.",
+                error=True,
+            )
             return
 
         if str(payload.emoji) == "❌":
             pending_trades.pop(str(offerer_id), None)
             await self.config.pending_trades.set(pending_trades)
-            await channel.send(f"<@{payload.user_id}> declined <@{offerer_id}>'s trade offer.")
+            await self.edit_offer_status(
+                channel,
+                payload.message_id,
+                f"<@{payload.user_id}> declined <@{offerer_id}>'s trade offer.",
+            )
             return
 
         offerer = self.bot.get_user(offerer_id)
@@ -418,7 +452,7 @@ class OPAuction(commands.Cog):
             async def send(self, *args, **kwargs):
                 return await self._response_channel.send(*args, **kwargs)
 
-        await self._accept_trade(ReactionContext(recipient, channel), offerer)
+        await self._accept_trade(ReactionContext(recipient, channel), offerer, payload.message_id)
 
     @commands.group(name="auction", invoke_without_command=True)
     async def auction_group(self, ctx):
@@ -793,7 +827,7 @@ class OPAuction(commands.Cog):
         except (discord.Forbidden, discord.HTTPException):
             pass
 
-    async def _accept_trade(self, ctx, member: discord.abc.User):
+    async def _accept_trade(self, ctx, member: discord.abc.User, offer_message_id: int):
         """Accept a pending trade offer from another member."""
         pending_trades = await self.config.pending_trades()
         trade = pending_trades.get(str(member.id))
@@ -889,7 +923,7 @@ class OPAuction(commands.Cog):
             detail = f"{buyer_text} bought **{offered_character['name']}** from {seller_text} for {format_berries(cash_amount)}.\nAuction House cut: **{format_berries(house_cut)}**"
             result = f"Trade complete. {buyer_text} received **{offered_character['name']}**; {seller_text} received {format_berries(seller_amount)}. The Auction House collected {format_berries(house_cut)}."
         await self.log_transaction("🤝 Auction House Trade", detail)
-        await ctx.send(embed=AuctionEmbeds.success(result))
+        await self.edit_offer_status(ctx._response_channel, offer_message_id, result)
 
     @auction_group.command(name="sell")
     async def sell(self, ctx, *, name: str):
@@ -1216,7 +1250,13 @@ class OPAuction(commands.Cog):
         )
         await ctx.send(embed=embed)
 
-    async def _accept_loan(self, user_id: int, loan: dict, channel: discord.TextChannel) -> None:
+    async def _accept_loan(
+        self,
+        user_id: int,
+        loan: dict,
+        channel: discord.TextChannel,
+        offer_message_id: int,
+    ) -> None:
         """Issue a reaction-confirmed loan after rechecking all mutable state."""
         amount = int(loan["amount"])
         debt = int(loan["debt"])
@@ -1230,13 +1270,21 @@ class OPAuction(commands.Cog):
             if int(await player.debt() or 0):
                 pending_loans.pop(str(user_id), None)
                 await self.config.pending_loans.set(pending_loans)
-                return await channel.send(f"<@{user_id}> already has outstanding loan debt; this offer was cancelled.")
+                return await self.edit_offer_status(
+                    channel,
+                    offer_message_id,
+                    f"<@{user_id}> already has outstanding loan debt; this offer was cancelled.",
+                    error=True,
+                )
             vault_balance = await self.config.total_fees()
             if vault_balance < amount:
                 pending_loans.pop(str(user_id), None)
                 await self.config.pending_loans.set(pending_loans)
-                return await channel.send(
-                    f"<@{user_id}>'s loan offer expired because the vault has only {format_berries(vault_balance)} available."
+                return await self.edit_offer_status(
+                    channel,
+                    offer_message_id,
+                    f"<@{user_id}>'s loan offer expired because the vault has only {format_berries(vault_balance)} available.",
+                    error=True,
                 )
 
             await self.config.total_fees.set(vault_balance - amount)
@@ -1252,9 +1300,11 @@ class OPAuction(commands.Cog):
             f"Borrower: <@{user_id}>\nPrincipal: **{format_berries(amount)}**\n"
             f"Debt due: **{format_berries(debt)}**\nInterest: **25%**",
         )
-        await channel.send(
+        await self.edit_offer_status(
+            channel,
+            offer_message_id,
             f"<@{user_id}> accepted the loan and received {format_berries(amount)}. "
-            f"Total debt: {format_berries(debt)}."
+            f"Total debt: {format_berries(debt)}.",
         )
 
     @auction_group.command(name="repayloan", aliases=["repay"])
