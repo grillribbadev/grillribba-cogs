@@ -84,9 +84,6 @@ class OPAuction(commands.Cog):
         # unowned after a restart until the destructive `wipe` command runs.
         await self.characters.rebuild_owners()
 
-        for command in (self.auction_group, self.pray, self.steal):
-            command._buckets = commands.CooldownMapping()
-
     def cog_unload(self):
         self.auction_task.cancel()
 
