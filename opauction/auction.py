@@ -568,6 +568,9 @@ class AuctionManager:
         if not state:
             return
 
+        if utc_timestamp() < int(state.get("ends_at", 0)):
+            return
+
         character_id = int(state.get("character_id"))
         character = self.cog.characters.get(character_id)
         if not character:
@@ -596,7 +599,7 @@ class AuctionManager:
                 if owner_before is not None:
                     self.cog.characters.unassign(character_id)
 
-                await self.cog.economy.finalize_purchase(winner_id)
+                await self.cog.economy.finalize_purchase(winner_id, price)
                 await self.cog.economy.add_character(winner_id, character_id)
                 self.cog.characters.assign(character_id, winner_id)
                 last_sale_prices = await self.config.last_sale_prices()

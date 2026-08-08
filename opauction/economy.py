@@ -113,13 +113,12 @@ class Economy:
     async def release(self, user_id: int):
         await self.config.user_from_id(user_id).reserved.set(0)
 
-    async def finalize_purchase(self, user_id: int):
+    async def finalize_purchase(self, user_id: int, price: int):
+        """Charge the recorded winning price and release the bid reservation."""
         player = self.config.user_from_id(user_id)
 
         bal = await player.balance()
-        reserved = await player.reserved()
-
-        await player.balance.set(bal - reserved)
+        await player.balance.set(bal - price)
         await player.reserved.set(0)
 
     async def add_character(self, user_id: int, character_id: int):
