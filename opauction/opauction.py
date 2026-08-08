@@ -570,6 +570,11 @@ class OPAuction(commands.Cog):
         vault_balance = await self.config.total_fees()
         await self.config.total_fees.set(vault_balance + amount)
         await self.record_transaction("bank_deposit", user_id=ctx.author.id, amount=amount)
+        await self.log_transaction(
+            "🏦 Vault Deposit",
+            f"Administrator: {ctx.author.mention}\nAmount: **{format_berries(amount)}**\n"
+            f"Vault balance: **{format_berries(vault_balance + amount)}**",
+        )
         await ctx.send(embed=AuctionEmbeds.success(f"Deposited {format_berries(amount)} into the Auction House Vault."))
 
     @auction_group.command(name="bankwithdraw", aliases=["withdrawbank"])
@@ -592,6 +597,12 @@ class OPAuction(commands.Cog):
         await self.config.total_fees.set(vault_balance - amount)
         await self.economy.deposit(member.id, amount)
         await self.record_transaction("bank_withdraw", user_id=member.id, amount=amount)
+        await self.log_transaction(
+            "🏦 Vault Withdrawal",
+            f"Administrator: {ctx.author.mention}\nRecipient: {member.mention}\n"
+            f"Amount: **{format_berries(amount)}**\n"
+            f"Vault balance: **{format_berries(vault_balance - amount)}**",
+        )
         await ctx.send(
             embed=AuctionEmbeds.success(
                 f"Withdrew {format_berries(amount)} from the Auction House Vault to {member.mention}."
