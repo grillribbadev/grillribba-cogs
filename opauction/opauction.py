@@ -37,7 +37,7 @@ class OPAuction(commands.Cog):
     """One Piece Auction"""
 
     __author__ = "Grillribba"
-    __version__ = "1.0.0"
+    __version__ = "1.1.0"
 
     def __init__(self, bot):
         self.bot = bot
@@ -316,6 +316,7 @@ class OPAuction(commands.Cog):
         """Show the current OPAuction status summary."""
         status = await self.auction.status()
         desc = (
+            f"Version: {self.__version__}\n"
             f"Registered players are not automatic.\n"
             f"Starting balance: {format_berries(STARTING_BALANCE)}\n"
             f"Daily income: {format_berries(250)} every 24 hours\n"
