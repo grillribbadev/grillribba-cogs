@@ -16,6 +16,7 @@ class AuctionEmbeds:
     def auction_start(
         character: dict,
         ending: int,
+        starting_bid: int = 1,
         image_url: str | None = None,
         seller: discord.abc.User | None = None,
     ) -> discord.Embed:
@@ -27,7 +28,7 @@ class AuctionEmbeds:
 
         embed.add_field(
             name="Starting Bid",
-            value=format_berries(1),
+            value=format_berries(starting_bid),
             inline=True,
         )
 

@@ -217,9 +217,18 @@ class OPAuction(commands.Cog):
 
     @auction_group.command(name="sell")
     async def sell(self, ctx, *, name: str):
-        """Queue a character owned by the caller for auction."""
+        """Queue a character with an optional trailing starting bid."""
         if not await self.economy.exists(ctx.author.id):
             return await ctx.send("Use `.auction start` first.")
+
+        parts = name.rsplit(maxsplit=1)
+        starting_bid = 1
+        if len(parts) == 2 and parts[1].isdigit():
+            name, starting_bid_text = parts
+            starting_bid = int(starting_bid_text)
+
+        if starting_bid < 1:
+            return await ctx.send(embed=AuctionEmbeds.error("Starting bid must be at least ฿1."))
 
         normalized_name = clean_name(name)
         character = self.characters.get_by_name(normalized_name)
@@ -233,10 +242,20 @@ class OPAuction(commands.Cog):
         if any(item.get("character_id") == int(character["id"]) for item in queue):
             return await ctx.send(embed=AuctionEmbeds.error("That character is already queued."))
 
-        queue.append({"character_id": int(character["id"]), "seller_id": ctx.author.id})
+        queue.append(
+            {
+                "character_id": int(character["id"]),
+                "seller_id": ctx.author.id,
+                "starting_bid": starting_bid,
+            }
+        )
         await self.config.queue.set(queue)
 
-        await ctx.send(embed=AuctionEmbeds.success(f"{character['name']} has been added to the auction queue."))
+        await ctx.send(
+            embed=AuctionEmbeds.success(
+                f"{character['name']} has been added to the auction queue with a starting bid of {format_berries(starting_bid)}."
+            )
+        )
 
     @auction_group.command(name="queue")
     async def queue_list(self, ctx):

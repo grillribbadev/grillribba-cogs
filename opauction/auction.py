@@ -239,12 +239,14 @@ class AuctionManager:
         ends_at = started_at + duration
 
         seller_id = None
+        starting_bid = 1
         if from_queue:
             seller_id = int(queue_entry.get("seller_id", 0) or 0)
+            starting_bid = max(1, int(queue_entry.get("starting_bid", 1) or 1))
 
         state = {
             "character_id": int(character["id"]),
-            "bid": 1,
+            "bid": starting_bid,
             "highest_bidder_id": None,
             "seller_id": seller_id,
             "started_at": started_at,
@@ -264,7 +266,13 @@ class AuctionManager:
 
         image_url = state.get("image_url")
         seller = self.cog.bot.get_user(seller_id) if seller_id else None
-        embed = AuctionEmbeds.auction_start(character, int(state["ends_at"]), image_url=image_url, seller=seller)
+        embed = AuctionEmbeds.auction_start(
+            character,
+            int(state["ends_at"]),
+            starting_bid=starting_bid,
+            image_url=image_url,
+            seller=seller,
+        )
         try:
             message = await channel.send(embed=embed)
         except (discord.Forbidden, discord.HTTPException, discord.NotFound):
@@ -367,7 +375,11 @@ class AuctionManager:
             return False
 
         current_bid = int(state.get("bid", 1))
-        minimum_acceptable = current_bid + MINIMUM_BID_INCREMENT
+        minimum_acceptable = (
+            current_bid
+            if state.get("highest_bidder_id") is None
+            else current_bid + MINIMUM_BID_INCREMENT
+        )
         if bid < minimum_acceptable:
             await self.count_invalid_bid(state, bidder_id)
             return False
