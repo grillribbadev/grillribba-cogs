@@ -534,8 +534,10 @@ class OPAuction(commands.Cog):
             last_sale_prices = await self.config.last_sale_prices()
             offered_value = int(last_sale_prices.get(str(offered_id), 0) or 0)
             requested_value = int(last_sale_prices.get(str(requested_id), 0) or 0)
-            offerer_fee = round(offered_value * 0.10)
-            recipient_fee = round(requested_value * 0.10)
+            total_trade_value = offered_value + requested_value
+            split_fee = round(total_trade_value * 0.05)
+            offerer_fee = split_fee
+            recipient_fee = split_fee
             if await self.economy.available_balance(ctx.author.id) < offerer_fee:
                 return await ctx.send(
                     embed=AuctionEmbeds.error(
@@ -572,7 +574,7 @@ class OPAuction(commands.Cog):
         if trade_type == "swap":
             detail = (
                 f"**{offered_character['name']}** for **{requested_character['name']}**. "
-                f"The Auction House takes 10% of each character's last sale value: "
+                f"The Auction House takes 10% of both characters' combined last sale value, split evenly: "
                 f"{format_berries(offerer_fee)} from you and {format_berries(recipient_fee)} from {member.mention}"
             )
         else:
