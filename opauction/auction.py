@@ -41,6 +41,7 @@ class AuctionManager:
         self.config: Config = cog.config
         self.image_cache: dict[int, str] = {}
         self._start_lock = asyncio.Lock()
+        self._state_lock = asyncio.Lock()
 
     async def background_loop(self):
         """Background loop that owns automatic auction scheduling."""
@@ -324,6 +325,11 @@ class AuctionManager:
 
     async def handle_bid(self, message: discord.Message) -> bool:
         """Handle a numeric bid sent in the configured auction channel."""
+        async with self._state_lock:
+            return await self._handle_bid(message)
+
+    async def _handle_bid(self, message: discord.Message) -> bool:
+        """Validate and commit a bid while auction settlement is paused."""
         if message.author.bot:
             return False
 
@@ -477,6 +483,11 @@ class AuctionManager:
 
     async def finish_auction(self) -> None:
         """End the current auction, transfer money, and deliver any settlement embeds."""
+        async with self._state_lock:
+            await self._finish_auction()
+
+    async def _finish_auction(self) -> None:
+        """Settle the stored auction after all in-flight bids have completed."""
         state = await self.get_current_auction()
         if not state:
             return
