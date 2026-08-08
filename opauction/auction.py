@@ -99,22 +99,27 @@ class AuctionManager:
 
     async def _announce_countdown(self, current: dict[str, Any], elapsed: int) -> None:
         """Send any due 'going once/twice/three' messages, each only once per auction."""
-        stages = (
-            (GOING_ONCE_SECONDS, "going_once_issued", "Going once..."),
-            (GOING_TWICE_SECONDS, "going_twice_issued", "Going twice..."),
-            (GOING_THREE_SECONDS, "going_three_issued", "Going three..."),
-        )
-        for threshold, flag, text in stages:
-            if elapsed < threshold or current.get(flag):
-                continue
-            channel = self.cog.bot.get_channel(int(current.get("channel_id", 0)))
-            if channel:
-                try:
-                    await channel.send(text)
-                except discord.HTTPException:
-                    pass
-            current[flag] = True
-            await self.config.current_auction.set(current)
+        async with self._start_lock:
+            stored_current = await self.get_current_auction()
+            if not stored_current or stored_current.get("message_id") != current.get("message_id"):
+                return
+
+            stages = (
+                (GOING_ONCE_SECONDS, "going_once_issued", "Going once..."),
+                (GOING_TWICE_SECONDS, "going_twice_issued", "Going twice..."),
+                (GOING_THREE_SECONDS, "going_three_issued", "Going three..."),
+            )
+            for threshold, flag, text in stages:
+                if elapsed < threshold or stored_current.get(flag):
+                    continue
+                channel = self.cog.bot.get_channel(int(stored_current.get("channel_id", 0)))
+                if channel:
+                    try:
+                        await channel.send(text)
+                    except discord.HTTPException:
+                        pass
+                stored_current[flag] = True
+                await self.config.current_auction.set(stored_current)
 
     async def begin(self) -> bool:
         """Start the automatic auction loop and immediately post a live auction when possible."""
