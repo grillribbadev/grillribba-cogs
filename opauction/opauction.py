@@ -258,9 +258,6 @@ class OPAuction(commands.Cog):
                     await message.add_reaction("✅")
                 except (discord.Forbidden, discord.HTTPException):
                     pass
-                return
-
-        await self.auction.bump_current_embed()
 
     @commands.Cog.listener()
     async def on_message_edit(self, before: discord.Message, after: discord.Message):
