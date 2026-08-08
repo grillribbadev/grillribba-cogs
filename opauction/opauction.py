@@ -1390,6 +1390,47 @@ class OPAuction(commands.Cog):
         )
         await ctx.send(embed=AuctionEmbeds.success(f"Collected {format_berries(collected)} from {member.mention}. Remaining debt: {format_berries(remaining_debt)}."))
 
+    @auction_group.command(name="debt")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def debt_details(self, ctx, member: discord.Member):
+        """Show an indebted member's characters and their last completed sale values."""
+        player = self.config.user_from_id(member.id)
+        debt = int(await player.debt() or 0)
+        if debt < 1:
+            return await ctx.send(embed=AuctionEmbeds.error("That member has no outstanding debt."))
+
+        owned_ids = [int(character_id) for character_id in await player.characters()]
+        last_sale_prices = await self.config.last_sale_prices()
+        queue = await self.config.queue()
+        current = await self.auction.get_current_auction()
+        unavailable_ids = {int(entry.get("character_id", 0)) for entry in queue}
+        if current:
+            unavailable_ids.add(int(current.get("character_id", 0)))
+
+        lines = []
+        for character_id in owned_ids:
+            character = self.characters.get(character_id)
+            if not character:
+                continue
+            value = int(last_sale_prices.get(str(character_id), 0) or 0)
+            status = " - unavailable (queued/live)" if character_id in unavailable_ids else ""
+            lines.append(
+                f"**{character['name']}** ({character.get('rarity', 'Unknown')}) - "
+                f"{format_berries(value) if value else 'No completed sale value'}{status}"
+            )
+
+        embed = discord.Embed(
+            title=f"Debt Repossession Review: {member.display_name}",
+            description=f"Outstanding debt: **{format_berries(debt)}**",
+            color=discord.Color.gold(),
+        )
+        embed.add_field(
+            name="Owned Characters",
+            value="\n".join(lines) if lines else "No characters owned.",
+            inline=False,
+        )
+        await ctx.send(embed=embed)
+
     @auction_group.command(name="repossess")
     @commands.admin_or_permissions(manage_guild=True)
     async def repossess_character(self, ctx, member: discord.Member, *, name: str):
