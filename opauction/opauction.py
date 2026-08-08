@@ -55,6 +55,7 @@ class OPAuction(commands.Cog):
         default_global = {
             "auction_channel": None,
             "log_channel": None,
+            "debt_log_channel": None,
             "auction_running": False,
             "auction_duration": DEFAULT_AUCTION_DURATION,
             "auction_interval": DEFAULT_AUCTION_INTERVAL,
@@ -162,6 +163,35 @@ class OPAuction(commands.Cog):
             await channel.send(embed=embed)
         except (discord.Forbidden, discord.HTTPException):
             log.exception("Unable to send OPAuction transaction log to channel %s", channel_id)
+
+    async def log_overdue_debts(self, entries: list[tuple[int, int]]) -> bool:
+        """Post the current overdue-debt report to the dedicated debt log channel."""
+        channel_id = await self.config.debt_log_channel()
+        if not channel_id:
+            return False
+
+        channel = self.bot.get_channel(int(channel_id))
+        if channel is None:
+            try:
+                channel = await self.bot.fetch_channel(int(channel_id))
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                return False
+        if not isinstance(channel, discord.TextChannel):
+            return False
+
+        embed = discord.Embed(title="⚠️ Overdue Auction House Debt", color=discord.Color.red())
+        if entries:
+            embed.description = "\n".join(
+                f"• <@{user_id}> owes **{format_berries(debt)}**" for user_id, debt in entries
+            )
+        else:
+            embed.description = "No members currently have overdue Auction House debt."
+        try:
+            await channel.send(embed=embed)
+        except (discord.Forbidden, discord.HTTPException):
+            log.exception("Unable to send OPAuction overdue debt report to channel %s", channel_id)
+            return False
+        return True
 
     async def record_transaction(self, kind: str, **details) -> None:
         """Store a bounded history of completed economy changes."""
@@ -1493,6 +1523,40 @@ class OPAuction(commands.Cog):
         """Disable transaction logging."""
         await self.config.log_channel.set(None)
         await ctx.send(embed=AuctionEmbeds.success("Auction transaction logging has been disabled."))
+
+    @auction_group.command(name="debtlogchannel")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def debt_log_channel(self, ctx, channel: discord.TextChannel):
+        """Set the channel used for overdue debt reports."""
+        await self.config.debt_log_channel.set(channel.id)
+        await ctx.send(embed=AuctionEmbeds.success(f"Overdue debt reports will be sent to {channel.mention}."))
+
+    @auction_group.command(name="cleardebtlogchannel")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def clear_debt_log_channel(self, ctx):
+        """Disable the dedicated overdue debt report channel."""
+        await self.config.debt_log_channel.set(None)
+        await ctx.send(embed=AuctionEmbeds.success("Overdue debt report logging has been disabled."))
+
+    @auction_group.command(name="overduedebts", aliases=["debtreport"])
+    @commands.admin_or_permissions(manage_guild=True)
+    async def overdue_debts(self, ctx):
+        """Post a report of members whose 48-hour loan grace period has expired."""
+        entries = []
+        for user_id, data in (await self.config.all_users()).items():
+            user_id = int(user_id)
+            debt = int(data.get("debt", 0) or 0)
+            if debt and await self.debt_is_overdue(user_id):
+                entries.append((user_id, debt))
+
+        entries.sort(key=lambda entry: entry[1], reverse=True)
+        if not await self.log_overdue_debts(entries):
+            return await ctx.send(
+                embed=AuctionEmbeds.error(
+                    "Set a valid debt report channel first with `.auction debtlogchannel #channel`."
+                )
+            )
+        await ctx.send(embed=AuctionEmbeds.success(f"Posted an overdue debt report for {len(entries)} member(s)."))
 
     @auction_group.command(name="block")
     @commands.admin_or_permissions(manage_guild=True)
