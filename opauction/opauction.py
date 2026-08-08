@@ -244,11 +244,11 @@ class OPAuction(commands.Cog):
 
         created = await self.economy.register_player(ctx.author.id)
         if not created:
-            return await ctx.send(embed=AuctionEmbeds.error("You have already joined the game."))
+            return await ctx.send(embed=AuctionEmbeds.success("Your Auction account is ready."))
 
         await ctx.send(embed=AuctionEmbeds.success("Welcome to the auction!\nYou received ฿250."))
 
-    @auction_group.command(name="balance", aliases=["wallet", "beri"])
+    @auction_group.command(name="balance", aliases=["wallet", "beri", "bal"])
     async def balance(self, ctx, member: discord.Member = None):
         """View your balance, or an admin can view another member's balance."""
         target = member or ctx.author

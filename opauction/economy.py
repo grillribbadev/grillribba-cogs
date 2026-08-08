@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Optional
 
 from redbot.core import Config
 
 from .constants import DAILY_INCOME, STARTING_BALANCE
 from .utils import utc_timestamp
+
+
+_ACCOUNT_LOCK = asyncio.Lock()
 
 
 class Economy:
@@ -15,22 +19,36 @@ class Economy:
         self.config = config
 
     async def register_player(self, user_id: int) -> bool:
-        """Register a player. Returns False if already registered."""
+        """Register a player and repair partial account state without resetting progress."""
         player = self.config.user_from_id(user_id)
 
-        if await player.started():
+        async with _ACCOUNT_LOCK:
+            if await player.started():
+                return False
+
+            data = await player.all()
+            has_existing_data = bool(
+                data.get("balance", 0)
+                or data.get("reserved", 0)
+                or data.get("characters", [])
+                or data.get("joined", 0)
+                or data.get("last_daily", 0)
+                or data.get("cooldowns", {})
+            )
+
+            await player.started.set(True)
+            if not has_existing_data:
+                await player.balance.set(STARTING_BALANCE)
+                await player.reserved.set(0)
+                await player.characters.set([])
+                await player.joined.set(utc_timestamp())
+                await player.last_daily.set(0)
+                await player.cooldowns.set({})
+                return True
+
+            # Retain existing balances and characters when repairing a partial
+            # Config record left behind by an interrupted reset or old cog version.
             return False
-
-        now = utc_timestamp()
-
-        await player.started.set(True)
-        await player.balance.set(STARTING_BALANCE)
-        await player.reserved.set(0)
-        await player.characters.set([])
-        await player.joined.set(now)
-        await player.last_daily.set(0)
-
-        return True
 
     async def exists(self, user_id: int) -> bool:
         return await self.config.user_from_id(user_id).started()
