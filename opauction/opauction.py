@@ -549,6 +549,55 @@ class OPAuction(commands.Cog):
         total = await self.config.total_fees()
         await ctx.send(embed=AuctionEmbeds.bank(total))
 
+    @auction_group.command(name="bankdeposit", aliases=["depositbank"])
+    @commands.admin_or_permissions(manage_guild=True)
+    async def bank_deposit(self, ctx, amount: int):
+        """Move an administrator's available beri into the Auction House Vault."""
+        if amount < 1:
+            return await ctx.send(embed=AuctionEmbeds.error("Amount must be at least ฿1."))
+        if not await self.economy.exists(ctx.author.id):
+            return await ctx.send(embed=AuctionEmbeds.error("Use `.auction start` first."))
+
+        available = await self.economy.available_balance(ctx.author.id)
+        if available < amount:
+            return await ctx.send(
+                embed=AuctionEmbeds.error(
+                    f"You have only {format_berries(available)} available to deposit."
+                )
+            )
+
+        await self.economy.adjust_balance(ctx.author.id, -amount)
+        vault_balance = await self.config.total_fees()
+        await self.config.total_fees.set(vault_balance + amount)
+        await self.record_transaction("bank_deposit", user_id=ctx.author.id, amount=amount)
+        await ctx.send(embed=AuctionEmbeds.success(f"Deposited {format_berries(amount)} into the Auction House Vault."))
+
+    @auction_group.command(name="bankwithdraw", aliases=["withdrawbank"])
+    @commands.admin_or_permissions(manage_guild=True)
+    async def bank_withdraw(self, ctx, amount: int, member: discord.Member):
+        """Pay a registered member from the Auction House Vault."""
+        if amount < 1:
+            return await ctx.send(embed=AuctionEmbeds.error("Amount must be at least ฿1."))
+        if not await self.economy.exists(member.id):
+            return await ctx.send(embed=AuctionEmbeds.error("That member has not started the auction game."))
+
+        vault_balance = await self.config.total_fees()
+        if vault_balance < amount:
+            return await ctx.send(
+                embed=AuctionEmbeds.error(
+                    f"The Auction House Vault has only {format_berries(vault_balance)} available."
+                )
+            )
+
+        await self.config.total_fees.set(vault_balance - amount)
+        await self.economy.deposit(member.id, amount)
+        await self.record_transaction("bank_withdraw", user_id=member.id, amount=amount)
+        await ctx.send(
+            embed=AuctionEmbeds.success(
+                f"Withdrew {format_berries(amount)} from the Auction House Vault to {member.mention}."
+            )
+        )
+
     @auction_group.command(name="pray")
     async def pray(self, ctx):
         """Pray for berries. Usually pays off, but it can backfire."""
