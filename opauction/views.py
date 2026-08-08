@@ -13,6 +13,28 @@ from .utils import format_berries, format_duration
 
 class AuctionEmbeds:
     @staticmethod
+    def character_info(
+        character: dict,
+        owner_text: str,
+        last_sale_price: int,
+        image_url: str | None = None,
+    ) -> discord.Embed:
+        """Build the detailed character information card."""
+        embed = discord.Embed(title=character["name"], color=COLOR_AUCTION)
+        embed.add_field(name="Rarity", value=character.get("rarity", "Unknown"), inline=True)
+        embed.add_field(name="Arc", value=character.get("arc", "Unknown"), inline=True)
+        embed.add_field(name="Owner", value=owner_text, inline=True)
+        embed.add_field(
+            name="Last Sold Price",
+            value=format_berries(last_sale_price) if last_sale_price else "No completed sale yet",
+            inline=False,
+        )
+        embed.set_footer(text=f"Character #{character['id']}")
+        if image_url:
+            embed.set_image(url=image_url)
+        return embed
+
+    @staticmethod
     def character_view(
         character: dict,
         status: str,

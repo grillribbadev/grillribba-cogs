@@ -130,13 +130,26 @@ class CharacterManager:
         return self.characters.get(character_id)
 
     def get_by_name(self, name: str) -> Optional[dict]:
-        name = name.lower()
+        name = " ".join(name.lower().split())
 
         for character in self.characters.values():
             if character["name"].lower() == name:
                 return character
 
-        return None
+        matches = [
+            character
+            for character in self.characters.values()
+            if name in character["name"].lower().split()
+        ]
+        if len(matches) == 1:
+            return matches[0]
+
+        matches = [
+            character
+            for character in self.characters.values()
+            if name in character["name"].lower()
+        ]
+        return matches[0] if len(matches) == 1 else None
 
     def exists(self, character_id: int) -> bool:
         return character_id in self.characters

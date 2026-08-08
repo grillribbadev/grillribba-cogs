@@ -511,6 +511,33 @@ class OPAuction(commands.Cog):
             )
         )
 
+    @auction_group.group(name="char", invoke_without_command=True)
+    async def character_group(self, ctx):
+        """Character information commands."""
+        await ctx.send_help(ctx.command)
+
+    @character_group.command(name="info")
+    async def character_info(self, ctx, *, name: str):
+        """Show a character's rarity, sale history, owner, and artwork."""
+        character = self.characters.get_by_name(clean_name(name))
+        if not character:
+            return await ctx.send(embed=AuctionEmbeds.error("I could not find one unambiguous character matching that name."))
+
+        character_id = int(character["id"])
+        owner_id = self.characters.owner_of(character_id)
+        owner_text = f"<@{owner_id}>" if owner_id else "Auction House pool"
+        last_sale_prices = await self.config.last_sale_prices()
+        last_sale_price = int(last_sale_prices.get(str(character_id), 0) or 0)
+        image_url = await self.auction.get_image_url(character)
+        await ctx.send(
+            embed=AuctionEmbeds.character_info(
+                character,
+                owner_text,
+                last_sale_price,
+                image_url=image_url,
+            )
+        )
+
     @auction_group.command(name="trade")
     async def trade(self, ctx, member: discord.Member, *, offer: str):
         """Offer a character swap or sell one character to another member for beri."""
