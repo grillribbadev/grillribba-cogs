@@ -15,6 +15,7 @@ from .constants import (
     DEFAULT_AUCTION_DURATION,
     DEFAULT_AUCTION_INTERVAL,
     LOAN_GRACE_PERIOD_SECONDS,
+    OFFER_TIMEOUT_SECONDS,
     LOAN_INTEREST_RATE,
     MINIGAME_COOLDOWN_SECONDS,
     PRAY_MAX_PENALTY,
@@ -262,6 +263,29 @@ class OPAuction(commands.Cog):
         """Return whether overdue debt blocks a user from selling characters."""
         return await self.debt_is_overdue(user_id)
 
+    async def expire_pending_offers(self, timeout: int) -> None:
+        """Remove unanswered trade and loan offers after their response window ends."""
+        now = utc_timestamp()
+        pending_loans = await self.config.pending_loans()
+        expired_loans = [
+            user_id for user_id, loan in pending_loans.items()
+            if now - int(loan.get("created_at", now)) >= timeout
+        ]
+        for user_id in expired_loans:
+            pending_loans.pop(user_id, None)
+        if expired_loans:
+            await self.config.pending_loans.set(pending_loans)
+
+        pending_trades = await self.config.pending_trades()
+        expired_trades = [
+            user_id for user_id, trade in pending_trades.items()
+            if now - int(trade.get("created_at", now)) >= timeout
+        ]
+        for user_id in expired_trades:
+            pending_trades.pop(user_id, None)
+        if expired_trades:
+            await self.config.pending_trades.set(pending_trades)
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         """Listen only in the configured auction channel for bid messages."""
@@ -319,6 +343,12 @@ class OPAuction(commands.Cog):
             if not isinstance(channel, discord.TextChannel):
                 return
 
+            if utc_timestamp() - int(loan.get("created_at", 0) or 0) >= OFFER_TIMEOUT_SECONDS:
+                pending_loans.pop(str(payload.user_id), None)
+                await self.config.pending_loans.set(pending_loans)
+                await channel.send(f"<@{payload.user_id}>'s loan offer expired after one minute.")
+                return
+
             if str(payload.emoji) == "❌":
                 pending_loans.pop(str(payload.user_id), None)
                 await self.config.pending_loans.set(pending_loans)
@@ -351,6 +381,12 @@ class OPAuction(commands.Cog):
             except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                 return
         if not isinstance(channel, discord.TextChannel):
+            return
+
+        if utc_timestamp() - int(trade.get("created_at", 0) or 0) >= OFFER_TIMEOUT_SECONDS:
+            pending_trades.pop(str(offerer_id), None)
+            await self.config.pending_trades.set(pending_trades)
+            await channel.send(f"<@{offerer_id}>'s trade offer expired after one minute.")
             return
 
         if str(payload.emoji) == "❌":
@@ -628,36 +664,59 @@ class OPAuction(commands.Cog):
                 )
             )
 
-        offered_character = self.characters.get_by_name(clean_name(parts[0]))
-        if not offered_character:
-            return await ctx.send(embed=AuctionEmbeds.error("I could not find the character you are offering."))
-
-        offered_id = int(offered_character["id"])
-        if self.characters.owner_of(offered_id) != ctx.author.id:
-            return await ctx.send(embed=AuctionEmbeds.error("You do not own the character you are offering."))
-
         requested_character = None
         requested_id = None
         cash_amount = 0
         offerer_fee = 0
         recipient_fee = 0
         trade_type = "swap"
+        if parts[0].isdigit() and parts[1].isdigit():
+            return await ctx.send(embed=AuctionEmbeds.error("A trade must include at least one character."))
+
         if parts[1].isdigit():
+            offered_character = self.characters.get_by_name(clean_name(parts[0]))
+            if not offered_character:
+                return await ctx.send(embed=AuctionEmbeds.error("I could not find the character you are offering."))
+            offered_id = int(offered_character["id"])
+            if self.characters.owner_of(offered_id) != ctx.author.id:
+                return await ctx.send(embed=AuctionEmbeds.error("You do not own the character you are offering."))
             cash_amount = int(parts[1])
             if cash_amount < 1:
                 return await ctx.send(embed=AuctionEmbeds.error("The cash amount must be at least ฿1."))
             if await self.economy.available_balance(member.id) < cash_amount:
                 return await ctx.send(embed=AuctionEmbeds.error(f"{member.mention} does not have enough available beri."))
             trade_type = "sale"
-        else:
+        elif parts[0].isdigit():
             requested_character = self.characters.get_by_name(clean_name(parts[1]))
             if not requested_character:
-                return await ctx.send(embed=AuctionEmbeds.error("I could not find the requested character."))
+                return await ctx.send(embed=AuctionEmbeds.error("I could not find the character you want to buy."))
+            offered_character = requested_character
+            offered_id = int(offered_character["id"])
+            if self.characters.owner_of(offered_id) != member.id:
+                return await ctx.send(embed=AuctionEmbeds.error(f"{member.mention} does not own that character."))
+            cash_amount = int(parts[0])
+            if cash_amount < 1:
+                return await ctx.send(embed=AuctionEmbeds.error("The cash amount must be at least ฿1."))
+            if await self.economy.available_balance(ctx.author.id) < cash_amount:
+                return await ctx.send(embed=AuctionEmbeds.error("You do not have enough available beri for that offer."))
+            trade_type = "purchase"
+        else:
+            first_character = self.characters.get_by_name(clean_name(parts[0]))
+            second_character = self.characters.get_by_name(clean_name(parts[1]))
+            if not first_character or not second_character:
+                return await ctx.send(embed=AuctionEmbeds.error("I could not find one of the requested characters."))
+
+            if self.characters.owner_of(int(first_character["id"])) == ctx.author.id and self.characters.owner_of(int(second_character["id"])) == member.id:
+                offered_character, requested_character = first_character, second_character
+            elif self.characters.owner_of(int(first_character["id"])) == member.id and self.characters.owner_of(int(second_character["id"])) == ctx.author.id:
+                offered_character, requested_character = second_character, first_character
+            else:
+                return await ctx.send(embed=AuctionEmbeds.error("Each member must own one of the characters in the swap."))
+
+            offered_id = int(offered_character["id"])
             requested_id = int(requested_character["id"])
             if offered_id == requested_id:
                 return await ctx.send(embed=AuctionEmbeds.error("A trade must contain two different characters."))
-            if self.characters.owner_of(requested_id) != member.id:
-                return await ctx.send(embed=AuctionEmbeds.error(f"{member.mention} does not own the requested character."))
 
             last_sale_prices = await self.config.last_sale_prices()
             offered_value = int(last_sale_prices.get(str(offered_id), 0) or 0)
@@ -705,12 +764,19 @@ class OPAuction(commands.Cog):
                 f"The Auction House takes 10% of both characters' combined last sale value, split evenly: "
                 f"{format_berries(offerer_fee)} from you and {format_berries(recipient_fee)} from {member.mention}"
             )
-        else:
+        elif trade_type == "sale":
             house_cut = round(cash_amount * 0.40)
             seller_amount = cash_amount - house_cut
             detail = (
                 f"**{offered_character['name']}** for {format_berries(cash_amount)}. The Auction House takes "
                 f"40% ({format_berries(house_cut)}); you receive {format_berries(seller_amount)}"
+            )
+        else:
+            house_cut = round(cash_amount * 0.40)
+            seller_amount = cash_amount - house_cut
+            detail = (
+                f"{format_berries(cash_amount)} for **{offered_character['name']}**. The Auction House takes "
+                f"40% ({format_berries(house_cut)}); {member.mention} receives {format_berries(seller_amount)}"
             )
         offer_message = await ctx.send(
             embed=AuctionEmbeds.success(
@@ -745,7 +811,11 @@ class OPAuction(commands.Cog):
             pending_trades = await self.config.pending_trades()
             if str(member.id) not in pending_trades:
                 return await ctx.send(embed=AuctionEmbeds.error("That trade offer has already been handled."))
-            if self.characters.owner_of(offered_id) != member.id:
+            character_seller_id = ctx.author.id if trade_type == "purchase" else member.id
+            character_buyer_id = member.id if trade_type == "purchase" else ctx.author.id
+            cash_buyer_id = member.id if trade_type == "purchase" else ctx.author.id
+            cash_seller_id = ctx.author.id if trade_type == "purchase" else member.id
+            if self.characters.owner_of(offered_id) != character_seller_id:
                 return await ctx.send(embed=AuctionEmbeds.error("One of the offered characters is no longer owned by the trading member."))
             if trade_type == "swap" and self.characters.owner_of(requested_id) != ctx.author.id:
                 return await ctx.send(embed=AuctionEmbeds.error("One of the offered characters is no longer owned by the trading member."))
@@ -753,8 +823,8 @@ class OPAuction(commands.Cog):
                 return await ctx.send(embed=AuctionEmbeds.error("The offering member no longer has enough beri for the trade fee."))
             if trade_type == "swap" and await self.economy.available_balance(ctx.author.id) < recipient_fee:
                 return await ctx.send(embed=AuctionEmbeds.error("You no longer have enough beri for the trade fee."))
-            if trade_type == "sale" and await self.economy.available_balance(ctx.author.id) < cash_amount:
-                return await ctx.send(embed=AuctionEmbeds.error("You no longer have enough available beri to buy this character."))
+            if trade_type in {"sale", "purchase"} and await self.economy.available_balance(cash_buyer_id) < cash_amount:
+                return await ctx.send(embed=AuctionEmbeds.error("The buyer no longer has enough available beri to buy this character."))
 
             queue = await self.config.queue()
             current = await self.auction.get_current_auction()
@@ -764,10 +834,10 @@ class OPAuction(commands.Cog):
             if offered_id in busy_ids or (requested_id is not None and requested_id in busy_ids):
                 return await ctx.send(embed=AuctionEmbeds.error("Characters in the queue or live auction cannot be traded."))
 
-            await self.economy.remove_character(member.id, offered_id)
-            await self.economy.add_character(ctx.author.id, offered_id)
-            self.characters.assign(offered_id, ctx.author.id)
             if trade_type == "swap":
+                await self.economy.remove_character(member.id, offered_id)
+                await self.economy.add_character(ctx.author.id, offered_id)
+                self.characters.assign(offered_id, ctx.author.id)
                 await self.economy.remove_character(ctx.author.id, requested_id)
                 await self.economy.add_character(member.id, requested_id)
                 self.characters.assign(requested_id, member.id)
@@ -780,8 +850,11 @@ class OPAuction(commands.Cog):
             else:
                 house_cut = round(cash_amount * 0.40)
                 seller_amount = cash_amount - house_cut
-                await self.economy.adjust_balance(ctx.author.id, -cash_amount)
-                await self.economy.deposit(member.id, seller_amount)
+                await self.economy.remove_character(character_seller_id, offered_id)
+                await self.economy.add_character(character_buyer_id, offered_id)
+                self.characters.assign(offered_id, character_buyer_id)
+                await self.economy.adjust_balance(cash_buyer_id, -cash_amount)
+                await self.economy.deposit(cash_seller_id, seller_amount)
                 vault_balance = await self.config.total_fees()
                 await self.config.total_fees.set(vault_balance + house_cut)
 
@@ -811,8 +884,10 @@ class OPAuction(commands.Cog):
                 f"{format_berries(house_cut)} in trade fees."
             )
         else:
-            detail = f"{ctx.author.mention} bought **{offered_character['name']}** from {member.mention} for {format_berries(cash_amount)}.\nAuction House cut: **{format_berries(house_cut)}**"
-            result = f"Trade complete. {ctx.author.mention} received **{offered_character['name']}**; {member.mention} received {format_berries(seller_amount)}. The Auction House collected {format_berries(house_cut)}."
+            buyer_text = member.mention if trade_type == "purchase" else ctx.author.mention
+            seller_text = ctx.author.mention if trade_type == "purchase" else member.mention
+            detail = f"{buyer_text} bought **{offered_character['name']}** from {seller_text} for {format_berries(cash_amount)}.\nAuction House cut: **{format_berries(house_cut)}**"
+            result = f"Trade complete. {buyer_text} received **{offered_character['name']}**; {seller_text} received {format_berries(seller_amount)}. The Auction House collected {format_berries(house_cut)}."
         await self.log_transaction("🤝 Auction House Trade", detail)
         await ctx.send(embed=AuctionEmbeds.success(result))
 

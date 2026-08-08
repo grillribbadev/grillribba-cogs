@@ -27,6 +27,7 @@ from .constants import (
     MAX_ANTI_SNIPE,
     MINIMUM_BID_INCREMENT,
     NO_BID_CLOSE_SECONDS,
+    OFFER_TIMEOUT_SECONDS,
     POOL_STARTING_BIDS,
     RARITY_WEIGHTS,
 )
@@ -90,6 +91,8 @@ class AuctionManager:
         """Run one iteration of the auction scheduling/countdown logic."""
         if not await self.is_active_runner():
             return
+
+        await self.cog.expire_pending_offers(OFFER_TIMEOUT_SECONDS)
 
         if not await self.config.auction_running():
             return
