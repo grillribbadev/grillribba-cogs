@@ -56,6 +56,7 @@ class OPAuction(commands.Cog):
             "auction_interval": DEFAULT_AUCTION_INTERVAL,
             "current_auction": {},
             "auction_runner_id": None,
+            "character_roster": None,
             "queue": [],
             "last_auction_started": 0,
             "blocked_users": [],
@@ -89,6 +90,12 @@ class OPAuction(commands.Cog):
 
     async def cog_load(self):
         await self.auction.activate_runner()
+        saved_roster = await self.config.character_roster()
+        if saved_roster is None:
+            await self.config.character_roster.set(self.characters.all())
+        elif not self.characters.load_roster(saved_roster):
+            log.warning("Saved OPAuction character roster was invalid; using the bundled roster.")
+            await self.config.character_roster.set(self.characters.all())
         # self.owners is in-memory only; without this, every character looks
         # unowned after a restart until the destructive `wipe` command runs.
         await self.characters.rebuild_owners()
@@ -794,6 +801,7 @@ class OPAuction(commands.Cog):
         character = self.characters.add(name=name, rarity=rarity, arc=arc, wiki=wiki)
         if not character:
             return await ctx.send(embed=AuctionEmbeds.error("That character already exists or the name was empty."))
+        await self.config.character_roster.set(self.characters.all())
         await ctx.send(embed=AuctionEmbeds.success(f"Added {character['name']} to the roster."))
 
     @auction_group.command(name="grantcharacter", aliases=["grantchar"])
@@ -962,6 +970,7 @@ class OPAuction(commands.Cog):
             return await ctx.send(embed=AuctionEmbeds.error("I could not find that character in the roster."))
 
         self.characters.remove(int(target["id"]))
+        await self.config.character_roster.set(self.characters.all())
         await ctx.send(embed=AuctionEmbeds.success(f"Removed {target['name']} from the roster."))
 
     @auction_group.command(name="exportcharacters", aliases=["exportchars", "exportjson"])
@@ -985,6 +994,7 @@ class OPAuction(commands.Cog):
         if not self.characters.import_json(payload):
             return await ctx.send(embed=AuctionEmbeds.error("The supplied payload is not a valid character JSON array."))
 
+        await self.config.character_roster.set(self.characters.all())
         await ctx.send(embed=AuctionEmbeds.success("Character roster imported successfully."))
 
     @auction_group.command(name="wipe", aliases=["resetusers", "reset"])

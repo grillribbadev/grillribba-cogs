@@ -37,19 +37,30 @@ class CharacterManager:
         with path.open("r", encoding="utf-8") as fp:
             data = json.load(fp)
 
-        self.characters = {}
+        self.load_roster(data)
 
-        seen_ids: set[int] = set()
-        for character in data:
-            character_id = int(character["id"])
-            if character_id in seen_ids:
+    def load_roster(self, raw: list[dict]) -> bool:
+        """Load a validated roster without writing to the deployed cog directory."""
+        if not isinstance(raw, list):
+            return False
+
+        imported: dict[int, dict] = {}
+        for item in raw:
+            if not isinstance(item, dict) or "id" not in item or "name" not in item:
+                return False
+            character_id = int(item["id"])
+            if character_id in imported:
                 continue
-            seen_ids.add(character_id)
-            char = dict(character)
-            char.setdefault("rarity", "Common")
-            char.setdefault("arc", "Unknown")
-            char.setdefault("wiki", "")
-            self.characters[character_id] = char
+            imported[character_id] = {
+                "id": character_id,
+                "name": str(item["name"]),
+                "rarity": str(item.get("rarity", "Common")),
+                "arc": str(item.get("arc", "Unknown")),
+                "wiki": str(item.get("wiki", "")),
+            }
+
+        self.characters = imported
+        return True
 
     def save(self):
         """Persist the canonical roster back to characters.json."""
@@ -72,25 +83,8 @@ class CharacterManager:
             raw = json.loads(payload.lstrip("\ufeff"))
         except (TypeError, json.JSONDecodeError):
             return False
-        if not isinstance(raw, list):
+        if not self.load_roster(raw):
             return False
-
-        imported: dict[int, dict] = {}
-        for item in raw:
-            if not isinstance(item, dict):
-                return False
-            if "id" not in item or "name" not in item:
-                return False
-            character_id = int(item["id"])
-            imported[character_id] = {
-                "id": character_id,
-                "name": str(item["name"]),
-                "rarity": str(item.get("rarity", "Common")),
-                "arc": str(item.get("arc", "Unknown")),
-                "wiki": str(item.get("wiki", "")),
-            }
-
-        self.characters = imported
         self.save()
         return True
 
