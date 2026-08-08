@@ -265,6 +265,40 @@ class OPAuction(commands.Cog):
         reserved = await self.economy.reconcile_reservation(target.id)
         await ctx.send(embed=AuctionEmbeds.balance(target, balance, reserved))
 
+    @auction_group.command(name="add")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def add_beri(self, ctx, amount: int, member: discord.Member):
+        """Add beri to a registered player's auction balance."""
+        if amount < 1:
+            return await ctx.send(embed=AuctionEmbeds.error("Amount must be at least ฿1."))
+        if not await self.economy.exists(member.id):
+            return await ctx.send(embed=AuctionEmbeds.error("That member has not started the auction game."))
+
+        await self.economy.deposit(member.id, amount)
+        await self.record_transaction("admin_add", user_id=member.id, amount=amount)
+        await ctx.send(embed=AuctionEmbeds.success(f"Added {format_berries(amount)} to {member.mention}."))
+
+    @auction_group.command(name="subtract", aliases=["sub"])
+    @commands.admin_or_permissions(manage_guild=True)
+    async def subtract_beri(self, ctx, amount: int, member: discord.Member):
+        """Subtract spendable beri from a registered player's auction balance."""
+        if amount < 1:
+            return await ctx.send(embed=AuctionEmbeds.error("Amount must be at least ฿1."))
+        if not await self.economy.exists(member.id):
+            return await ctx.send(embed=AuctionEmbeds.error("That member has not started the auction game."))
+
+        available = await self.economy.available_balance(member.id)
+        if available < amount:
+            return await ctx.send(
+                embed=AuctionEmbeds.error(
+                    f"{member.mention} has only {format_berries(available)} available to subtract."
+                )
+            )
+
+        await self.economy.adjust_balance(member.id, -amount)
+        await self.record_transaction("admin_subtract", user_id=member.id, amount=amount)
+        await ctx.send(embed=AuctionEmbeds.success(f"Subtracted {format_berries(amount)} from {member.mention}."))
+
     @auction_group.command(name="daily")
     async def daily(self, ctx):
         """Claim the daily beri payment every 24 hours."""
