@@ -248,6 +248,70 @@ class OPAuction(commands.Cog):
         """Ignore message deletions for anti-troll safety."""
         return
 
+    @commands.Cog.listener()
+    async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
+        """Accept or decline a pending trade from its offer-message reactions."""
+        if self.bot.user and payload.user_id == self.bot.user.id:
+            return
+        if str(payload.emoji) not in {"✅", "❌"}:
+            return
+
+        pending_trades = await self.config.pending_trades()
+        offerer_id = next(
+            (
+                int(user_id)
+                for user_id, trade in pending_trades.items()
+                if int(trade.get("message_id", 0) or 0) == payload.message_id
+            ),
+            None,
+        )
+        if offerer_id is None:
+            return
+
+        trade = pending_trades[str(offerer_id)]
+        if int(trade.get("recipient_id", 0)) != payload.user_id:
+            return
+
+        channel = self.bot.get_channel(payload.channel_id)
+        if channel is None:
+            try:
+                channel = await self.bot.fetch_channel(payload.channel_id)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                return
+        if not isinstance(channel, discord.TextChannel):
+            return
+
+        if str(payload.emoji) == "❌":
+            pending_trades.pop(str(offerer_id), None)
+            await self.config.pending_trades.set(pending_trades)
+            await channel.send(f"<@{payload.user_id}> declined <@{offerer_id}>'s trade offer.")
+            return
+
+        offerer = self.bot.get_user(offerer_id)
+        recipient = self.bot.get_user(payload.user_id)
+        if not offerer:
+            try:
+                offerer = await self.bot.fetch_user(offerer_id)
+            except (discord.NotFound, discord.HTTPException):
+                return
+        if not recipient:
+            try:
+                recipient = await self.bot.fetch_user(payload.user_id)
+            except (discord.NotFound, discord.HTTPException):
+                return
+        if not offerer or not recipient:
+            return
+
+        class ReactionContext:
+            def __init__(self, author, response_channel):
+                self.author = author
+                self._response_channel = response_channel
+
+            async def send(self, *args, **kwargs):
+                return await self._response_channel.send(*args, **kwargs)
+
+        await self._accept_trade(ReactionContext(recipient, channel), offerer)
+
     @commands.group(name="auction", invoke_without_command=True)
     async def auction_group(self, ctx):
         """Auction commands."""
@@ -494,7 +558,7 @@ class OPAuction(commands.Cog):
             return await ctx.send(embed=AuctionEmbeds.error("Characters in the queue or live auction cannot be traded."))
 
         pending_trades = await self.config.pending_trades()
-        pending_trades[str(ctx.author.id)] = {
+        trade = {
             "recipient_id": member.id,
             "offered_character_id": offered_id,
             "requested_character_id": requested_id,
@@ -504,7 +568,6 @@ class OPAuction(commands.Cog):
             "trade_type": trade_type,
             "created_at": utc_timestamp(),
         }
-        await self.config.pending_trades.set(pending_trades)
 
         if trade_type == "swap":
             detail = (
@@ -519,15 +582,22 @@ class OPAuction(commands.Cog):
                 f"**{offered_character['name']}** for {format_berries(cash_amount)}. The Auction House takes "
                 f"40% ({format_berries(house_cut)}); you receive {format_berries(seller_amount)}"
             )
-        await ctx.send(
+        offer_message = await ctx.send(
             embed=AuctionEmbeds.success(
                 f"Trade offer sent to {member.mention}: {detail}.\n"
-                f"They can accept with `.auction tradeaccept {ctx.author.mention}`."
+                "React with ✅ to accept or ❌ to decline."
             )
         )
+        trade["message_id"] = offer_message.id
+        pending_trades[str(ctx.author.id)] = trade
+        await self.config.pending_trades.set(pending_trades)
+        try:
+            await offer_message.add_reaction("✅")
+            await offer_message.add_reaction("❌")
+        except (discord.Forbidden, discord.HTTPException):
+            pass
 
-    @auction_group.command(name="tradeaccept")
-    async def trade_accept(self, ctx, member: discord.Member):
+    async def _accept_trade(self, ctx, member: discord.abc.User):
         """Accept a pending trade offer from another member."""
         pending_trades = await self.config.pending_trades()
         trade = pending_trades.get(str(member.id))
@@ -542,6 +612,9 @@ class OPAuction(commands.Cog):
         recipient_fee = int(trade.get("recipient_fee", 0) or 0)
         trade_type = trade.get("trade_type", "swap")
         async with self.auction._state_lock:
+            pending_trades = await self.config.pending_trades()
+            if str(member.id) not in pending_trades:
+                return await ctx.send(embed=AuctionEmbeds.error("That trade offer has already been handled."))
             if self.characters.owner_of(offered_id) != member.id:
                 return await ctx.send(embed=AuctionEmbeds.error("One of the offered characters is no longer owned by the trading member."))
             if trade_type == "swap" and self.characters.owner_of(requested_id) != ctx.author.id:
