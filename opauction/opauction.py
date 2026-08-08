@@ -455,19 +455,30 @@ class OPAuction(commands.Cog):
             return await ctx.send(embed=AuctionEmbeds.error("This character has no completed auction sale price yet."))
 
         payout = last_price // 2
+        vault_balance = await self.config.total_fees()
+        if vault_balance < payout:
+            return await ctx.send(
+                embed=AuctionEmbeds.error(
+                    f"The Auction House Vault has only {format_berries(vault_balance)} available for this buyback."
+                )
+            )
+
         await self.economy.deposit(ctx.author.id, payout)
         await self.economy.remove_character(ctx.author.id, character_id)
         self.characters.unassign(character_id)
+        await self.config.total_fees.set(vault_balance - payout)
         await self.record_transaction(
             "buyback",
             user_id=ctx.author.id,
             character_id=character_id,
             amount=payout,
+            vault_amount=payout,
         )
         await self.log_transaction(
             "🏦 Auction House Buyback",
             f"Character: **{character['name']}**\nSeller: {ctx.author.mention}\n"
-            f"Last sale: {format_berries(last_price)}\nBuyback payout: **{format_berries(payout)}**",
+            f"Last sale: {format_berries(last_price)}\nBuyback payout: **{format_berries(payout)}**\n"
+            f"Returned to the Auction House pool.",
         )
         await ctx.send(
             embed=AuctionEmbeds.success(
@@ -862,6 +873,8 @@ class OPAuction(commands.Cog):
             await self.economy.adjust_balance(user_id, -amount)
             await self.economy.add_character(user_id, character_id)
             self.characters.assign(character_id, user_id)
+            vault_amount = int(entry.get("vault_amount", amount) or 0)
+            await self.config.total_fees.set((await self.config.total_fees()) + vault_amount)
         elif kind == "sale":
             buyer_id = int(entry.get("buyer_id", 0) or 0)
             seller_id = int(entry.get("seller_id", 0) or 0)
@@ -872,6 +885,11 @@ class OPAuction(commands.Cog):
             if seller_id and await self.economy.available_balance(seller_id) < seller_share:
                 return "The seller's available balance is too low to reverse a sale."
 
+            vault_amount = int(entry.get("vault_amount", price - seller_share) or 0)
+            vault_balance = await self.config.total_fees()
+            if vault_balance < vault_amount:
+                return "The Auction House Vault no longer has enough balance to reverse this sale."
+
             if seller_id:
                 await self.economy.adjust_balance(seller_id, -seller_share)
             await self.economy.remove_character(buyer_id, character_id)
@@ -879,10 +897,10 @@ class OPAuction(commands.Cog):
             if seller_id:
                 await self.economy.add_character(seller_id, character_id)
                 self.characters.assign(character_id, seller_id)
-                fee = price - seller_share
-                await self.config.total_fees.set(max(0, await self.config.total_fees() - fee))
             else:
                 self.characters.unassign(character_id)
+
+            await self.config.total_fees.set(vault_balance - vault_amount)
 
             last_sale_prices = await self.config.last_sale_prices()
             last_sale_prices[str(character_id)] = int(entry.get("previous_sale_price", 0) or 0)

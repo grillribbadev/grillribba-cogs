@@ -208,8 +208,8 @@ class AuctionEmbeds:
         embed = discord.Embed(
             title="🏦 The Auction House Vault",
             description=(
-                f"The house has skimmed **{format_berries(total)}** in auction fees so far. 💰\n"
-                "Every queued sale pays a 5% cut straight into this vault."
+                f"Vault balance: **{format_berries(total)}** 💰\n"
+                "Queued sales contribute their 5% fee; pool sales contribute their full price."
             ),
             color=COLOR_DEFAULT,
         )
