@@ -60,6 +60,7 @@ class OPAuction(commands.Cog):
             "blocked_users": [],
             "total_fees": 0,
             "last_sale_prices": {},
+            "transaction_history": [],
             "next_auction_source": "queue",
             "last_auction_source": "pool",
             "forced_next_source": None,
@@ -134,6 +135,12 @@ class OPAuction(commands.Cog):
             await channel.send(embed=embed)
         except (discord.Forbidden, discord.HTTPException):
             pass
+
+    async def record_transaction(self, kind: str, **details) -> None:
+        """Store a bounded history of completed economy changes."""
+        history = await self.config.transaction_history()
+        history.append({"kind": kind, "timestamp": utc_timestamp(), "reversed": False, **details})
+        await self.config.transaction_history.set(history[-200:])
 
     async def notify_rarity_subscribers(self, channel: discord.TextChannel, rarity: str) -> None:
         """Mention users who opted in to this pool-auction rarity."""
@@ -243,15 +250,20 @@ class OPAuction(commands.Cog):
         await ctx.send(embed=AuctionEmbeds.success("Welcome to the auction!\nYou received ฿250."))
 
     @auction_group.command(name="balance", aliases=["wallet", "beri"])
-    async def balance(self, ctx):
-        """View your balance."""
+    async def balance(self, ctx, member: discord.Member = None):
+        """View your balance, or an admin can view another member's balance."""
+        target = member or ctx.author
+        if member and member.id != ctx.author.id:
+            permissions = ctx.author.guild_permissions if ctx.guild else None
+            if not permissions or not (permissions.administrator or permissions.manage_guild):
+                return await ctx.send(embed=AuctionEmbeds.error("Only administrators can view another member's balance."))
 
-        if not await self.economy.exists(ctx.author.id):
+        if not await self.economy.exists(target.id):
             return await ctx.send(embed=AuctionEmbeds.error("Use `.auction start` first."))
 
-        balance = await self.economy.balance(ctx.author.id)
-        reserved = await self.economy.reconcile_reservation(ctx.author.id)
-        await ctx.send(embed=AuctionEmbeds.balance(ctx.author, balance, reserved))
+        balance = await self.economy.balance(target.id)
+        reserved = await self.economy.reconcile_reservation(target.id)
+        await ctx.send(embed=AuctionEmbeds.balance(target, balance, reserved))
 
     @auction_group.command(name="daily")
     async def daily(self, ctx):
@@ -267,6 +279,7 @@ class OPAuction(commands.Cog):
                 )
             )
 
+        await self.record_transaction("daily", user_id=ctx.author.id, amount=250)
         await ctx.send(embed=AuctionEmbeds.success(f"You claimed your daily {format_berries(250)}."))
 
     @auction_group.command(name="ping")
@@ -411,6 +424,12 @@ class OPAuction(commands.Cog):
         await self.economy.deposit(ctx.author.id, payout)
         await self.economy.remove_character(ctx.author.id, character_id)
         self.characters.unassign(character_id)
+        await self.record_transaction(
+            "buyback",
+            user_id=ctx.author.id,
+            character_id=character_id,
+            amount=payout,
+        )
         await self.log_transaction(
             "🏦 Auction House Buyback",
             f"Character: **{character['name']}**\nSeller: {ctx.author.mention}\n"
@@ -725,7 +744,119 @@ class OPAuction(commands.Cog):
 
         await self.economy.add_character(member.id, character_id)
         self.characters.assign(character_id, member.id)
+        await self.record_transaction("grant", user_id=member.id, character_id=character_id)
         await ctx.send(embed=AuctionEmbeds.success(f"Granted **{character['name']}** to {member.mention}."))
+
+    @auction_group.command(name="audit")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def audit(self, ctx):
+        """Repair reservations and owner cache, then report duplicate collections."""
+        await self.rebuild_reservations()
+        users = await self.config.all_users()
+        claims: dict[int, list[int]] = {}
+        for user_id, data in users.items():
+            if not data.get("started"):
+                continue
+            for character_id in data.get("characters", []):
+                claims.setdefault(int(character_id), []).append(int(user_id))
+
+        await self.characters.rebuild_owners()
+        duplicates = sum(1 for owners in claims.values() if len(owners) > 1)
+        await ctx.send(
+            embed=AuctionEmbeds.success(
+                f"Audit completed. Reservations and owner cache were rebuilt. Duplicate collection claims found: {duplicates}."
+            )
+        )
+
+    @auction_group.command(name="repairlast")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def repair_last(self, ctx, count: int = 1):
+        """Safely reverse up to the requested number of latest transactions."""
+        if count < 1 or count > 50:
+            return await ctx.send(embed=AuctionEmbeds.error("Choose a transaction count from 1 to 50."))
+
+        history = await self.config.transaction_history()
+        reversed_count = 0
+        blocked_reason = None
+
+        for entry_index in range(len(history) - 1, -1, -1):
+            if history[entry_index].get("reversed"):
+                continue
+
+            error = await self._reverse_transaction(history[entry_index])
+            if error:
+                blocked_reason = error
+                break
+
+            history[entry_index]["reversed"] = True
+            reversed_count += 1
+            if reversed_count >= count:
+                break
+
+        if not reversed_count:
+            if blocked_reason:
+                return await ctx.send(embed=AuctionEmbeds.error(blocked_reason))
+            return await ctx.send(embed=AuctionEmbeds.error("There is no unreversed transaction in the ledger."))
+
+        await self.config.transaction_history.set(history)
+        detail = f" Reversed {reversed_count} transaction(s)."
+        if blocked_reason:
+            detail += f" Stopped: {blocked_reason}"
+        await ctx.send(embed=AuctionEmbeds.success(detail.strip()))
+
+    async def _reverse_transaction(self, entry: dict) -> str | None:
+        """Reverse one ledger entry, or return why its current state is unsafe."""
+        kind = entry.get("kind")
+        user_id = int(entry.get("user_id", 0) or 0)
+        character_id = int(entry.get("character_id", 0) or 0)
+        amount = int(entry.get("amount", 0) or 0)
+
+        if kind == "daily":
+            if await self.economy.available_balance(user_id) < amount:
+                return "The user's available balance is too low to reverse a daily claim."
+            await self.economy.adjust_balance(user_id, -amount)
+        elif kind == "grant":
+            if self.characters.owner_of(character_id) != user_id:
+                return "A granted character has changed owners and cannot be safely reversed."
+            await self.economy.remove_character(user_id, character_id)
+            self.characters.unassign(character_id)
+        elif kind == "buyback":
+            if self.characters.owned(character_id):
+                return "A buyback character is no longer in the pool and cannot be safely reversed."
+            if await self.economy.available_balance(user_id) < amount:
+                return "The seller's available balance is too low to reverse a buyback."
+            await self.economy.adjust_balance(user_id, -amount)
+            await self.economy.add_character(user_id, character_id)
+            self.characters.assign(character_id, user_id)
+        elif kind == "sale":
+            buyer_id = int(entry.get("buyer_id", 0) or 0)
+            seller_id = int(entry.get("seller_id", 0) or 0)
+            price = int(entry.get("price", 0) or 0)
+            seller_share = int(entry.get("seller_share", 0) or 0)
+            if self.characters.owner_of(character_id) != buyer_id:
+                return "A sold character has changed owners and cannot be safely reversed."
+            if seller_id and await self.economy.available_balance(seller_id) < seller_share:
+                return "The seller's available balance is too low to reverse a sale."
+
+            if seller_id:
+                await self.economy.adjust_balance(seller_id, -seller_share)
+            await self.economy.remove_character(buyer_id, character_id)
+            await self.economy.deposit(buyer_id, price)
+            if seller_id:
+                await self.economy.add_character(seller_id, character_id)
+                self.characters.assign(character_id, seller_id)
+                fee = price - seller_share
+                await self.config.total_fees.set(max(0, await self.config.total_fees() - fee))
+            else:
+                self.characters.unassign(character_id)
+
+            last_sale_prices = await self.config.last_sale_prices()
+            last_sale_prices[str(character_id)] = int(entry.get("previous_sale_price", 0) or 0)
+            await self.config.last_sale_prices.set(last_sale_prices)
+        else:
+            return "The latest transaction type cannot be safely reversed automatically."
+
+        return None
 
     @auction_group.command(name="removecharacter", aliases=["rmchar"])
     @commands.admin_or_permissions(manage_guild=True)
@@ -775,6 +906,7 @@ class OPAuction(commands.Cog):
         await self.config.forced_next_character_id.set(None)
         await self.config.total_fees.set(0)
         await self.config.last_sale_prices.set({})
+        await self.config.transaction_history.set([])
 
         users = await self.config.all_users()
         for user_id in list(users.keys()):

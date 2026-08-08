@@ -603,6 +603,7 @@ class AuctionManager:
                 await self.cog.economy.add_character(winner_id, character_id)
                 self.cog.characters.assign(character_id, winner_id)
                 last_sale_prices = await self.config.last_sale_prices()
+                previous_sale_price = int(last_sale_prices.get(str(character_id), 0) or 0)
                 last_sale_prices[str(character_id)] = price
                 await self.config.last_sale_prices.set(last_sale_prices)
 
@@ -613,6 +614,16 @@ class AuctionManager:
                     await self.cog.economy.deposit(seller_id, seller_share)
                     await self.cog.economy.remove_character(seller_id, character_id)
                     await self._record_fee(fee)
+
+                await self.cog.record_transaction(
+                    "sale",
+                    buyer_id=winner_id,
+                    seller_id=int(seller_id or 0),
+                    character_id=character_id,
+                    price=price,
+                    seller_share=seller_share if seller_id else 0,
+                    previous_sale_price=previous_sale_price,
+                )
 
                 winner_text = winner.mention if winner else f"<@{winner_id}>"
                 seller_text = f"<@{seller_id}>" if seller_id else "🏛️ The Auction House"
