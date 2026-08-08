@@ -346,7 +346,7 @@ class OPAuction(commands.Cog):
                 key=lambda entry: entry[1],
                 reverse=True,
             )
-            view = BalanceLeaderboardView(entries)
+            view = BalanceLeaderboardView(entries, owner_id=ctx.author.id)
             return await ctx.send(
                 embed=AuctionEmbeds.leaderboard(entries, page=0),
                 view=view,
