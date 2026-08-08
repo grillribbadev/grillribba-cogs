@@ -426,32 +426,38 @@ class OPAuction(commands.Cog):
         )
 
     @auction_group.command(name="collection")
-    async def collection(self, ctx):
-        """List the characters owned by the caller."""
-        if not await self.economy.exists(ctx.author.id):
+    async def collection(self, ctx, member: discord.Member = None):
+        """List your collection, or an administrator can view another member's."""
+        target = member or ctx.author
+        if member and member.id != ctx.author.id:
+            permissions = ctx.author.guild_permissions if ctx.guild else None
+            if not permissions or not (permissions.administrator or permissions.manage_guild):
+                return await ctx.send(embed=AuctionEmbeds.error("Only administrators can view another member's collection."))
+
+        if not await self.economy.exists(target.id):
             return await ctx.send("Use `.auction start` first.")
 
         queue = await self.config.queue()
         queued_ids = {
             int(entry.get("character_id", 0))
             for entry in queue
-            if int(entry.get("seller_id", 0) or 0) == ctx.author.id
+            if int(entry.get("seller_id", 0) or 0) == target.id
         }
         current = await self.auction.get_current_auction()
         live_character_id = (
             int(current.get("character_id", 0))
-            if current and int(current.get("seller_id", 0) or 0) == ctx.author.id
+            if current and int(current.get("seller_id", 0) or 0) == target.id
             else 0
         )
 
         characters = []
-        for character_id in await self.economy.get_characters(ctx.author.id):
+        for character_id in await self.economy.get_characters(target.id):
             character = self.characters.get(character_id)
             if character:
                 status = "Up for auction" if int(character_id) == live_character_id else "Queued for sale" if int(character_id) in queued_ids else "Owned"
                 characters.append((character, status))
 
-        await ctx.send(embed=AuctionEmbeds.collection(ctx.author, characters))
+        await ctx.send(embed=AuctionEmbeds.collection(target, characters))
 
     @auction_group.command(name="view")
     async def view_character(self, ctx, *, name: str):
