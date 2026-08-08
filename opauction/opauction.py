@@ -57,6 +57,7 @@ class OPAuction(commands.Cog):
             "current_auction": {},
             "auction_runner_id": None,
             "character_roster": None,
+            "pending_trades": {},
             "queue": [],
             "last_auction_started": 0,
             "blocked_users": [],
@@ -396,6 +397,156 @@ class OPAuction(commands.Cog):
                 status,
                 last_sale_price,
                 image_url=image_url,
+            )
+        )
+
+    @auction_group.command(name="owner", aliases=["whoowns"])
+    async def character_owner(self, ctx, *, name: str):
+        """Show the member who currently owns a character."""
+        character = self.characters.get_by_name(clean_name(name))
+        if not character:
+            return await ctx.send(embed=AuctionEmbeds.error("I could not find that character."))
+
+        owner_id = self.characters.owner_of(int(character["id"]))
+        if owner_id:
+            return await ctx.send(
+                embed=AuctionEmbeds.success(f"**{character['name']}** is currently owned by <@{owner_id}>.")
+            )
+
+        await ctx.send(
+            embed=AuctionEmbeds.success(
+                f"**{character['name']}** is currently unowned and belongs to the Auction House pool."
+            )
+        )
+
+    @auction_group.command(name="trade")
+    async def trade(self, ctx, member: discord.Member, *, offer: str):
+        """Offer one character and beri for another member's character."""
+        if member.id == ctx.author.id:
+            return await ctx.send(embed=AuctionEmbeds.error("You cannot trade with yourself."))
+        if not await self.economy.exists(ctx.author.id) or not await self.economy.exists(member.id):
+            return await ctx.send(embed=AuctionEmbeds.error("Both members must use `.auction start` before trading."))
+
+        parts = [part.strip() for part in offer.split("|")]
+        if len(parts) != 3 or not parts[2].isdigit():
+            return await ctx.send(
+                embed=AuctionEmbeds.error(
+                    "Use `.auction trade @member Your Character | Their Character | cash amount`."
+                )
+            )
+
+        offered_character = self.characters.get_by_name(clean_name(parts[0]))
+        requested_character = self.characters.get_by_name(clean_name(parts[1]))
+        cash_amount = int(parts[2])
+        if not offered_character or not requested_character:
+            return await ctx.send(embed=AuctionEmbeds.error("I could not find one of those characters."))
+        if cash_amount < 1:
+            return await ctx.send(embed=AuctionEmbeds.error("The cash amount must be at least ฿1."))
+
+        offered_id = int(offered_character["id"])
+        requested_id = int(requested_character["id"])
+        if offered_id == requested_id:
+            return await ctx.send(embed=AuctionEmbeds.error("A trade must contain two different characters."))
+        if self.characters.owner_of(offered_id) != ctx.author.id:
+            return await ctx.send(embed=AuctionEmbeds.error("You do not own the character you are offering."))
+        if self.characters.owner_of(requested_id) != member.id:
+            return await ctx.send(embed=AuctionEmbeds.error(f"{member.mention} does not own the requested character."))
+        if await self.economy.available_balance(ctx.author.id) < cash_amount:
+            return await ctx.send(embed=AuctionEmbeds.error("You do not have enough available beri for that trade."))
+
+        queue = await self.config.queue()
+        current = await self.auction.get_current_auction()
+        busy_ids = {int(entry.get("character_id", 0)) for entry in queue}
+        if current:
+            busy_ids.add(int(current.get("character_id", 0)))
+        if offered_id in busy_ids or requested_id in busy_ids:
+            return await ctx.send(embed=AuctionEmbeds.error("Characters in the queue or live auction cannot be traded."))
+
+        pending_trades = await self.config.pending_trades()
+        pending_trades[str(ctx.author.id)] = {
+            "recipient_id": member.id,
+            "offered_character_id": offered_id,
+            "requested_character_id": requested_id,
+            "cash_amount": cash_amount,
+            "created_at": utc_timestamp(),
+        }
+        await self.config.pending_trades.set(pending_trades)
+
+        house_cut = round(cash_amount * 0.40)
+        recipient_amount = cash_amount - house_cut
+        await ctx.send(
+            embed=AuctionEmbeds.success(
+                f"Trade offer sent to {member.mention}: **{offered_character['name']}** plus "
+                f"{format_berries(cash_amount)} for **{requested_character['name']}**.\n"
+                f"The Auction House takes 40% ({format_berries(house_cut)}); {member.mention} receives "
+                f"{format_berries(recipient_amount)}. They can accept with `.auction tradeaccept {ctx.author.mention}`."
+            )
+        )
+
+    @auction_group.command(name="tradeaccept")
+    async def trade_accept(self, ctx, member: discord.Member):
+        """Accept a pending trade offer from another member."""
+        pending_trades = await self.config.pending_trades()
+        trade = pending_trades.get(str(member.id))
+        if not trade or int(trade.get("recipient_id", 0)) != ctx.author.id:
+            return await ctx.send(embed=AuctionEmbeds.error("That member has no pending trade offer for you."))
+
+        offered_id = int(trade["offered_character_id"])
+        requested_id = int(trade["requested_character_id"])
+        cash_amount = int(trade["cash_amount"])
+        async with self.auction._state_lock:
+            if self.characters.owner_of(offered_id) != member.id or self.characters.owner_of(requested_id) != ctx.author.id:
+                return await ctx.send(embed=AuctionEmbeds.error("One of the offered characters is no longer owned by the trading member."))
+            if await self.economy.available_balance(member.id) < cash_amount:
+                return await ctx.send(embed=AuctionEmbeds.error("The offering member no longer has enough available beri."))
+
+            queue = await self.config.queue()
+            current = await self.auction.get_current_auction()
+            busy_ids = {int(entry.get("character_id", 0)) for entry in queue}
+            if current:
+                busy_ids.add(int(current.get("character_id", 0)))
+            if offered_id in busy_ids or requested_id in busy_ids:
+                return await ctx.send(embed=AuctionEmbeds.error("Characters in the queue or live auction cannot be traded."))
+
+            house_cut = round(cash_amount * 0.40)
+            recipient_amount = cash_amount - house_cut
+            await self.economy.adjust_balance(member.id, -cash_amount)
+            await self.economy.deposit(ctx.author.id, recipient_amount)
+            vault_balance = await self.config.total_fees()
+            await self.config.total_fees.set(vault_balance + house_cut)
+
+            await self.economy.remove_character(member.id, offered_id)
+            await self.economy.remove_character(ctx.author.id, requested_id)
+            await self.economy.add_character(member.id, requested_id)
+            await self.economy.add_character(ctx.author.id, offered_id)
+            self.characters.assign(offered_id, ctx.author.id)
+            self.characters.assign(requested_id, member.id)
+
+            pending_trades.pop(str(member.id), None)
+            await self.config.pending_trades.set(pending_trades)
+            await self.record_transaction(
+                "trade",
+                offerer_id=member.id,
+                recipient_id=ctx.author.id,
+                offered_character_id=offered_id,
+                requested_character_id=requested_id,
+                cash_amount=cash_amount,
+                vault_amount=house_cut,
+            )
+
+        offered_character = self.characters.get(offered_id)
+        requested_character = self.characters.get(requested_id)
+        await self.log_transaction(
+            "🤝 Auction House Trade",
+            f"{member.mention} traded **{offered_character['name']}** plus {format_berries(cash_amount)} "
+            f"for **{requested_character['name']}** from {ctx.author.mention}.\n"
+            f"Auction House cut: **{format_berries(house_cut)}**",
+        )
+        await ctx.send(
+            embed=AuctionEmbeds.success(
+                f"Trade complete. {ctx.author.mention} received **{offered_character['name']}** and "
+                f"{format_berries(recipient_amount)}; {member.mention} received **{requested_character['name']}**. "
+                f"The Auction House collected {format_berries(house_cut)}."
             )
         )
 
@@ -1079,6 +1230,7 @@ class OPAuction(commands.Cog):
         await self.config.total_fees.set(0)
         await self.config.last_sale_prices.set({})
         await self.config.transaction_history.set([])
+        await self.config.pending_trades.set({})
 
         users = await self.config.all_users()
         for user_id in list(users.keys()):
