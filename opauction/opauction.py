@@ -1011,6 +1011,38 @@ class OPAuction(commands.Cog):
         await self.characters.rebuild_owners()
         await ctx.send(embed=AuctionEmbeds.success("All auction data, including the queue, has been wiped."))
 
+    @auction_group.command(name="wipeuser", aliases=["resetuser"])
+    @commands.admin_or_permissions(manage_guild=True)
+    async def wipe_user(self, ctx, member: discord.Member):
+        """Remove one member's auction account, collection, and queued listings."""
+        async with self.auction._state_lock:
+            current = await self.auction.get_current_auction()
+            if current:
+                live_seller_id = int(current.get("seller_id", 0) or 0)
+                highest_bidder_id = int(current.get("highest_bidder_id", 0) or 0)
+                if member.id in {live_seller_id, highest_bidder_id}:
+                    return await ctx.send(
+                        embed=AuctionEmbeds.error(
+                            "You cannot wipe this member while they are involved in the live auction."
+                        )
+                    )
+
+            queue = await self.config.queue()
+            remaining_queue = [
+                entry for entry in queue if int(entry.get("seller_id", 0) or 0) != member.id
+            ]
+            removed_listings = len(queue) - len(remaining_queue)
+            await self.config.queue.set(remaining_queue)
+
+            await self.config.user_from_id(member.id).clear()
+            await self.characters.rebuild_owners()
+
+        await ctx.send(
+            embed=AuctionEmbeds.success(
+                f"Wiped all Auction data for {member.mention}, including {removed_listings} queued listing(s)."
+            )
+        )
+
     @auction_group.command(name="channel")
     @commands.admin_or_permissions(manage_guild=True)
     async def set_channel(self, ctx, channel: discord.TextChannel):
