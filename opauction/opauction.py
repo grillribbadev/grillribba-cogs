@@ -14,6 +14,7 @@ from .characters import CharacterManager
 from .constants import (
     DEFAULT_AUCTION_DURATION,
     DEFAULT_AUCTION_INTERVAL,
+    LOAN_INTEREST_RATE,
     MINIGAME_COOLDOWN_SECONDS,
     PRAY_MAX_PENALTY,
     PRAY_MAX_REWARD,
@@ -60,6 +61,7 @@ class OPAuction(commands.Cog):
             "auction_runner_id": None,
             "character_roster": None,
             "pending_trades": {},
+            "pending_loans": {},
             "queue": [],
             "last_auction_started": 0,
             "blocked_users": [],
@@ -81,6 +83,7 @@ class OPAuction(commands.Cog):
             "last_daily": 0,
             "cooldowns": {},
             "ping_rarities": [],
+            "debt": 0,
         }
 
         self.config.register_global(**default_global)
@@ -252,10 +255,31 @@ class OPAuction(commands.Cog):
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
-        """Accept or decline a pending trade from its offer-message reactions."""
+        """Accept or decline pending trade and loan offers from message reactions."""
         if self.bot.user and payload.user_id == self.bot.user.id:
             return
         if str(payload.emoji) not in {"✅", "❌"}:
+            return
+
+        pending_loans = await self.config.pending_loans()
+        loan = pending_loans.get(str(payload.user_id))
+        if loan and int(loan.get("message_id", 0) or 0) == payload.message_id:
+            channel = self.bot.get_channel(payload.channel_id)
+            if channel is None:
+                try:
+                    channel = await self.bot.fetch_channel(payload.channel_id)
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    return
+            if not isinstance(channel, discord.TextChannel):
+                return
+
+            if str(payload.emoji) == "❌":
+                pending_loans.pop(str(payload.user_id), None)
+                await self.config.pending_loans.set(pending_loans)
+                await channel.send(f"<@{payload.user_id}> declined their Auction House loan offer.")
+                return
+
+            await self._accept_loan(payload.user_id, loan, channel)
             return
 
         pending_trades = await self.config.pending_trades()
@@ -363,7 +387,8 @@ class OPAuction(commands.Cog):
 
         balance = await self.economy.balance(target.id)
         reserved = await self.economy.reconcile_reservation(target.id)
-        await ctx.send(embed=AuctionEmbeds.balance(target, balance, reserved))
+        debt = await self.config.user_from_id(target.id).debt()
+        await ctx.send(embed=AuctionEmbeds.balance(target, balance, reserved, debt))
 
     @auction_group.command(name="add")
     @commands.admin_or_permissions(manage_guild=True)
@@ -957,6 +982,141 @@ class OPAuction(commands.Cog):
         await ctx.send(
             embed=AuctionEmbeds.success(
                 f"Withdrew {format_berries(amount)} from the Auction House Vault to {member.mention}."
+            )
+        )
+
+    @auction_group.command(name="loan")
+    async def loan(self, ctx, amount: int):
+        """Borrow beri from the Auction House Vault at 25 percent interest."""
+        if amount < 1:
+            return await ctx.send(embed=AuctionEmbeds.error("Loan amount must be at least ฿1."))
+        if not await self.economy.exists(ctx.author.id):
+            return await ctx.send(embed=AuctionEmbeds.error("Use `.auction start` first."))
+
+        async with self.auction._state_lock:
+            player = self.config.user_from_id(ctx.author.id)
+            existing_debt = int(await player.debt() or 0)
+            if existing_debt:
+                return await ctx.send(
+                    embed=AuctionEmbeds.error(
+                        f"You already owe {format_berries(existing_debt)}. Repay it before taking another loan."
+                    )
+                )
+            vault_balance = await self.config.total_fees()
+            if vault_balance < amount:
+                return await ctx.send(
+                    embed=AuctionEmbeds.error(
+                        f"The Auction House Vault can lend only {format_berries(vault_balance)} right now."
+                    )
+                )
+            debt = round(amount * (1 + LOAN_INTEREST_RATE))
+            pending_loans = await self.config.pending_loans()
+            if str(ctx.author.id) in pending_loans:
+                return await ctx.send(embed=AuctionEmbeds.error("You already have a loan offer waiting for a response."))
+
+        offer_message = await ctx.send(
+            embed=AuctionEmbeds.success(
+                f"Loan offer: receive **{format_berries(amount)}** now and repay **{format_berries(debt)}** "
+                f"at 25% interest.\nReact with ✅ to accept or ❌ to decline."
+            )
+        )
+        pending_loans = await self.config.pending_loans()
+        pending_loans[str(ctx.author.id)] = {
+            "amount": amount,
+            "debt": debt,
+            "message_id": offer_message.id,
+            "created_at": utc_timestamp(),
+        }
+        await self.config.pending_loans.set(pending_loans)
+        try:
+            await offer_message.add_reaction("✅")
+            await offer_message.add_reaction("❌")
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
+    async def _accept_loan(self, user_id: int, loan: dict, channel: discord.TextChannel) -> None:
+        """Issue a reaction-confirmed loan after rechecking all mutable state."""
+        amount = int(loan["amount"])
+        debt = int(loan["debt"])
+        async with self.auction._state_lock:
+            pending_loans = await self.config.pending_loans()
+            current_loan = pending_loans.get(str(user_id))
+            if not current_loan or int(current_loan.get("message_id", 0) or 0) != int(loan.get("message_id", 0) or 0):
+                return
+
+            player = self.config.user_from_id(user_id)
+            if int(await player.debt() or 0):
+                pending_loans.pop(str(user_id), None)
+                await self.config.pending_loans.set(pending_loans)
+                return await channel.send(f"<@{user_id}> already has outstanding loan debt; this offer was cancelled.")
+            vault_balance = await self.config.total_fees()
+            if vault_balance < amount:
+                pending_loans.pop(str(user_id), None)
+                await self.config.pending_loans.set(pending_loans)
+                return await channel.send(
+                    f"<@{user_id}>'s loan offer expired because the vault has only {format_berries(vault_balance)} available."
+                )
+
+            await self.config.total_fees.set(vault_balance - amount)
+            await self.economy.deposit(user_id, amount)
+            await player.debt.set(debt)
+            await self.record_transaction("loan", user_id=user_id, amount=amount, debt=debt)
+            pending_loans.pop(str(user_id), None)
+            await self.config.pending_loans.set(pending_loans)
+
+        await self.log_transaction(
+            "🏦 Auction House Loan",
+            f"Borrower: <@{user_id}>\nPrincipal: **{format_berries(amount)}**\n"
+            f"Debt due: **{format_berries(debt)}**\nInterest: **25%**",
+        )
+        await channel.send(
+            f"<@{user_id}> accepted the loan and received {format_berries(amount)}. "
+            f"Total debt: {format_berries(debt)}."
+        )
+
+    @auction_group.command(name="repayloan", aliases=["repay"])
+    async def repay_loan(self, ctx, amount: int = None):
+        """Repay all or part of your Auction House loan debt."""
+        if not await self.economy.exists(ctx.author.id):
+            return await ctx.send(embed=AuctionEmbeds.error("Use `.auction start` first."))
+
+        async with self.auction._state_lock:
+            player = self.config.user_from_id(ctx.author.id)
+            debt = int(await player.debt() or 0)
+            if debt < 1:
+                return await ctx.send(embed=AuctionEmbeds.error("You do not have an outstanding Auction House loan."))
+
+            repayment = debt if amount is None else amount
+            if repayment < 1:
+                return await ctx.send(embed=AuctionEmbeds.error("Repayment amount must be at least ฿1."))
+            repayment = min(repayment, debt)
+            available = await self.economy.available_balance(ctx.author.id)
+            if available < repayment:
+                return await ctx.send(
+                    embed=AuctionEmbeds.error(
+                        f"You have only {format_berries(available)} available to repay your loan."
+                    )
+                )
+
+            await self.economy.adjust_balance(ctx.author.id, -repayment)
+            await player.debt.set(debt - repayment)
+            vault_balance = await self.config.total_fees()
+            await self.config.total_fees.set(vault_balance + repayment)
+            await self.record_transaction(
+                "loan_repayment",
+                user_id=ctx.author.id,
+                amount=repayment,
+                remaining_debt=debt - repayment,
+            )
+
+        await self.log_transaction(
+            "🏦 Loan Repayment",
+            f"Borrower: {ctx.author.mention}\nRepaid: **{format_berries(repayment)}**\n"
+            f"Remaining debt: **{format_berries(debt - repayment)}**",
+        )
+        await ctx.send(
+            embed=AuctionEmbeds.success(
+                f"You repaid {format_berries(repayment)}. Remaining loan debt: {format_berries(debt - repayment)}."
             )
         )
 

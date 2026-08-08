@@ -44,6 +44,7 @@ INVALID_BID_LIMIT = 30
 #
 
 AUCTION_TAX = 0.05  # 5%
+LOAN_INTEREST_RATE = 0.25  # 25%
 
 #
 # Minigames (pray / steal)

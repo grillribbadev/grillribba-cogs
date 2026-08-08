@@ -210,7 +210,7 @@ class AuctionEmbeds:
         return embed
 
     @staticmethod
-    def balance(member: discord.Member, amount: int, reserved: int = 0) -> discord.Embed:
+    def balance(member: discord.Member, amount: int, reserved: int = 0, debt: int = 0) -> discord.Embed:
 
         embed = discord.Embed(
             title="💰 Balance",
@@ -221,7 +221,8 @@ class AuctionEmbeds:
             f"{member.mention}\n\n"
             f"Balance: **{format_berries(amount)}**\n"
             f"Reserved on current bid: **{format_berries(reserved)}**\n"
-            f"Available to bid: **{format_berries(max(0, amount - reserved))}**"
+            f"Available to bid: **{format_berries(max(0, amount - reserved))}**\n"
+            f"Loan debt: **{format_berries(debt)}**"
         )
 
         return embed
