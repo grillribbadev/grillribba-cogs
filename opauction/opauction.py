@@ -37,7 +37,7 @@ class OPAuction(commands.Cog):
     """One Piece Auction"""
 
     __author__ = "Grillribba"
-    __version__ = "1.1.0"
+    __version__ = "1.1.1"
 
     def __init__(self, bot):
         self.bot = bot
@@ -84,12 +84,28 @@ class OPAuction(commands.Cog):
         # unowned after a restart until the destructive `wipe` command runs.
         await self.characters.rebuild_owners()
 
+        for command in (self.auction_group, self.pray, self.steal):
+            command._buckets = commands.CooldownMapping()
+
     def cog_unload(self):
         self.auction_task.cancel()
 
     async def red_delete_data_for_user(self, **kwargs):
         """Redbot data cleanup hook."""
         pass
+
+    async def cog_command_error(self, ctx, error):
+        """Clear stale framework cooldowns left by older cog versions."""
+        original = getattr(error, "original", error)
+        if (
+            isinstance(original, commands.CommandOnCooldown)
+            and ctx.command
+            and ctx.command.name in {"pray", "steal"}
+        ):
+            ctx.command.reset_cooldown(ctx)
+            return await ctx.reinvoke(restart=False)
+
+        raise error
 
     async def is_blocked(self, user_id: int) -> bool:
         """Return True when a user is explicitly banned from live auction bidding."""

@@ -336,9 +336,6 @@ class AuctionManager:
                 await self.count_invalid_bid(state, bidder_id)
                 return False
 
-        if bidder_id in state.get("ignored_users", []):
-            return False
-
         if not await self.cog.economy.available_balance(bidder_id) >= bid:
             await self.count_invalid_bid(state, bidder_id)
             return False
@@ -398,13 +395,9 @@ class AuctionManager:
         return True
 
     async def count_invalid_bid(self, state: dict[str, Any], user_id: int) -> None:
-        """Track invalid bid attempts and ban a user from the current auction."""
+        """Track invalid bid attempts without locking the user out of the auction."""
         invalids = state.setdefault("invalid_counts", {})
         invalids[str(user_id)] = int(invalids.get(str(user_id), 0)) + 1
-        if invalids.get(str(user_id), 0) >= INVALID_BID_LIMIT:
-            ignored = state.setdefault("ignored_users", [])
-            if user_id not in ignored:
-                ignored.append(user_id)
         await self.config.current_auction.set(state)
 
     async def update_current_embed(self, state: dict[str, Any]) -> None:
