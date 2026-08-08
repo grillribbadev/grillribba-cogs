@@ -76,16 +76,17 @@ class OPAuction(commands.Cog):
         self.economy = Economy(self.config)
         self.characters = CharacterManager(self)
         self.auction = AuctionManager(self)
-
-        self.auction_task = self.bot.loop.create_task(self.auction.background_loop())
+        self.auction_task = None
 
     async def cog_load(self):
         # self.owners is in-memory only; without this, every character looks
         # unowned after a restart until the destructive `wipe` command runs.
         await self.characters.rebuild_owners()
+        self.auction_task = self.bot.loop.create_task(self.auction.background_loop())
 
     def cog_unload(self):
-        self.auction_task.cancel()
+        if self.auction_task:
+            self.auction_task.cancel()
 
     async def red_delete_data_for_user(self, **kwargs):
         """Redbot data cleanup hook."""
