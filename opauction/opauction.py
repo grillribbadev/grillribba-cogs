@@ -314,14 +314,14 @@ class OPAuction(commands.Cog):
         for user_id, _ in due_entries:
             await self.config.user_from_id(user_id).debt_recollection_notified.set(True)
 
-    async def collect_daily_taxes(self) -> None:
+    async def collect_daily_taxes(self, *, force: bool = False) -> None:
         """Collect the configured percentage of each active player's available beri every 24 hours."""
         if not await self.config.tax_running():
             return
 
         now = utc_timestamp()
         last_collected = int(await self.config.tax_last_collected() or 0)
-        if now - last_collected < 24 * 60 * 60:
+        if not force and now - last_collected < 24 * 60 * 60:
             return
 
         tax_rate = float(await self.config.tax_rate() or 0)
@@ -2115,10 +2115,12 @@ class OPAuction(commands.Cog):
             return await ctx.send(embed=AuctionEmbeds.error("Set the transaction log channel first with `.auction logchannel #channel`."))
 
         await self.config.tax_running.set(True)
-        await self.config.tax_last_collected.set(utc_timestamp())
+        await self.config.tax_last_collected.set(0)
+        await self.collect_daily_taxes(force=True)
         await ctx.send(
             embed=AuctionEmbeds.success(
-                f"Daily taxes started at **{rate:g}%**. The first collection will occur in 24 hours."
+                f"Daily taxes started at **{rate:g}%** and have been collected now. "
+                "The next collection will occur in 24 hours."
             )
         )
 
