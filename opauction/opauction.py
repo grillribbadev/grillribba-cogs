@@ -1459,8 +1459,12 @@ class OPAuction(commands.Cog):
     @commands.admin_or_permissions(manage_guild=True)
     async def repossess_character(self, ctx, member: discord.Member, *, name: str):
         """Repossess one named character or enough eligible characters to recover a debt amount."""
-        if name.strip().isdigit():
-            return await self._repossess_value(ctx, member, int(name.strip()))
+        target = name.strip()
+        if target.lower() == "all":
+            debt = int(await self.config.user_from_id(member.id).debt() or 0)
+            return await self._repossess_value(ctx, member, debt, take_all=True)
+        if target.isdigit():
+            return await self._repossess_value(ctx, member, int(target))
 
         character = self.characters.get_by_name(clean_name(name))
         if not character:
@@ -1511,7 +1515,14 @@ class OPAuction(commands.Cog):
         )
         await ctx.send(embed=AuctionEmbeds.success(f"Repossessed **{character['name']}** from {member.mention}, recovering {format_berries(recovered)}. Remaining debt: {format_berries(remaining_debt)}."))
 
-    async def _repossess_value(self, ctx, member: discord.Member, amount: int) -> None:
+    async def _repossess_value(
+        self,
+        ctx,
+        member: discord.Member,
+        amount: int,
+        *,
+        take_all: bool = False,
+    ) -> None:
         """Recover an exact debt amount using eligible character values, returning any overage."""
         if amount < 1:
             return await ctx.send(embed=AuctionEmbeds.error("The repossession amount must be at least ฿1."))
@@ -1545,15 +1556,19 @@ class OPAuction(commands.Cog):
                 ):
                     eligible.append((character_id, value))
 
-            if sum(value for _, value in eligible) < amount:
+            if not eligible:
+                return await ctx.send(
+                    embed=AuctionEmbeds.error("That member has no eligible valued characters to repossess.")
+                )
+            if not take_all and sum(value for _, value in eligible) < amount:
                 return await ctx.send(
                     embed=AuctionEmbeds.error(
                         "That member does not have enough eligible character value to recover that amount."
                     )
                 )
 
-            selected = None
-            if len(eligible) <= 20:
+            selected = eligible if take_all else None
+            if not take_all and len(eligible) <= 20:
                 best_score = None
                 for count in range(1, len(eligible) + 1):
                     for choice in itertools.combinations(eligible, count):
@@ -1566,7 +1581,7 @@ class OPAuction(commands.Cog):
                             best_score = score
                     if best_score and best_score[0] == amount:
                         break
-            else:
+            elif not take_all:
                 remaining = amount
                 candidates = eligible.copy()
                 selected = []
@@ -1578,24 +1593,25 @@ class OPAuction(commands.Cog):
                     remaining -= choice[1]
 
             total_value = sum(value for _, value in selected)
-            surplus = total_value - amount
+            recovered = min(total_value, amount)
+            surplus = total_value - recovered
             for character_id, _ in selected:
                 await self.economy.remove_character(member.id, character_id)
                 self.characters.unassign(character_id)
 
-            remaining_debt = debt - amount
+            remaining_debt = debt - recovered
             await player.debt.set(remaining_debt)
             if remaining_debt == 0:
                 await player.debt_started_at.set(0)
             vault_balance = await self.config.total_fees()
-            await self.config.total_fees.set(vault_balance + amount)
+            await self.config.total_fees.set(vault_balance + recovered)
             if surplus:
                 await self.economy.deposit(member.id, surplus)
             await self.record_transaction(
                 "bulk_repossession",
                 user_id=member.id,
                 character_ids=[character_id for character_id, _ in selected],
-                amount=amount,
+                amount=recovered,
                 surplus=surplus,
                 remaining_debt=remaining_debt,
             )
@@ -1606,13 +1622,13 @@ class OPAuction(commands.Cog):
         await self.log_transaction(
             "🏦 Value Repossession",
             f"Member: {member.mention}\nCharacters: **{character_names}**\n"
-            f"Recovered: **{format_berries(amount)}**\nSurplus returned: **{format_berries(surplus)}**\n"
+            f"Recovered: **{format_berries(recovered)}**\nSurplus returned: **{format_berries(surplus)}**\n"
             f"Remaining debt: **{format_berries(remaining_debt)}**",
         )
         surplus_text = f" Returned {format_berries(surplus)} surplus to {member.mention}." if surplus else ""
         await ctx.send(
             embed=AuctionEmbeds.success(
-                f"Repossessed {len(selected)} character(s) from {member.mention}, recovering {format_berries(amount)}. "
+                f"Repossessed {len(selected)} character(s) from {member.mention}, recovering {format_berries(recovered)}. "
                 f"Remaining debt: {format_berries(remaining_debt)}.{surplus_text}"
             )
         )
