@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import itertools
 import logging
 import random
 from typing import Union
@@ -65,6 +66,7 @@ class OPAuction(commands.Cog):
             "character_roster": None,
             "pending_trades": {},
             "pending_loans": {},
+            "loan_limit": 0,
             "queue": [],
             "last_auction_started": 0,
             "blocked_users": [],
@@ -1167,6 +1169,13 @@ class OPAuction(commands.Cog):
             return await ctx.send(embed=AuctionEmbeds.error("Use `.auction start` first."))
 
         async with self.auction._state_lock:
+            loan_limit = int(await self.config.loan_limit() or 0)
+            if loan_limit and amount > loan_limit:
+                return await ctx.send(
+                    embed=AuctionEmbeds.error(
+                        f"The maximum loan principal is {format_berries(loan_limit)}."
+                    )
+                )
             player = self.config.user_from_id(ctx.author.id)
             existing_debt = int(await player.debt() or 0)
             if existing_debt:
@@ -1206,6 +1215,21 @@ class OPAuction(commands.Cog):
             await offer_message.add_reaction("❌")
         except (discord.Forbidden, discord.HTTPException):
             pass
+
+    @auction_group.command(name="loanlimit", aliases=["setloanlimit"])
+    @commands.admin_or_permissions(manage_guild=True)
+    async def loan_limit(self, ctx, amount: int = None):
+        """View or set the maximum loan principal. Set to 0 for no cap."""
+        if amount is None:
+            current_limit = int(await self.config.loan_limit() or 0)
+            limit_text = format_berries(current_limit) if current_limit else "No limit"
+            return await ctx.send(embed=AuctionEmbeds.success(f"Current maximum loan principal: {limit_text}."))
+        if amount < 0:
+            return await ctx.send(embed=AuctionEmbeds.error("The loan limit cannot be negative."))
+
+        await self.config.loan_limit.set(amount)
+        limit_text = format_berries(amount) if amount else "No limit"
+        await ctx.send(embed=AuctionEmbeds.success(f"Maximum loan principal set to {limit_text}."))
 
     @auction_group.command(name="loaninfo", aliases=["debtinfo"])
     async def loan_info(self, ctx):
@@ -1434,7 +1458,10 @@ class OPAuction(commands.Cog):
     @auction_group.command(name="repossess")
     @commands.admin_or_permissions(manage_guild=True)
     async def repossess_character(self, ctx, member: discord.Member, *, name: str):
-        """Reposses an indebted member's character at its last sale value."""
+        """Repossess one named character or enough eligible characters to recover a debt amount."""
+        if name.strip().isdigit():
+            return await self._repossess_value(ctx, member, int(name.strip()))
+
         character = self.characters.get_by_name(clean_name(name))
         if not character:
             return await ctx.send(embed=AuctionEmbeds.error("I could not find that character."))
@@ -1483,6 +1510,112 @@ class OPAuction(commands.Cog):
             f"Recovered: **{format_berries(recovered)}**\nRemaining debt: **{format_berries(remaining_debt)}**",
         )
         await ctx.send(embed=AuctionEmbeds.success(f"Repossessed **{character['name']}** from {member.mention}, recovering {format_berries(recovered)}. Remaining debt: {format_berries(remaining_debt)}."))
+
+    async def _repossess_value(self, ctx, member: discord.Member, amount: int) -> None:
+        """Recover an exact debt amount using eligible character values, returning any overage."""
+        if amount < 1:
+            return await ctx.send(embed=AuctionEmbeds.error("The repossession amount must be at least ฿1."))
+
+        async with self.auction._state_lock:
+            player = self.config.user_from_id(member.id)
+            debt = int(await player.debt() or 0)
+            if debt < 1:
+                return await ctx.send(embed=AuctionEmbeds.error("That member has no outstanding debt."))
+            if amount > debt:
+                return await ctx.send(
+                    embed=AuctionEmbeds.error(
+                        f"The requested recovery exceeds the member's debt of {format_berries(debt)}."
+                    )
+                )
+
+            queue = await self.config.queue()
+            current = await self.auction.get_current_auction()
+            unavailable_ids = {int(entry.get("character_id", 0)) for entry in queue}
+            if current:
+                unavailable_ids.add(int(current.get("character_id", 0)))
+            last_sale_prices = await self.config.last_sale_prices()
+            eligible = []
+            for character_id in await player.characters():
+                character_id = int(character_id)
+                value = int(last_sale_prices.get(str(character_id), 0) or 0)
+                if (
+                    value > 0
+                    and character_id not in unavailable_ids
+                    and self.characters.owner_of(character_id) == member.id
+                ):
+                    eligible.append((character_id, value))
+
+            if sum(value for _, value in eligible) < amount:
+                return await ctx.send(
+                    embed=AuctionEmbeds.error(
+                        "That member does not have enough eligible character value to recover that amount."
+                    )
+                )
+
+            selected = None
+            if len(eligible) <= 20:
+                best_score = None
+                for count in range(1, len(eligible) + 1):
+                    for choice in itertools.combinations(eligible, count):
+                        total_value = sum(value for _, value in choice)
+                        if total_value < amount:
+                            continue
+                        score = (total_value, count)
+                        if best_score is None or score < best_score:
+                            selected = list(choice)
+                            best_score = score
+                    if best_score and best_score[0] == amount:
+                        break
+            else:
+                remaining = amount
+                candidates = eligible.copy()
+                selected = []
+                while remaining > 0:
+                    below_remaining = [entry for entry in candidates if entry[1] <= remaining]
+                    choice = max(below_remaining, key=lambda entry: entry[1]) if below_remaining else min(candidates, key=lambda entry: entry[1])
+                    selected.append(choice)
+                    candidates.remove(choice)
+                    remaining -= choice[1]
+
+            total_value = sum(value for _, value in selected)
+            surplus = total_value - amount
+            for character_id, _ in selected:
+                await self.economy.remove_character(member.id, character_id)
+                self.characters.unassign(character_id)
+
+            remaining_debt = debt - amount
+            await player.debt.set(remaining_debt)
+            if remaining_debt == 0:
+                await player.debt_started_at.set(0)
+            vault_balance = await self.config.total_fees()
+            await self.config.total_fees.set(vault_balance + amount)
+            if surplus:
+                await self.economy.deposit(member.id, surplus)
+            await self.record_transaction(
+                "bulk_repossession",
+                user_id=member.id,
+                character_ids=[character_id for character_id, _ in selected],
+                amount=amount,
+                surplus=surplus,
+                remaining_debt=remaining_debt,
+            )
+
+        character_names = ", ".join(
+            self.characters.get(character_id)["name"] for character_id, _ in selected
+        )
+        await self.log_transaction(
+            "🏦 Value Repossession",
+            f"Member: {member.mention}\nCharacters: **{character_names}**\n"
+            f"Recovered: **{format_berries(amount)}**\nSurplus returned: **{format_berries(surplus)}**\n"
+            f"Remaining debt: **{format_berries(remaining_debt)}**",
+        )
+        surplus_text = f" Returned {format_berries(surplus)} surplus to {member.mention}." if surplus else ""
+        await ctx.send(
+            embed=AuctionEmbeds.success(
+                f"Repossessed {len(selected)} character(s) from {member.mention}, recovering {format_berries(amount)}. "
+                f"Remaining debt: {format_berries(remaining_debt)}.{surplus_text}"
+            )
+        )
 
     @auction_group.command(name="forgivedebt")
     @commands.admin_or_permissions(manage_guild=True)
