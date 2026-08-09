@@ -5,6 +5,7 @@ import itertools
 import json
 import logging
 import random
+import re
 from pathlib import Path
 from typing import Union
 
@@ -269,7 +270,7 @@ class OPAuction(commands.Cog):
                     "deduction_used": deduction_used,
                 }
             )
-            records["payments"] = payments[-5000:]
+            records["payments"] = payments
             user_key = str(user_id)
             totals[user_key] = int(totals.get(user_key, 0) or 0) + amount
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -283,36 +284,70 @@ class OPAuction(commands.Cog):
             player = self.config.user_from_id(user_id)
             await player.fees_paid.set(int(await player.fees_paid() or 0) + amount)
 
-    async def rebuild_tax_fee_ledgers(self) -> dict[str, int]:
-        """Rebuild personal ledgers from the attributable entries in bounded transaction history."""
+    async def rebuild_tax_fee_ledgers(self) -> dict[str, int] | None:
+        """Rebuild tax totals from log embeds and fee totals from transaction history."""
         users = await self.config.all_users()
         totals = {
             int(user_id): {"taxes": 0, "fees": 0}
-            for user_id, data in users.items()
-            if data.get("started")
+            for user_id in users
         }
-        skipped_tax_batches = 0
         skipped_legacy_trades = 0
+        tax_payments = []
+
+        channel_id = await self.config.log_channel()
+        if not channel_id:
+            return None
+        channel = self.bot.get_channel(int(channel_id))
+        if channel is None:
+            try:
+                channel = await self.bot.fetch_channel(int(channel_id))
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                return None
+        if not isinstance(channel, discord.TextChannel):
+            return None
+
+        try:
+            async for message in channel.history(limit=None, oldest_first=True):
+                for embed in message.embeds:
+                    if embed.title != "🏦 Daily Auction Tax" or not embed.description:
+                        continue
+                    member_match = re.search(r"Member:\s*<@!?(\d+)>", embed.description)
+                    amount_match = re.search(r"Paid:\s*\*\*[^\d]*([\d,]+)\*\*", embed.description)
+                    rate_match = re.search(r"Tax rate:\s*\*\*([\d.]+)%\*\*", embed.description)
+                    deduction_match = re.search(
+                        r"Charitable deduction used:\s*\*\*[^\d]*([\d,]+)\*\*",
+                        embed.description,
+                    )
+                    if not member_match or not amount_match:
+                        continue
+                    user_id = int(member_match.group(1))
+                    amount = int(amount_match.group(1).replace(",", ""))
+                    totals.setdefault(user_id, {"taxes": 0, "fees": 0})["taxes"] += amount
+                    tax_payments.append(
+                        {
+                            "timestamp": int(message.created_at.timestamp()),
+                            "user_id": user_id,
+                            "amount": amount,
+                            "rate": float(rate_match.group(1)) if rate_match else 0,
+                            "deduction_used": int(deduction_match.group(1).replace(",", "")) if deduction_match else 0,
+                        }
+                    )
+        except (discord.Forbidden, discord.HTTPException):
+            return None
 
         for entry in await self.config.transaction_history():
             kind = entry.get("kind")
-            if kind == "daily_tax_payment":
-                user_id = int(entry.get("user_id", 0) or 0)
-                if user_id in totals:
-                    totals[user_id]["taxes"] += int(entry.get("amount", 0) or 0)
-            elif kind == "daily_tax":
-                skipped_tax_batches += 1
-            elif kind == "sale":
+            if kind == "sale":
                 seller_id = int(entry.get("seller_id", 0) or 0)
-                if seller_id in totals:
-                    totals[seller_id]["fees"] += int(entry.get("vault_amount", 0) or 0)
+                if seller_id:
+                    totals.setdefault(seller_id, {"taxes": 0, "fees": 0})["fees"] += int(entry.get("vault_amount", 0) or 0)
             elif kind == "trade":
                 fee_payments = entry.get("fee_payments")
                 if isinstance(fee_payments, list):
                     for payment in fee_payments:
                         user_id = int(payment.get("user_id", 0) or 0)
-                        if user_id in totals:
-                            totals[user_id]["fees"] += int(payment.get("amount", 0) or 0)
+                        if user_id:
+                            totals.setdefault(user_id, {"taxes": 0, "fees": 0})["fees"] += int(payment.get("amount", 0) or 0)
                 elif entry.get("requested_character_id") is not None:
                     vault_amount = int(entry.get("vault_amount", 0) or 0)
                     if vault_amount % 2:
@@ -320,11 +355,23 @@ class OPAuction(commands.Cog):
                         continue
                     for user_id in ("offerer_id", "recipient_id"):
                         payer_id = int(entry.get(user_id, 0) or 0)
-                        if payer_id in totals:
-                            totals[payer_id]["fees"] += vault_amount // 2
+                        if payer_id:
+                            totals.setdefault(payer_id, {"taxes": 0, "fees": 0})["fees"] += vault_amount // 2
                 else:
                     skipped_legacy_trades += 1
 
+        path = Path(__file__).parent / "data" / "tax_records.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "payments": tax_payments,
+                    "totals": {str(user_id): amounts["taxes"] for user_id, amounts in totals.items()},
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
         for user_id, amounts in totals.items():
             player = self.config.user_from_id(user_id)
             await player.taxes_paid.set(amounts["taxes"])
@@ -332,7 +379,7 @@ class OPAuction(commands.Cog):
 
         return {
             "members": len(totals),
-            "tax_batches_skipped": skipped_tax_batches,
+            "tax_payments": len(tax_payments),
             "trades_skipped": skipped_legacy_trades,
         }
 
@@ -2251,10 +2298,12 @@ class OPAuction(commands.Cog):
             permissions = ctx.author.guild_permissions if ctx.guild else None
             if not permissions or not (permissions.administrator or permissions.manage_guild):
                 return await ctx.send(embed=AuctionEmbeds.error("Only administrators can view another member's totals."))
-        if not await self.economy.exists(target.id):
+        player = self.config.user_from_id(target.id)
+        if not await self.economy.exists(target.id) and not (
+            int(await player.taxes_paid() or 0) or int(await player.fees_paid() or 0)
+        ):
             return await ctx.send(embed=AuctionEmbeds.error("That member has not started the auction game."))
 
-        player = self.config.user_from_id(target.id)
         taxes_paid = int(await player.taxes_paid() or 0)
         fees_paid = int(await player.fees_paid() or 0)
         charitable_deductions = int(await player.charitable_deductions() or 0)
@@ -2273,20 +2322,26 @@ class OPAuction(commands.Cog):
     @auction_group.command(name="rebuildtaxesfees", aliases=["rebuildtotals"])
     @commands.admin_or_permissions(manage_guild=True)
     async def rebuild_taxes_fees(self, ctx):
-        """Rebuild personal tax and fee totals from attributable transaction history."""
+        """Rebuild tax totals from the transaction log and fees from stored history."""
         async with self.auction._state_lock:
             result = await self.rebuild_tax_fee_ledgers()
 
+        if result is None:
+            return await ctx.send(
+                embed=AuctionEmbeds.error(
+                    "Set a readable transaction log channel first with `.ac logchannel #channel`."
+                )
+            )
+
         caveats = []
-        if result["tax_batches_skipped"]:
-            caveats.append(f"{result['tax_batches_skipped']} legacy aggregate tax batch(es) could not be assigned per member")
         if result["trades_skipped"]:
             caveats.append(f"{result['trades_skipped']} legacy cash trade fee(s) had no recorded payer")
-        caveat_text = "\n".join(caveats) if caveats else "All stored records were attributable."
+        caveat_text = "\n".join(caveats) if caveats else "All stored fee records were attributable."
         await ctx.send(
             embed=AuctionEmbeds.success(
-                f"Rebuilt tax and fee totals for {result['members']} member(s).\n{caveat_text}\n"
-                "Only the latest 200 stored transactions can be rebuilt."
+                f"Rebuilt {result['tax_payments']} individual tax payment(s) for {result['members']} member(s).\n"
+                f"{caveat_text}\nTax totals were scanned from the full readable log history; "
+                "fee totals are limited to the latest 200 stored transactions."
             )
         )
 
