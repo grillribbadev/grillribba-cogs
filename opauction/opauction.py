@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import io
 import itertools
+import json
 import logging
 import random
+from pathlib import Path
 from typing import Union
 
 import discord
@@ -243,11 +245,96 @@ class OPAuction(commands.Cog):
             player = self.config.user_from_id(user_id)
             await player.taxes_paid.set(int(await player.taxes_paid() or 0) + amount)
 
+    async def record_tax_json(
+        self,
+        user_id: int,
+        amount: int,
+        rate: float,
+        deduction_used: int,
+    ) -> None:
+        """Append one daily tax payment to the JSON audit ledger."""
+        path = Path(__file__).parent / "data" / "tax_records.json"
+        try:
+            records = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"payments": [], "totals": {}}
+            if not isinstance(records, dict):
+                records = {"payments": [], "totals": {}}
+            payments = records.setdefault("payments", [])
+            totals = records.setdefault("totals", {})
+            payments.append(
+                {
+                    "timestamp": utc_timestamp(),
+                    "user_id": user_id,
+                    "amount": amount,
+                    "rate": rate,
+                    "deduction_used": deduction_used,
+                }
+            )
+            records["payments"] = payments[-5000:]
+            user_key = str(user_id)
+            totals[user_key] = int(totals.get(user_key, 0) or 0) + amount
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(records, indent=2), encoding="utf-8")
+        except (OSError, json.JSONDecodeError):
+            log.exception("Unable to write OPAuction tax JSON ledger")
+
     async def record_fee_paid(self, user_id: int, amount: int) -> None:
         """Add an Auction House fee to a member's cumulative fee ledger."""
         if amount > 0:
             player = self.config.user_from_id(user_id)
             await player.fees_paid.set(int(await player.fees_paid() or 0) + amount)
+
+    async def rebuild_tax_fee_ledgers(self) -> dict[str, int]:
+        """Rebuild personal ledgers from the attributable entries in bounded transaction history."""
+        users = await self.config.all_users()
+        totals = {
+            int(user_id): {"taxes": 0, "fees": 0}
+            for user_id, data in users.items()
+            if data.get("started")
+        }
+        skipped_tax_batches = 0
+        skipped_legacy_trades = 0
+
+        for entry in await self.config.transaction_history():
+            kind = entry.get("kind")
+            if kind == "daily_tax_payment":
+                user_id = int(entry.get("user_id", 0) or 0)
+                if user_id in totals:
+                    totals[user_id]["taxes"] += int(entry.get("amount", 0) or 0)
+            elif kind == "daily_tax":
+                skipped_tax_batches += 1
+            elif kind == "sale":
+                seller_id = int(entry.get("seller_id", 0) or 0)
+                if seller_id in totals:
+                    totals[seller_id]["fees"] += int(entry.get("vault_amount", 0) or 0)
+            elif kind == "trade":
+                fee_payments = entry.get("fee_payments")
+                if isinstance(fee_payments, list):
+                    for payment in fee_payments:
+                        user_id = int(payment.get("user_id", 0) or 0)
+                        if user_id in totals:
+                            totals[user_id]["fees"] += int(payment.get("amount", 0) or 0)
+                elif entry.get("requested_character_id") is not None:
+                    vault_amount = int(entry.get("vault_amount", 0) or 0)
+                    if vault_amount % 2:
+                        skipped_legacy_trades += 1
+                        continue
+                    for user_id in ("offerer_id", "recipient_id"):
+                        payer_id = int(entry.get(user_id, 0) or 0)
+                        if payer_id in totals:
+                            totals[payer_id]["fees"] += vault_amount // 2
+                else:
+                    skipped_legacy_trades += 1
+
+        for user_id, amounts in totals.items():
+            player = self.config.user_from_id(user_id)
+            await player.taxes_paid.set(amounts["taxes"])
+            await player.fees_paid.set(amounts["fees"])
+
+        return {
+            "members": len(totals),
+            "tax_batches_skipped": skipped_tax_batches,
+            "trades_skipped": skipped_legacy_trades,
+        }
 
     async def notify_rarity_subscribers(self, channel: discord.TextChannel, rarity: str) -> None:
         """Mention users who opted in to this pool-auction rarity."""
@@ -366,6 +453,14 @@ class OPAuction(commands.Cog):
                     continue
                 await self.economy.adjust_balance(user_id, -amount)
                 await self.record_tax_paid(user_id, amount)
+                await self.record_transaction(
+                    "daily_tax_payment",
+                    user_id=user_id,
+                    amount=amount,
+                    rate=tax_rate,
+                    deduction_used=deduction_used,
+                )
+                await self.record_tax_json(user_id, amount, tax_rate, deduction_used)
                 collected.append((user_id, amount, deduction_used))
 
             total_collected = sum(amount for _, amount, _ in collected)
@@ -1051,6 +1146,15 @@ class OPAuction(commands.Cog):
                 requested_character_id=requested_id,
                 cash_amount=cash_amount,
                 vault_amount=house_cut,
+                trade_type=trade_type,
+                fee_payments=(
+                    [
+                        {"user_id": member.id, "amount": offerer_fee},
+                        {"user_id": ctx.author.id, "amount": recipient_fee},
+                    ]
+                    if trade_type == "swap"
+                    else [{"user_id": cash_seller_id, "amount": house_cut}]
+                ),
             )
 
         offered_character = self.characters.get(offered_id)
@@ -2165,6 +2269,26 @@ class OPAuction(commands.Cog):
             color=discord.Color.gold(),
         )
         await ctx.send(embed=embed)
+
+    @auction_group.command(name="rebuildtaxesfees", aliases=["rebuildtotals"])
+    @commands.admin_or_permissions(manage_guild=True)
+    async def rebuild_taxes_fees(self, ctx):
+        """Rebuild personal tax and fee totals from attributable transaction history."""
+        async with self.auction._state_lock:
+            result = await self.rebuild_tax_fee_ledgers()
+
+        caveats = []
+        if result["tax_batches_skipped"]:
+            caveats.append(f"{result['tax_batches_skipped']} legacy aggregate tax batch(es) could not be assigned per member")
+        if result["trades_skipped"]:
+            caveats.append(f"{result['trades_skipped']} legacy cash trade fee(s) had no recorded payer")
+        caveat_text = "\n".join(caveats) if caveats else "All stored records were attributable."
+        await ctx.send(
+            embed=AuctionEmbeds.success(
+                f"Rebuilt tax and fee totals for {result['members']} member(s).\n{caveat_text}\n"
+                "Only the latest 200 stored transactions can be rebuilt."
+            )
+        )
 
     @auction_group.command(name="taxstart")
     @commands.admin_or_permissions(manage_guild=True)
