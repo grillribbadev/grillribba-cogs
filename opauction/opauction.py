@@ -90,6 +90,7 @@ class OPAuction(commands.Cog):
             "ping_rarities": [],
             "debt": 0,
             "debt_started_at": 0,
+            "debt_recollection_notified": False,
         }
 
         self.config.register_global(**default_global)
@@ -196,6 +197,33 @@ class OPAuction(commands.Cog):
             return False
         return True
 
+    async def log_recollection_due(self, entries: list[tuple[int, int]]) -> bool:
+        """Post one-time notices for debts that have reached recollection eligibility."""
+        channel_id = await self.config.debt_log_channel()
+        if not channel_id:
+            return False
+
+        channel = self.bot.get_channel(int(channel_id))
+        if channel is None:
+            try:
+                channel = await self.bot.fetch_channel(int(channel_id))
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                return False
+        if not isinstance(channel, discord.TextChannel):
+            return False
+
+        embed = discord.Embed(title="⚠️ Debt Recollection Due", color=discord.Color.red())
+        embed.description = "\n".join(
+            f"• <@{user_id}> owes **{format_berries(debt)}** and is eligible for collection."
+            for user_id, debt in entries
+        )
+        try:
+            await channel.send(embed=embed)
+        except (discord.Forbidden, discord.HTTPException):
+            log.exception("Unable to send OPAuction recollection notice to channel %s", channel_id)
+            return False
+        return True
+
     async def record_transaction(self, kind: str, **details) -> None:
         """Store a bounded history of completed economy changes."""
         history = await self.config.transaction_history()
@@ -264,6 +292,23 @@ class OPAuction(commands.Cog):
     async def debt_blocks_sales(self, user_id: int) -> bool:
         """Return whether overdue debt blocks a user from selling characters."""
         return await self.debt_is_overdue(user_id)
+
+    async def notify_recollection_due(self) -> None:
+        """Notify the debt log once when unpaid debt passes its grace period."""
+        due_entries = []
+        for user_id, data in (await self.config.all_users()).items():
+            user_id = int(user_id)
+            if (
+                int(data.get("debt", 0) or 0) > 0
+                and not data.get("debt_recollection_notified", False)
+                and await self.debt_is_overdue(user_id)
+            ):
+                due_entries.append((user_id, int(data["debt"])))
+
+        if not due_entries or not await self.log_recollection_due(due_entries):
+            return
+        for user_id, _ in due_entries:
+            await self.config.user_from_id(user_id).debt_recollection_notified.set(True)
 
     async def expire_pending_offers(self, timeout: int) -> None:
         """Remove unanswered trade and loan offers after their response window ends."""
@@ -1315,6 +1360,7 @@ class OPAuction(commands.Cog):
             await self.economy.deposit(user_id, amount)
             await player.debt.set(debt)
             await player.debt_started_at.set(utc_timestamp())
+            await player.debt_recollection_notified.set(False)
             await self.record_transaction("loan", user_id=user_id, amount=amount, debt=debt)
             pending_loans.pop(str(user_id), None)
             await self.config.pending_loans.set(pending_loans)
@@ -1378,6 +1424,29 @@ class OPAuction(commands.Cog):
                 f"You repaid {format_berries(repayment)}. Remaining loan debt: {format_berries(debt - repayment)}."
             )
         )
+
+    @auction_group.command(name="debttimer", aliases=["collectiontimer"])
+    async def debt_timer(self, ctx, member: discord.Member = None):
+        """Show how long remains before a member's debt is eligible for recollection."""
+        member = member or ctx.author
+        can_manage_guild = bool(getattr(ctx.author.guild_permissions, "manage_guild", False))
+        if member.id != ctx.author.id and not can_manage_guild:
+            return await ctx.send(embed=AuctionEmbeds.error("Only administrators can view another member's debt timer."))
+
+        player = self.config.user_from_id(member.id)
+        debt = int(await player.debt() or 0)
+        if debt < 1:
+            return await ctx.send(embed=AuctionEmbeds.error("That member has no outstanding Auction House debt."))
+
+        started_at = int(await player.debt_started_at() or 0)
+        remaining = max(0, LOAN_GRACE_PERIOD_SECONDS - (utc_timestamp() - started_at)) if started_at else 0
+        status = "Eligible for recollection now." if remaining == 0 else f"Eligible for recollection in **{format_duration(remaining)}**."
+        embed = discord.Embed(
+            title=f"Debt Timer: {member.display_name}",
+            description=f"Outstanding debt: **{format_berries(debt)}**\n{status}",
+            color=discord.Color.red() if remaining == 0 else discord.Color.gold(),
+        )
+        await ctx.send(embed=embed)
 
     @auction_group.command(name="paydebt", aliases=["repayfor"])
     async def pay_debt(self, ctx, member: discord.Member, amount: Union[int, str] = None):

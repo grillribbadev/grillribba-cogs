@@ -80,6 +80,7 @@ class AuctionManager:
             try:
                 if not await self.is_active_runner():
                     return
+                await self.cog.notify_recollection_due()
                 await self._tick()
             except asyncio.CancelledError:
                 raise
