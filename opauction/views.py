@@ -78,13 +78,16 @@ class AuctionEmbeds:
         ending: int,
         starting_bid: int,
         image_url: str | None = None,
+        seller: discord.abc.User | None = None,
     ) -> discord.Embed:
-        """Build the high-visibility announcement for a legendary pool draw."""
+        """Build the high-visibility announcement for a legendary auction."""
+        seller_text = seller.mention if seller else "🏛️ The Auction House"
         embed = discord.Embed(
             title="A LEGENDARY CHARACTER HAS ARRIVED",
             description=(
                 f"## {character['name']}\n\n"
                 f"Starting Bid: **{format_berries(starting_bid)}**\n"
+                f"Seller: {seller_text}\n"
                 f"Arc: {character.get('arc', 'Unknown')}\n"
                 f"Auction ends <t:{ending}:R>"
             ),

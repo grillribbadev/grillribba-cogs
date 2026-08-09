@@ -331,12 +331,13 @@ class AuctionManager:
 
         image_url = state.get("image_url")
         seller = self.cog.bot.get_user(seller_id) if seller_id else None
-        if not from_queue and str(character.get("rarity", "")).lower() == "legendary":
+        if str(character.get("rarity", "")).lower() == "legendary":
             embed = AuctionEmbeds.legendary_arrival(
                 character,
                 int(state["ends_at"]),
                 starting_bid=starting_bid,
                 image_url=image_url,
+                seller=seller,
             )
         else:
             embed = AuctionEmbeds.auction_start(
@@ -351,8 +352,7 @@ class AuctionManager:
         except (discord.Forbidden, discord.HTTPException, discord.NotFound):
             return False
 
-        if not from_queue:
-            await self.cog.notify_rarity_subscribers(channel, str(character.get("rarity", "normal")))
+        await self.cog.notify_rarity_subscribers(channel, str(character.get("rarity", "normal")))
 
         state["message_id"] = message.id
         if not await self._write_current_auction(state):
