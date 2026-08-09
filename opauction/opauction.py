@@ -767,7 +767,7 @@ class OPAuction(commands.Cog):
         if not created:
             return await ctx.send(embed=AuctionEmbeds.success("Your Auction account is ready."))
 
-        await ctx.send(embed=AuctionEmbeds.success("Welcome to the auction!\nYou received ฿250."))
+        await ctx.send(embed=AuctionEmbeds.success("Welcome to the auction!\nYou received ฿1000."))
 
     @auction_group.command(name="balance", aliases=["wallet", "beri", "bal"])
     async def balance(self, ctx, member: Union[discord.Member, str] = None):
@@ -854,8 +854,8 @@ class OPAuction(commands.Cog):
                 )
             )
 
-        await self.record_transaction("daily", user_id=ctx.author.id, amount=250)
-        await ctx.send(embed=AuctionEmbeds.success(f"You claimed your daily {format_berries(250)}."))
+        await self.record_transaction("daily", user_id=ctx.author.id, amount=1000)
+        await ctx.send(embed=AuctionEmbeds.success(f"You claimed your daily {format_berries(1000)}."))
 
     @auction_group.command(name="ping")
     async def ping(self, ctx):
@@ -1355,7 +1355,7 @@ class OPAuction(commands.Cog):
         if last_price < 1:
             return await ctx.send(embed=AuctionEmbeds.error("This character has no completed auction sale price yet."))
 
-        payout = max(1, last_price // 2)
+        payout = max(1, last_price * 70 // 100)
         vault_balance = await self.config.total_fees()
         if vault_balance < payout:
             return await ctx.send(
@@ -1414,7 +1414,7 @@ class OPAuction(commands.Cog):
             if last_price < 1:
                 skipped += 1
                 continue
-            selected.append((character_id, character, last_price, max(1, last_price // 2)))
+            selected.append((character_id, character, last_price, max(1, last_price * 70 // 100)))
 
         if not selected:
             return await ctx.send(embed=AuctionEmbeds.error("No eligible characters matched that sell-to-house selection."))
@@ -2258,7 +2258,7 @@ class OPAuction(commands.Cog):
             f"Version: {self.__version__}\n"
             f"Registered players are not automatic.\n"
             f"Starting balance: {format_berries(STARTING_BALANCE)}\n"
-            f"Daily income: {format_berries(250)} every 24 hours\n"
+            f"Daily income: {format_berries(1000)} every 24 hours\n"
             f"Auction channel: {'configured' if status['channel'] else 'not configured'}\n"
             f"Auction interval: {status['interval']} seconds\n"
             f"Auction duration: {status['duration']} seconds"
