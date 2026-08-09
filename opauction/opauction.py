@@ -58,6 +58,10 @@ class OPAuction(commands.Cog):
             "auction_channel": None,
             "log_channel": None,
             "debt_log_channel": None,
+            "tax_channel": None,
+            "tax_rate": 0,
+            "tax_running": False,
+            "tax_last_collected": 0,
             "auction_running": False,
             "auction_duration": DEFAULT_AUCTION_DURATION,
             "auction_interval": DEFAULT_AUCTION_INTERVAL,
@@ -309,6 +313,74 @@ class OPAuction(commands.Cog):
             return
         for user_id, _ in due_entries:
             await self.config.user_from_id(user_id).debt_recollection_notified.set(True)
+
+    async def collect_daily_taxes(self) -> None:
+        """Collect the configured percentage of each active player's available beri every 24 hours."""
+        if not await self.config.tax_running():
+            return
+
+        now = utc_timestamp()
+        last_collected = int(await self.config.tax_last_collected() or 0)
+        if now - last_collected < 24 * 60 * 60:
+            return
+
+        tax_rate = float(await self.config.tax_rate() or 0)
+        if tax_rate <= 0:
+            return
+
+        collected = []
+        async with self.auction._state_lock:
+            # Recheck after waiting for the auction lock so only one runner can collect.
+            last_collected = int(await self.config.tax_last_collected() or 0)
+            if utc_timestamp() - last_collected < 24 * 60 * 60:
+                return
+            for user_id, data in (await self.config.all_users()).items():
+                if not data.get("started"):
+                    continue
+                user_id = int(user_id)
+                available = await self.economy.available_balance(user_id)
+                amount = int(available * tax_rate / 100)
+                if amount < 1:
+                    continue
+                await self.economy.adjust_balance(user_id, -amount)
+                collected.append((user_id, amount))
+
+            total_collected = sum(amount for _, amount in collected)
+            vault_balance = await self.config.total_fees()
+            await self.config.total_fees.set(vault_balance + total_collected)
+            await self.config.tax_last_collected.set(utc_timestamp())
+            await self.record_transaction(
+                "daily_tax",
+                rate=tax_rate,
+                amount=total_collected,
+                payers=len(collected),
+            )
+
+        for user_id, amount in collected:
+            await self.log_transaction(
+                "🏦 Daily Auction Tax",
+                f"Member: <@{user_id}>\nTax rate: **{tax_rate:g}%**\nPaid: **{format_berries(amount)}**",
+            )
+
+        channel_id = await self.config.tax_channel()
+        if not channel_id:
+            return
+        channel = self.bot.get_channel(int(channel_id))
+        if channel is None:
+            try:
+                channel = await self.bot.fetch_channel(int(channel_id))
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                return
+        if isinstance(channel, discord.TextChannel):
+            try:
+                await channel.send(
+                    embed=AuctionEmbeds.success(
+                        f"Daily taxes have been collected at **{tax_rate:g}%**. "
+                        f"{len(collected)} member(s) paid a total of {format_berries(total_collected)}."
+                    )
+                )
+            except (discord.Forbidden, discord.HTTPException):
+                log.exception("Unable to announce OPAuction daily taxes in channel %s", channel_id)
 
     async def expire_pending_offers(self, timeout: int) -> None:
         """Remove unanswered trade and loan offers after their response window ends."""
@@ -2009,6 +2081,53 @@ class OPAuction(commands.Cog):
         """Disable the dedicated overdue debt report channel."""
         await self.config.debt_log_channel.set(None)
         await ctx.send(embed=AuctionEmbeds.success("Overdue debt report logging has been disabled."))
+
+    @auction_group.command(name="taxrate", aliases=["settax"])
+    @commands.admin_or_permissions(manage_guild=True)
+    async def tax_rate(self, ctx, percent: float = None):
+        """View or set the daily tax percentage charged from available beri."""
+        if percent is None:
+            rate = float(await self.config.tax_rate() or 0)
+            return await ctx.send(embed=AuctionEmbeds.success(f"Current daily tax rate: **{rate:g}%**."))
+        if percent <= 0 or percent > 100:
+            return await ctx.send(embed=AuctionEmbeds.error("The daily tax rate must be greater than 0 and at most 100%."))
+
+        await self.config.tax_rate.set(percent)
+        await ctx.send(embed=AuctionEmbeds.success(f"Daily tax rate set to **{percent:g}%**."))
+
+    @auction_group.command(name="taxchannel")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def tax_channel(self, ctx, channel: discord.TextChannel):
+        """Set the channel that receives daily tax collection announcements."""
+        await self.config.tax_channel.set(channel.id)
+        await ctx.send(embed=AuctionEmbeds.success(f"Daily tax collections will be announced in {channel.mention}."))
+
+    @auction_group.command(name="taxstart")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def start_taxes(self, ctx):
+        """Start the 24-hour daily tax schedule."""
+        rate = float(await self.config.tax_rate() or 0)
+        if rate <= 0:
+            return await ctx.send(embed=AuctionEmbeds.error("Set a daily tax rate first with `.auction taxrate <percent>`."))
+        if not await self.config.tax_channel():
+            return await ctx.send(embed=AuctionEmbeds.error("Set a tax announcement channel first with `.auction taxchannel #channel`."))
+        if not await self.config.log_channel():
+            return await ctx.send(embed=AuctionEmbeds.error("Set the transaction log channel first with `.auction logchannel #channel`."))
+
+        await self.config.tax_running.set(True)
+        await self.config.tax_last_collected.set(utc_timestamp())
+        await ctx.send(
+            embed=AuctionEmbeds.success(
+                f"Daily taxes started at **{rate:g}%**. The first collection will occur in 24 hours."
+            )
+        )
+
+    @auction_group.command(name="taxstop")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def stop_taxes(self, ctx):
+        """Stop future automatic daily tax collections."""
+        await self.config.tax_running.set(False)
+        await ctx.send(embed=AuctionEmbeds.success("Daily taxes have been stopped."))
 
     @auction_group.command(name="overduedebts", aliases=["debtreport"])
     @commands.admin_or_permissions(manage_guild=True)
