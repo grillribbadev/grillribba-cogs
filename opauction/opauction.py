@@ -772,7 +772,12 @@ class OPAuction(commands.Cog):
         if not created:
             return await ctx.send(embed=AuctionEmbeds.success("Your Auction account is ready."))
 
-        await ctx.send(embed=AuctionEmbeds.success("Welcome to the auction!\nYou received ฿1000."))
+        starting_balance = int(await self.config.starting_balance() or 0)
+        await ctx.send(
+            embed=AuctionEmbeds.success(
+                f"Welcome to the auction!\nYou received {format_berries(starting_balance)}."
+            )
+        )
 
     @auction_group.command(name="balance", aliases=["wallet", "beri", "bal"])
     async def balance(self, ctx, member: Union[discord.Member, str] = None):
