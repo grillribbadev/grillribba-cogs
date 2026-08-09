@@ -625,7 +625,14 @@ class AuctionManager:
         if not state:
             return
 
-        if utc_timestamp() < int(state.get("ends_at", 0)):
+        now = utc_timestamp()
+        has_bid = bool(state.get("highest_bidder_id"))
+        no_bid_deadline = int(state.get("started_at", now)) + NO_BID_CLOSE_SECONDS
+        settlement_deadline = int(state.get("ends_at", 0)) if has_bid else min(
+            int(state.get("ends_at", no_bid_deadline)),
+            no_bid_deadline,
+        )
+        if now < settlement_deadline:
             return
 
         character_id = int(state.get("character_id"))
