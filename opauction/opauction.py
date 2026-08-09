@@ -89,6 +89,7 @@ class OPAuction(commands.Cog):
             "forced_next_source": None,
             "forced_next_character_id": None,
             "sellhouse_rate":70,
+            "daily_income":1000,
         }
 
         default_user = {
@@ -849,7 +850,8 @@ class OPAuction(commands.Cog):
         if not await self.economy.exists(ctx.author.id):
             return await ctx.send(embed=AuctionEmbeds.error("Use `.auction start` first."))
 
-        remaining = await self.economy.claim_daily(ctx.author.id)
+        daily_income = int(await self.config.daily_income() or 1000)
+        remaining = await self.economy.claim_daily(ctx.author.id, daily_income)
         if remaining > 0:
             return await ctx.send(
                 embed=AuctionEmbeds.error(
@@ -857,8 +859,8 @@ class OPAuction(commands.Cog):
                 )
             )
 
-        await self.record_transaction("daily", user_id=ctx.author.id, amount=1000)
-        await ctx.send(embed=AuctionEmbeds.success(f"You claimed your daily {format_berries(1000)}."))
+        await self.record_transaction("daily", user_id=ctx.author.id, amount=daily_income)
+        await ctx.send(embed=AuctionEmbeds.success(f"You claimed your daily {format_berries(daily_income)}."))
 
     @auction_group.command(name="ping")
     async def ping(self, ctx):
@@ -2399,6 +2401,26 @@ class OPAuction(commands.Cog):
             f"Sellhouse buyback rate set to **{percent}%**."
             )
         )
+
+    @auction_group.command(name="dailyrate", aliases=["setdaily"])
+    @commands.admin_or_permissions(manage_guild=True)
+    async def daily_rate(self, ctx, amount: int = None):
+        """View or set the daily beri reward."""
+        if amount is None:
+            current = int(await self.config.daily_income() or 1000)
+            return await ctx.send(
+                embed=AuctionEmbeds.sucess(
+                    f"Current daily reward: **{format_berries(current)}**."
+                )
+            )
+
+        await self.config.daily_income.set(amount)
+        await ctx.send(
+            embed=AuctionEmbeds.success(
+                f"Daily reward set to **{format_berries(amount)}**."
+            )
+        )
+    
 
     @auction_group.command(name="taxchannel")
     @commands.admin_or_permissions(manage_guild=True)

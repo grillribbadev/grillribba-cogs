@@ -162,7 +162,7 @@ class Economy:
     async def get_characters(self, user_id: int):
         return await self.config.user_from_id(user_id).characters()
 
-    async def claim_daily(self, user_id: int) -> int:
+    async def claim_daily(self, user_id: int, amount: int) -> int:
         """Grant one daily payment or return the seconds remaining to claim."""
         player = self.config.user_from_id(user_id)
 
