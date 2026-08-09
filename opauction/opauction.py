@@ -238,7 +238,7 @@ class OPAuction(commands.Cog):
         """Store a bounded history of completed economy changes."""
         history = await self.config.transaction_history()
         history.append({"kind": kind, "timestamp": utc_timestamp(), "reversed": False, **details})
-        await self.config.transaction_history.set(history[-200:])
+        await self.config.transaction_history.set(history)
 
     async def record_tax_paid(self, user_id: int, amount: int) -> None:
         """Add a daily tax payment to a member's cumulative tax ledger."""
