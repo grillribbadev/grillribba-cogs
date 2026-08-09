@@ -2409,7 +2409,7 @@ class OPAuction(commands.Cog):
         if amount is None:
             current = int(await self.config.daily_income() or 1000)
             return await ctx.send(
-                embed=AuctionEmbeds.sucess(
+                embed=AuctionEmbeds.success(
                     f"Current daily reward: **{format_berries(current)}**."
                 )
             )

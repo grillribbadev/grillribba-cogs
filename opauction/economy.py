@@ -173,6 +173,6 @@ class Economy:
             return remaining
 
         bal = await player.balance()
-        await player.balance.set(bal + DAILY_INCOME)
+        await player.balance.set(bal + amount)
         await player.last_daily.set(now)
         return 0
