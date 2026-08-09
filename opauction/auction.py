@@ -681,6 +681,7 @@ class AuctionManager:
                     await self.cog.economy.deposit(seller_id, seller_share)
                     await self.cog.economy.remove_character(seller_id, character_id)
                     await self._record_fee(fee)
+                    await self.cog.record_fee_paid(int(seller_id), fee)
                     vault_amount = fee
                 else:
                     await self._record_fee(price)

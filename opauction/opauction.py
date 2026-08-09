@@ -95,6 +95,9 @@ class OPAuction(commands.Cog):
             "debt": 0,
             "debt_started_at": 0,
             "debt_recollection_notified": False,
+            "taxes_paid": 0,
+            "fees_paid": 0,
+            "charitable_deductions": 0,
         }
 
         self.config.register_global(**default_global)
@@ -234,6 +237,18 @@ class OPAuction(commands.Cog):
         history.append({"kind": kind, "timestamp": utc_timestamp(), "reversed": False, **details})
         await self.config.transaction_history.set(history[-200:])
 
+    async def record_tax_paid(self, user_id: int, amount: int) -> None:
+        """Add a daily tax payment to a member's cumulative tax ledger."""
+        if amount > 0:
+            player = self.config.user_from_id(user_id)
+            await player.taxes_paid.set(int(await player.taxes_paid() or 0) + amount)
+
+    async def record_fee_paid(self, user_id: int, amount: int) -> None:
+        """Add an Auction House fee to a member's cumulative fee ledger."""
+        if amount > 0:
+            player = self.config.user_from_id(user_id)
+            await player.fees_paid.set(int(await player.fees_paid() or 0) + amount)
+
     async def notify_rarity_subscribers(self, channel: discord.TextChannel, rarity: str) -> None:
         """Mention users who opted in to this pool-auction rarity."""
         rarity = rarity.lower()
@@ -339,13 +354,21 @@ class OPAuction(commands.Cog):
                     continue
                 user_id = int(user_id)
                 available = await self.economy.available_balance(user_id)
-                amount = int(available * tax_rate / 100)
+                deduction = int(data.get("charitable_deductions", 0) or 0)
+                deduction_used = min(available, deduction)
+                taxable_balance = available - deduction_used
+                amount = int(taxable_balance * tax_rate / 100)
+                if deduction_used:
+                    await self.config.user_from_id(user_id).charitable_deductions.set(
+                        deduction - deduction_used
+                    )
                 if amount < 1:
                     continue
                 await self.economy.adjust_balance(user_id, -amount)
-                collected.append((user_id, amount))
+                await self.record_tax_paid(user_id, amount)
+                collected.append((user_id, amount, deduction_used))
 
-            total_collected = sum(amount for _, amount in collected)
+            total_collected = sum(amount for _, amount, _ in collected)
             vault_balance = await self.config.total_fees()
             await self.config.total_fees.set(vault_balance + total_collected)
             await self.config.tax_last_collected.set(utc_timestamp())
@@ -356,10 +379,12 @@ class OPAuction(commands.Cog):
                 payers=len(collected),
             )
 
-        for user_id, amount in collected:
+        for user_id, amount, deduction_used in collected:
             await self.log_transaction(
                 "🏦 Daily Auction Tax",
-                f"Member: <@{user_id}>\nTax rate: **{tax_rate:g}%**\nPaid: **{format_berries(amount)}**",
+            f"Member: <@{user_id}>\nTax rate: **{tax_rate:g}%**\n"
+            f"Charitable deduction used: **{format_berries(deduction_used)}**\n"
+            f"Paid: **{format_berries(amount)}**",
             )
 
         channel_id = await self.config.tax_channel()
@@ -1000,6 +1025,8 @@ class OPAuction(commands.Cog):
                 seller_amount = 0
                 await self.economy.adjust_balance(member.id, -offerer_fee)
                 await self.economy.adjust_balance(ctx.author.id, -recipient_fee)
+                await self.record_fee_paid(member.id, offerer_fee)
+                await self.record_fee_paid(ctx.author.id, recipient_fee)
                 vault_balance = await self.config.total_fees()
                 await self.config.total_fees.set(vault_balance + house_cut)
             else:
@@ -1010,6 +1037,7 @@ class OPAuction(commands.Cog):
                 self.characters.assign(offered_id, character_buyer_id)
                 await self.economy.adjust_balance(cash_buyer_id, -cash_amount)
                 await self.economy.deposit(cash_seller_id, seller_amount)
+                await self.record_fee_paid(cash_seller_id, house_cut)
                 vault_balance = await self.config.total_fees()
                 await self.config.total_fees.set(vault_balance + house_cut)
 
@@ -1600,13 +1628,22 @@ class OPAuction(commands.Cog):
             await self.economy.adjust_balance(ctx.author.id, -donation)
             vault_balance = await self.config.total_fees()
             await self.config.total_fees.set(vault_balance + donation)
+            player = self.config.user_from_id(ctx.author.id)
+            await player.charitable_deductions.set(
+                int(await player.charitable_deductions() or 0) + donation
+            )
             await self.record_transaction("vault_donation", user_id=ctx.author.id, amount=donation)
 
         await self.log_transaction(
             "🏦 Vault Donation",
             f"Donor: {ctx.author.mention}\nAmount: **{format_berries(donation)}**",
         )
-        await ctx.send(embed=AuctionEmbeds.success(f"Donated {format_berries(donation)} to the Auction House Vault."))
+        await ctx.send(
+            embed=AuctionEmbeds.success(
+                f"Donated {format_berries(donation)} to the Auction House Vault. "
+                "The donation has been added to your charitable tax deductions."
+            )
+        )
 
     @auction_group.command(name="collectdebt")
     @commands.admin_or_permissions(manage_guild=True)
@@ -2101,6 +2138,33 @@ class OPAuction(commands.Cog):
         """Set the channel that receives daily tax collection announcements."""
         await self.config.tax_channel.set(channel.id)
         await ctx.send(embed=AuctionEmbeds.success(f"Daily tax collections will be announced in {channel.mention}."))
+
+    @auction_group.command(name="taxes", aliases=["fees", "taxespaid"])
+    async def taxes_paid(self, ctx, member: discord.Member = None):
+        """Show your cumulative daily taxes and Auction House fees paid."""
+        target = member or ctx.author
+        if member and member.id != ctx.author.id:
+            permissions = ctx.author.guild_permissions if ctx.guild else None
+            if not permissions or not (permissions.administrator or permissions.manage_guild):
+                return await ctx.send(embed=AuctionEmbeds.error("Only administrators can view another member's totals."))
+        if not await self.economy.exists(target.id):
+            return await ctx.send(embed=AuctionEmbeds.error("That member has not started the auction game."))
+
+        player = self.config.user_from_id(target.id)
+        taxes_paid = int(await player.taxes_paid() or 0)
+        fees_paid = int(await player.fees_paid() or 0)
+        charitable_deductions = int(await player.charitable_deductions() or 0)
+        embed = discord.Embed(
+            title=f"Taxes and Fees: {target.display_name}",
+            description=(
+                f"Daily taxes paid: **{format_berries(taxes_paid)}**\n"
+                f"Auction House fees paid: **{format_berries(fees_paid)}**\n\n"
+                f"**Total paid: {format_berries(taxes_paid + fees_paid)}**\n"
+                f"Charitable deduction remaining: **{format_berries(charitable_deductions)}**"
+            ),
+            color=discord.Color.gold(),
+        )
+        await ctx.send(embed=embed)
 
     @auction_group.command(name="taxstart")
     @commands.admin_or_permissions(manage_guild=True)
