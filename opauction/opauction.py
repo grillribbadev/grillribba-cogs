@@ -1380,7 +1380,7 @@ class OPAuction(commands.Cog):
         )
 
     @auction_group.command(name="paydebt", aliases=["repayfor"])
-    async def pay_debt(self, ctx, member: discord.Member, amount: int = None):
+    async def pay_debt(self, ctx, member: discord.Member, amount: Union[int, str] = None):
         """Pay all or part of another member's loan debt with no additional fees."""
         if not await self.economy.exists(ctx.author.id):
             return await ctx.send(embed=AuctionEmbeds.error("Use `.auction start` first."))
@@ -1391,7 +1391,9 @@ class OPAuction(commands.Cog):
             if debt < 1:
                 return await ctx.send(embed=AuctionEmbeds.error("That member has no outstanding Auction House debt."))
 
-            payment = debt if amount is None else amount
+            if isinstance(amount, str) and amount.lower() not in {"remaining", "remianing"}:
+                return await ctx.send(embed=AuctionEmbeds.error("Use a beri amount or `remaining`."))
+            payment = debt if amount is None or isinstance(amount, str) else amount
             if payment < 1:
                 return await ctx.send(embed=AuctionEmbeds.error("Payment amount must be at least ฿1."))
             payment = min(payment, debt)
@@ -1431,32 +1433,37 @@ class OPAuction(commands.Cog):
         )
 
     @auction_group.command(name="donate", aliases=["donatebank", "bankdonate"])
-    async def donate_to_bank(self, ctx, amount: int):
+    async def donate_to_bank(self, ctx, amount: Union[int, str]):
         """Donate available beri to the Auction House Vault with no fee."""
-        if amount < 1:
+        if isinstance(amount, str) and amount.lower() not in {"remaining", "remianing"}:
+            return await ctx.send(embed=AuctionEmbeds.error("Use a beri amount or `remaining`."))
+        if isinstance(amount, int) and amount < 1:
             return await ctx.send(embed=AuctionEmbeds.error("Donation amount must be at least ฿1."))
         if not await self.economy.exists(ctx.author.id):
             return await ctx.send(embed=AuctionEmbeds.error("Use `.auction start` first."))
 
         async with self.auction._state_lock:
             available = await self.economy.available_balance(ctx.author.id)
-            if available < amount:
+            donation = available if isinstance(amount, str) else amount
+            if donation < 1:
+                return await ctx.send(embed=AuctionEmbeds.error("You have no available beri to donate."))
+            if available < donation:
                 return await ctx.send(
                     embed=AuctionEmbeds.error(
                         f"You have only {format_berries(available)} available to donate."
                     )
                 )
 
-            await self.economy.adjust_balance(ctx.author.id, -amount)
+            await self.economy.adjust_balance(ctx.author.id, -donation)
             vault_balance = await self.config.total_fees()
-            await self.config.total_fees.set(vault_balance + amount)
-            await self.record_transaction("vault_donation", user_id=ctx.author.id, amount=amount)
+            await self.config.total_fees.set(vault_balance + donation)
+            await self.record_transaction("vault_donation", user_id=ctx.author.id, amount=donation)
 
         await self.log_transaction(
             "🏦 Vault Donation",
-            f"Donor: {ctx.author.mention}\nAmount: **{format_berries(amount)}**",
+            f"Donor: {ctx.author.mention}\nAmount: **{format_berries(donation)}**",
         )
-        await ctx.send(embed=AuctionEmbeds.success(f"Donated {format_berries(amount)} to the Auction House Vault."))
+        await ctx.send(embed=AuctionEmbeds.success(f"Donated {format_berries(donation)} to the Auction House Vault."))
 
     @auction_group.command(name="collectdebt")
     @commands.admin_or_permissions(manage_guild=True)
