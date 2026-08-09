@@ -872,10 +872,29 @@ class OPAuction(commands.Cog):
         )
 
     @auction_group.command(name="collection", aliases=["col", "inv", "inventory"])
-    async def collection(self, ctx, member: discord.Member = None):
+    async def collection(
+        self,
+        ctx,
+        member_or_rarity: Union[discord.Member, str] = None,
+        rarity: str = None,
+        ):
         """List your collection, or an administrator can view another member's."""
-        target = member or ctx.author
-        if member and member.id != ctx.author.id:
+        target = ctx.author
+        rarity_filter = None
+
+        if isinstance(member_or_rarity, discord.Member):
+            target = member_or_rarity
+            rarity_filter = rarity.lower() if rarity else None
+
+        else:
+            rarity_filter = member_or_rarity.lower() if member_or_rarity else None
+
+        valid_rarities = {"normal", "rare", "epic", "legendary", "mythical"}
+        if rarity_filter and rarity_filter not in valid_rarities:
+            return await ctx.send(embed=AuctionEmbeds.error("Use one of: normal, rare, epic, legendary, mythical."
+                                                            )
+
+        if target and target.id != ctx.author.id:
             permissions = ctx.author.guild_permissions if ctx.guild else None
             if not permissions or not (permissions.administrator or permissions.manage_guild):
                 return await ctx.send(embed=AuctionEmbeds.error("Only administrators can view another member's collection."))
@@ -900,7 +919,11 @@ class OPAuction(commands.Cog):
         characters = []
         for character_id in await self.economy.get_characters(target.id):
             character = self.characters.get(character_id)
-            if character:
+            if character and (
+                not rarity_filter or character.get("rarity", "").lower() == rarity_filter
+            ):
+
+            
                 status = "Up for auction" if int(character_id) == live_character_id else "Queued for sale" if int(character_id) in queued_ids else "Owned"
                 last_bought_value = int(last_sale_prices.get(str(character_id), 0) or 0)
                 characters.append((character, status, last_bought_value))
