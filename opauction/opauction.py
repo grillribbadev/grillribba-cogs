@@ -57,6 +57,8 @@ class OPAuction(commands.Cog):
             self,
             identifier=948362871,
             force_registration=True,
+            
+
         )
 
         default_global = {
@@ -86,6 +88,7 @@ class OPAuction(commands.Cog):
             "last_auction_source": "pool",
             "forced_next_source": None,
             "forced_next_character_id": None,
+            "sellhouse_rate":70,
         }
 
         default_user = {
@@ -1355,7 +1358,8 @@ class OPAuction(commands.Cog):
         if last_price < 1:
             return await ctx.send(embed=AuctionEmbeds.error("This character has no completed auction sale price yet."))
 
-        payout = max(1, last_price * 70 // 100)
+        rate = int(await self.config.sell_house_rate() or 70)
+        payout = max(1, last_price * rate // 100)
         vault_balance = await self.config.total_fees()
         if vault_balance < payout:
             return await ctx.send(
@@ -2374,6 +2378,27 @@ class OPAuction(commands.Cog):
 
         await self.config.tax_rate.set(percent)
         await ctx.send(embed=AuctionEmbeds.success(f"Daily tax rate set to **{percent:g}%**."))
+
+    @auction_group.command(name="sellhouserate", aliases=["sethousesellrate"])
+    @commands.admin_or_permissions(manage_guild=True)
+    async def sellhouse_rate(self, ctx, percent: float = None):
+        """View or set the Auction house buyback percentage."""
+        if percent is None: 
+            rate = int(await self.config.sellhouse_rate() or 70)
+            return await ctx.send(
+                embed=AuctionEmbeds.success(
+                    f"Current sellhouse buyback rate: **{rate}%**."
+                )
+            )
+        if percent < 1 or percent > 100:
+            return await ctx.send(
+                embed=AuctionEmbeds.error("The sellhouse rate must be between 1% and 100%.")
+            )
+        await self.config.sellhouse_rate.set(percent)
+        await ctx.send(embed=AuctionEmbeds.success(
+            f"Sellhouse buyback rate set to **{percent}%**."
+            )
+        )
 
     @auction_group.command(name="taxchannel")
     @commands.admin_or_permissions(manage_guild=True)
