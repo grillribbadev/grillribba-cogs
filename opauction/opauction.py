@@ -637,13 +637,15 @@ class OPAuction(commands.Cog):
             if current and int(current.get("seller_id", 0) or 0) == target.id
             else 0
         )
+        last_sale_prices = await self.config.last_sale_prices()
 
         characters = []
         for character_id in await self.economy.get_characters(target.id):
             character = self.characters.get(character_id)
             if character:
                 status = "Up for auction" if int(character_id) == live_character_id else "Queued for sale" if int(character_id) in queued_ids else "Owned"
-                characters.append((character, status))
+                last_bought_value = int(last_sale_prices.get(str(character_id), 0) or 0)
+                characters.append((character, status, last_bought_value))
 
         await ctx.send(embed=AuctionEmbeds.collection(target, characters))
 

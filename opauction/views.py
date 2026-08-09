@@ -242,7 +242,7 @@ class AuctionEmbeds:
         return embed
 
     @staticmethod
-    def collection(member: discord.Member, characters: list[tuple[dict, str]]):
+    def collection(member: discord.Member, characters: list[tuple[dict, str, int]]):
 
         embed = discord.Embed(
             title=f"{member.display_name}'s Collection",
@@ -255,12 +255,16 @@ class AuctionEmbeds:
 
         lines = []
 
-        for character, status in characters:
+        total_value = 0
+        for character, status, last_bought_value in characters:
+            total_value += last_bought_value
+            value_text = format_berries(last_bought_value) if last_bought_value else "No completed sale"
             lines.append(
-                f"• **{character['name']}** ({character['rarity']}) - {status}"
+                f"• **{character['name']}** ({character['rarity']}) - {status}\n"
+                f"  Last bought: **{value_text}**"
             )
 
-        embed.description = "\n".join(lines)
+        embed.description = "\n".join(lines) + f"\n\n**Total collection value: {format_berries(total_value)}**"
 
         return embed
 
