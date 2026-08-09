@@ -871,7 +871,7 @@ class OPAuction(commands.Cog):
             view=AuctionPingView(self, selected),
         )
 
-    @auction_group.command(name="collection")
+    @auction_group.command(name="collection", aliases=["col", "inv", "inventory"])
     async def collection(self, ctx, member: discord.Member = None):
         """List your collection, or an administrator can view another member's."""
         target = member or ctx.author
