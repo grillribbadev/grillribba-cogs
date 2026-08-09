@@ -104,6 +104,7 @@ RARITIES = (
     "Rare",
     "Epic",
     "Legendary",
+    "Mythical",
 )
 
 RARITY_WEIGHTS = {
@@ -113,6 +114,8 @@ RARITY_WEIGHTS = {
     "rare": 25,
     "epic": 10,
     "legendary": 3,
+    # Mythical is the top tier: twelve times rarer than Legendary.
+    "mythical": 0.25,
 }
 
 POOL_STARTING_BIDS = {
@@ -122,6 +125,7 @@ POOL_STARTING_BIDS = {
     "rare": 50,
     "epic": 100,
     "legendary": 150,
+    "mythical": 200,
 }
 
 RARITY_COLORS = {
@@ -130,4 +134,5 @@ RARITY_COLORS = {
     "Rare": discord.Color.blue(),
     "Epic": discord.Color.purple(),
     "Legendary": discord.Color.gold(),
+    "Mythical": discord.Color.dark_magenta(),
 }

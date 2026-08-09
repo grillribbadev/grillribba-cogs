@@ -245,6 +245,35 @@ class AuctionEmbeds:
         return embed
 
     @staticmethod
+    def character_list(
+        entries: list[tuple[dict, int | None]],
+        rarity_filter: str,
+        page: int,
+        page_size: int = 10,
+    ) -> discord.Embed:
+        """Build one page of the public character ownership roster."""
+        total_pages = max(1, (len(entries) + page_size - 1) // page_size)
+        start = page * page_size
+        rarity_label = "All Rarities" if rarity_filter == "all" else rarity_filter.title()
+        embed = discord.Embed(
+            title=f"📖 Character List — {rarity_label}",
+            color=COLOR_AUCTION,
+        )
+
+        lines = []
+        for number, (character, owner_id) in enumerate(entries[start:start + page_size], start=start + 1):
+            owner = f"<@{owner_id}>" if owner_id else "🏛️ Auction House Pool"
+            lines.append(
+                f"**{number}. {character.get('name', 'Unknown')}** "
+                f"— {character.get('rarity', 'Unknown')}\n"
+                f"Owner: {owner}"
+            )
+
+        embed.description = "\n\n".join(lines) if lines else "No characters match this rarity."
+        embed.set_footer(text=f"Page {page + 1} of {total_pages} • {len(entries)} character(s)")
+        return embed
+
+    @staticmethod
     def collection(member: discord.Member, characters: list[tuple[dict, str, int]]):
 
         embed = discord.Embed(
@@ -330,7 +359,7 @@ class AuctionEmbeds:
 class AuctionPingView(discord.ui.View):
     """Persistent buttons for selecting pool-auction rarity pings."""
 
-    RARITIES = ("normal", "rare", "epic", "legendary")
+    RARITIES = ("normal", "rare", "epic", "legendary", "mythical")
 
     def __init__(self, cog, selected: list[str] | None = None):
         super().__init__(timeout=None)

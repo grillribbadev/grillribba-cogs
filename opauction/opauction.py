@@ -37,7 +37,7 @@ from .constants import (
     STEAL_SUCCESS_CHANCE,
 )
 from .economy import Economy
-from .leaderboard import BalanceLeaderboardView
+from .leaderboard import BalanceLeaderboardView, CharacterListView
 from .utils import clean_name, format_berries, format_duration, utc_timestamp
 from .views import AuctionEmbeds, AuctionPingView
 
@@ -871,6 +871,12 @@ class OPAuction(commands.Cog):
             view=AuctionPingView(self, selected),
         )
 
+    @auction_group.command(name="charlist", aliases=["characters", "roster"])
+    async def character_list(self, ctx):
+        """Browse all roster characters and their current owners by rarity."""
+        view = CharacterListView(self, owner_id=ctx.author.id, rarity_filter="normal")
+        await ctx.send(embed=view._embed(), view=view)
+
     @auction_group.command(name="collection", aliases=["col", "inv", "inventory"])
     async def collection(
         self,
@@ -889,10 +895,13 @@ class OPAuction(commands.Cog):
         else:
             rarity_filter = member_or_rarity.lower() if member_or_rarity else None
 
-        valid_rarities = {"normal", "rare", "epic", "legendary", "mythical"}
+        valid_rarities = {rarity.lower() for rarity in RARITIES}
         if rarity_filter and rarity_filter not in valid_rarities:
-            return await ctx.send(embed=AuctionEmbeds.error("Use one of: normal, rare, epic, legendary, mythical."
-                                                            ))
+            return await ctx.send(
+                embed=AuctionEmbeds.error(
+                    "Use one of: " + ", ".join(rarity.lower() for rarity in RARITIES) + "."
+                )
+            )
 
         if target and target.id != ctx.author.id:
             permissions = ctx.author.guild_permissions if ctx.guild else None

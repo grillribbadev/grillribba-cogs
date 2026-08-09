@@ -47,6 +47,7 @@ def rarity_color(rarity: str) -> discord.Color:
         "rare": discord.Color.blue(),
         "epic": discord.Color.purple(),
         "legendary": discord.Color.gold(),
+        "mythical": discord.Color.dark_magenta(),
     }
 
     return colours.get(rarity, discord.Color.blurple())
