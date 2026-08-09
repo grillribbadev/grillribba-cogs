@@ -573,7 +573,7 @@ class OPAuction(commands.Cog):
 
         await self._accept_trade(ReactionContext(recipient, channel), offerer, payload.message_id)
 
-    @commands.group(name="auction", invoke_without_command=True)
+    @commands.group(name="auction", aliases=["ac"], invoke_without_command=True)
     async def auction_group(self, ctx):
         """Auction commands."""
         await ctx.send_help()
