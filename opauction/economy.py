@@ -5,7 +5,6 @@ from typing import Optional
 
 from redbot.core import Config
 
-from .constants import DAILY_INCOME, STARTING_BALANCE
 from .utils import utc_timestamp
 
 
@@ -38,7 +37,7 @@ class Economy:
 
             await player.started.set(True)
             if not has_existing_data:
-                await player.balance.set(STARTING_BALANCE)
+                await player.balance.set(int(await self.config.starting_balance() or 0))
                 await player.reserved.set(0)
                 await player.characters.set([])
                 await player.joined.set(utc_timestamp())

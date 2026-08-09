@@ -90,6 +90,7 @@ class OPAuction(commands.Cog):
             "forced_next_character_id": None,
             "sellhouse_rate":70,
             "daily_income":1000,
+            "starting_balance": STARTING_BALANCE,
         }
 
         default_user = {
@@ -2455,6 +2456,27 @@ class OPAuction(commands.Cog):
         await ctx.send(
             embed=AuctionEmbeds.success(
                 f"Daily reward set to **{format_berries(amount)}**."
+            )
+        )
+
+    @auction_group.command(name="startingbalance", aliases=["startbalance", "setstartingbalance"])
+    @commands.admin_or_permissions(manage_guild=True)
+    async def starting_balance(self, ctx, amount: int = None):
+        """View or set the beri granted to newly registered auction players."""
+        if amount is None:
+            current = int(await self.config.starting_balance() or STARTING_BALANCE)
+            return await ctx.send(
+                embed=AuctionEmbeds.success(
+                    f"New-player starting balance: **{format_berries(current)}**."
+                )
+            )
+        if amount < 0:
+            return await ctx.send(embed=AuctionEmbeds.error("Starting balance cannot be negative."))
+
+        await self.config.starting_balance.set(amount)
+        await ctx.send(
+            embed=AuctionEmbeds.success(
+                f"New-player starting balance set to **{format_berries(amount)}**."
             )
         )
     
