@@ -50,8 +50,58 @@ class AuctionManager:
         self.config: Config = cog.config
         self.image_cache: dict[int, str] = {}
         self._runner_id = ""
+        self._last_start_error: str | None = None
         self._start_lock = _AUCTION_START_LOCK
         self._state_lock = _AUCTION_STATE_LOCK
+
+    async def start_failure_reason(self) -> str | None:
+        """Return a user-facing reason an auction cannot be posted, if known."""
+        if not await self.is_active_runner():
+            return "The auction scheduler is still starting. Please try again in a few seconds."
+
+        if await self.get_current_auction():
+            return "An auction is already active."
+
+        queue = await self.config.queue()
+        available_pool = [
+            character_id
+            for character_id in self.cog.characters.all_ids()
+            if not self.cog.characters.owned(character_id)
+        ]
+        valid_queue_entries = [
+            entry
+            for entry in queue
+            if self.cog.characters.get(int(entry.get("character_id", 0) or 0))
+        ]
+        if not available_pool and not valid_queue_entries:
+            return (
+                "There are no available characters. Add an unowned character to the pool "
+                "or have a player queue one with `auction sell <character>`."
+            )
+
+        channel_id = await self.config.auction_channel()
+        if not channel_id:
+            return "No auction channel is configured. Use `auction channel #channel` first."
+
+        channel = await self.resolve_channel(int(channel_id))
+        if not channel:
+            return (
+                "The configured auction channel cannot be accessed. It may have been deleted, "
+                "or the bot cannot view it. Set it again with `auction channel #channel`."
+            )
+
+        me = channel.guild.me
+        permissions = channel.permissions_for(me) if me else None
+        required = (
+            ("View Channel", "view_channel"),
+            ("Send Messages", "send_messages"),
+            ("Embed Links", "embed_links"),
+        )
+        missing = [label for label, attribute in required if not permissions or not getattr(permissions, attribute, False)]
+        if missing:
+            return "The bot is missing permission in the auction channel: " + ", ".join(missing) + "."
+
+        return None
 
     async def activate_runner(self) -> None:
         """Mark this cog instance as the only instance allowed to update auctions."""
@@ -240,9 +290,16 @@ class AuctionManager:
 
     async def start_auction(self) -> bool:
         """Create one auction at a time, even when several triggers arrive together."""
+        self._last_start_error = await self.start_failure_reason()
+        if self._last_start_error:
+            return False
         if not await self.is_active_runner():
             return False
         async with self._start_lock:
+            # Another trigger may have started an auction while this caller waited.
+            self._last_start_error = await self.start_failure_reason()
+            if self._last_start_error:
+                return False
             return await self._start_auction()
 
     async def _start_auction(self) -> bool:
@@ -349,7 +406,17 @@ class AuctionManager:
             )
         try:
             message = await channel.send(embed=embed)
-        except (discord.Forbidden, discord.HTTPException, discord.NotFound):
+        except discord.Forbidden:
+            self._last_start_error = "The bot was denied permission to post in the configured auction channel."
+            log.warning("OPAuction could not post an auction embed: Discord denied access to channel %s", channel_id)
+            return False
+        except discord.NotFound:
+            self._last_start_error = "The configured auction channel no longer exists. Set it again with `auction channel #channel`."
+            log.warning("OPAuction could not post an auction embed: channel %s was not found", channel_id)
+            return False
+        except discord.HTTPException as error:
+            self._last_start_error = "Discord could not post the auction embed. Please try again shortly."
+            log.warning("OPAuction could not post an auction embed in channel %s: %s", channel_id, error)
             return False
 
         await self.cog.notify_rarity_subscribers(channel, str(character.get("rarity", "normal")))

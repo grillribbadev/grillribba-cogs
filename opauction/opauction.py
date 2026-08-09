@@ -2303,7 +2303,12 @@ class OPAuction(commands.Cog):
 
         started = await self.auction.begin()
         if not started:
-            return await ctx.send(embed=AuctionEmbeds.error("Auction automation is running, but no auction embed could be posted to the configured channel."))
+            reason = self.auction._last_start_error or await self.auction.start_failure_reason()
+            return await ctx.send(
+                embed=AuctionEmbeds.error(
+                    reason or "Auction automation started, but Discord could not post the auction embed."
+                )
+            )
 
         current = await self.auction.get_current_auction()
         if current and current.get("message_id"):
@@ -2914,6 +2919,20 @@ class OPAuction(commands.Cog):
     @commands.admin_or_permissions(manage_guild=True)
     async def set_channel(self, ctx, channel: discord.TextChannel):
         """Set the auction channel."""
+        me = ctx.guild.me if ctx.guild else None
+        permissions = channel.permissions_for(me) if me else None
+        required = (
+            ("View Channel", "view_channel"),
+            ("Send Messages", "send_messages"),
+            ("Embed Links", "embed_links"),
+        )
+        missing = [label for label, attribute in required if not permissions or not getattr(permissions, attribute, False)]
+        if missing:
+            return await ctx.send(
+                embed=AuctionEmbeds.error(
+                    "I cannot use that channel. Missing permission: " + ", ".join(missing) + "."
+                )
+            )
         await self.config.auction_channel.set(channel.id)
         await ctx.send(f"Auction channel set to {channel.mention}")
 
