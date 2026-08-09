@@ -28,6 +28,7 @@ from .constants import (
     PRAY_MIN_PENALTY,
     PRAY_MIN_REWARD,
     PRAY_SUCCESS_CHANCE,
+    RARITIES,
     STARTING_BALANCE,
     STEAL_MAX_PENALTY,
     STEAL_MAX_REWARD,
@@ -1316,11 +1317,22 @@ class OPAuction(commands.Cog):
 
     @auction_group.command(name="sellhouse", aliases=["housesell"])
     async def sell_house(self, ctx, *, name: str):
-        """Sell an owned character to the auction house for half its last sale price."""
+        """Sell a character, all characters, or a rarity tier to the Auction House."""
         if not await self.economy.exists(ctx.author.id):
             return await ctx.send(embed=AuctionEmbeds.error("Use `.auction start` first."))
         if await self.debt_blocks_sales(ctx.author.id):
             return await ctx.send(embed=AuctionEmbeds.error("Your loan is overdue. Repay it before selling characters."))
+
+        selector, _, exclusion_text = name.partition("-")
+        selector = clean_name(selector)
+        rarity_selectors = {rarity.lower() for rarity in RARITIES}
+        if selector == "all" or selector in rarity_selectors:
+            excluded_names = {
+                clean_name(part)
+                for part in exclusion_text.split("-")
+                if clean_name(part)
+            }
+            return await self._sell_house_bulk(ctx, selector, excluded_names)
 
         character = self.characters.get_by_name(clean_name(name))
         if not character:
@@ -1343,7 +1355,7 @@ class OPAuction(commands.Cog):
         if last_price < 1:
             return await ctx.send(embed=AuctionEmbeds.error("This character has no completed auction sale price yet."))
 
-        payout = last_price // 2
+        payout = max(1, last_price // 2)
         vault_balance = await self.config.total_fees()
         if vault_balance < payout:
             return await ctx.send(
@@ -1372,6 +1384,73 @@ class OPAuction(commands.Cog):
         await ctx.send(
             embed=AuctionEmbeds.success(
                 f"The Auction House bought **{character['name']}** for {format_berries(payout)}."
+            )
+        )
+
+    async def _sell_house_bulk(self, ctx, selector: str, excluded_names: set[str]) -> None:
+        """Sell all eligible owned characters matching a bulk selector in one atomic buyback."""
+        queue = await self.config.queue()
+        queued_ids = {int(entry.get("character_id", 0)) for entry in queue}
+        current = await self.auction.get_current_auction()
+        live_id = int(current.get("character_id", 0)) if current else 0
+        last_sale_prices = await self.config.last_sale_prices()
+        selected = []
+        skipped = 0
+
+        for character_id in await self.economy.get_characters(ctx.author.id):
+            character_id = int(character_id)
+            character = self.characters.get(character_id)
+            if not character:
+                continue
+            character_name = clean_name(character["name"])
+            if character_name in excluded_names:
+                continue
+            if selector != "all" and clean_name(character.get("rarity", "")) != selector:
+                continue
+            if character_id in queued_ids or character_id == live_id:
+                skipped += 1
+                continue
+            last_price = int(last_sale_prices.get(str(character_id), 0) or 0)
+            if last_price < 1:
+                skipped += 1
+                continue
+            selected.append((character_id, character, last_price, max(1, last_price // 2)))
+
+        if not selected:
+            return await ctx.send(embed=AuctionEmbeds.error("No eligible characters matched that sell-to-house selection."))
+
+        total_payout = sum(payout for _, _, _, payout in selected)
+        async with self.auction._state_lock:
+            vault_balance = await self.config.total_fees()
+            if vault_balance < total_payout:
+                return await ctx.send(
+                    embed=AuctionEmbeds.error(
+                        f"The Auction House Vault has only {format_berries(vault_balance)} available, but this buyback costs {format_berries(total_payout)}."
+                    )
+                )
+            for character_id, _, _, _ in selected:
+                await self.economy.remove_character(ctx.author.id, character_id)
+                self.characters.unassign(character_id)
+            await self.economy.deposit(ctx.author.id, total_payout)
+            await self.config.total_fees.set(vault_balance - total_payout)
+            await self.record_transaction(
+                "bulk_buyback",
+                user_id=ctx.author.id,
+                character_ids=[character_id for character_id, _, _, _ in selected],
+                amount=total_payout,
+                vault_amount=total_payout,
+            )
+
+        names = ", ".join(character["name"] for _, character, _, _ in selected)
+        await self.log_transaction(
+            "🏦 Auction House Bulk Buyback",
+            f"Seller: {ctx.author.mention}\nCharacters: **{names}**\n"
+            f"Buyback payout: **{format_berries(total_payout)}**\nReturned to the Auction House pool.",
+        )
+        skipped_text = f" Skipped {skipped} queued, live, or unpriced character(s)." if skipped else ""
+        await ctx.send(
+            embed=AuctionEmbeds.success(
+                f"The Auction House bought {len(selected)} character(s) for {format_berries(total_payout)}.{skipped_text}"
             )
         )
 
