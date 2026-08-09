@@ -892,15 +892,15 @@ class OPAuction(commands.Cog):
         valid_rarities = {"normal", "rare", "epic", "legendary", "mythical"}
         if rarity_filter and rarity_filter not in valid_rarities:
             return await ctx.send(embed=AuctionEmbeds.error("Use one of: normal, rare, epic, legendary, mythical."
-                                                            )
+                                                            ))
 
         if target and target.id != ctx.author.id:
             permissions = ctx.author.guild_permissions if ctx.guild else None
             if not permissions or not (permissions.administrator or permissions.manage_guild):
                 return await ctx.send(embed=AuctionEmbeds.error("Only administrators can view another member's collection."))
-
+            
         if not await self.economy.exists(target.id):
-            return await ctx.send("Use `.auction start` first.")
+            return await ctx.send("Use `.auction start` first.") 
 
         queue = await self.config.queue()
         queued_ids = {
