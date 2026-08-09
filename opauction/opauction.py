@@ -1379,6 +1379,85 @@ class OPAuction(commands.Cog):
             )
         )
 
+    @auction_group.command(name="paydebt", aliases=["repayfor"])
+    async def pay_debt(self, ctx, member: discord.Member, amount: int = None):
+        """Pay all or part of another member's loan debt with no additional fees."""
+        if not await self.economy.exists(ctx.author.id):
+            return await ctx.send(embed=AuctionEmbeds.error("Use `.auction start` first."))
+
+        async with self.auction._state_lock:
+            borrower = self.config.user_from_id(member.id)
+            debt = int(await borrower.debt() or 0)
+            if debt < 1:
+                return await ctx.send(embed=AuctionEmbeds.error("That member has no outstanding Auction House debt."))
+
+            payment = debt if amount is None else amount
+            if payment < 1:
+                return await ctx.send(embed=AuctionEmbeds.error("Payment amount must be at least ฿1."))
+            payment = min(payment, debt)
+            available = await self.economy.available_balance(ctx.author.id)
+            if available < payment:
+                return await ctx.send(
+                    embed=AuctionEmbeds.error(
+                        f"You have only {format_berries(available)} available to pay toward their debt."
+                    )
+                )
+
+            remaining_debt = debt - payment
+            await self.economy.adjust_balance(ctx.author.id, -payment)
+            await borrower.debt.set(remaining_debt)
+            if remaining_debt == 0:
+                await borrower.debt_started_at.set(0)
+            vault_balance = await self.config.total_fees()
+            await self.config.total_fees.set(vault_balance + payment)
+            await self.record_transaction(
+                "third_party_debt_payment",
+                payer_id=ctx.author.id,
+                user_id=member.id,
+                amount=payment,
+                remaining_debt=remaining_debt,
+            )
+
+        await self.log_transaction(
+            "🏦 Debt Paid By Another Member",
+            f"Payer: {ctx.author.mention}\nBorrower: {member.mention}\n"
+            f"Payment: **{format_berries(payment)}**\nRemaining debt: **{format_berries(remaining_debt)}**",
+        )
+        await ctx.send(
+            embed=AuctionEmbeds.success(
+                f"Paid {format_berries(payment)} toward {member.mention}'s debt. "
+                f"Remaining debt: {format_berries(remaining_debt)}."
+            )
+        )
+
+    @auction_group.command(name="donate", aliases=["donatebank", "bankdonate"])
+    async def donate_to_bank(self, ctx, amount: int):
+        """Donate available beri to the Auction House Vault with no fee."""
+        if amount < 1:
+            return await ctx.send(embed=AuctionEmbeds.error("Donation amount must be at least ฿1."))
+        if not await self.economy.exists(ctx.author.id):
+            return await ctx.send(embed=AuctionEmbeds.error("Use `.auction start` first."))
+
+        async with self.auction._state_lock:
+            available = await self.economy.available_balance(ctx.author.id)
+            if available < amount:
+                return await ctx.send(
+                    embed=AuctionEmbeds.error(
+                        f"You have only {format_berries(available)} available to donate."
+                    )
+                )
+
+            await self.economy.adjust_balance(ctx.author.id, -amount)
+            vault_balance = await self.config.total_fees()
+            await self.config.total_fees.set(vault_balance + amount)
+            await self.record_transaction("vault_donation", user_id=ctx.author.id, amount=amount)
+
+        await self.log_transaction(
+            "🏦 Vault Donation",
+            f"Donor: {ctx.author.mention}\nAmount: **{format_berries(amount)}**",
+        )
+        await ctx.send(embed=AuctionEmbeds.success(f"Donated {format_berries(amount)} to the Auction House Vault."))
+
     @auction_group.command(name="collectdebt")
     @commands.admin_or_permissions(manage_guild=True)
     async def collect_debt(self, ctx, member: discord.Member):
