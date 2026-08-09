@@ -16,6 +16,7 @@ from redbot.core import Config, commands
 from .auction import AuctionManager
 from .characters import CharacterManager
 from .constants import (
+    AUCTION_TAX,
     DEFAULT_AUCTION_DURATION,
     DEFAULT_AUCTION_INTERVAL,
     LOAN_GRACE_PERIOD_SECONDS,
@@ -291,10 +292,9 @@ class OPAuction(commands.Cog):
             int(user_id): {"taxes": 0, "fees": 0}
             for user_id in users
         }
-        skipped_legacy_trades = 0
         tax_payments = []
 
-        channel_id = await self.config.log_channel()
+        channel_id = await self.config.log_channel() or 1535757050682933388
         if not channel_id:
             return None
         channel = self.bot.get_channel(int(channel_id))
@@ -306,10 +306,46 @@ class OPAuction(commands.Cog):
         if not isinstance(channel, discord.TextChannel):
             return None
 
+        log_messages = 0
+        fee_payments = 0
+        fee_logs_skipped = 0
         try:
             async for message in channel.history(limit=None, oldest_first=True):
+                log_messages += 1
                 for embed in message.embeds:
                     if embed.title != "🏦 Daily Auction Tax" or not embed.description:
+                        if embed.title == "🔨 Auction Sale" and embed.description:
+                            seller_match = re.search(r"Seller:\s*<@!?(\d+)>", embed.description)
+                            price_match = re.search(r"Sale price:\s*\*\*[^\d]*([\d,]+)\*\*", embed.description)
+                            if not seller_match or not price_match:
+                                fee_logs_skipped += 1
+                                continue
+                            seller_id = int(seller_match.group(1))
+                            price = int(price_match.group(1).replace(",", ""))
+                            fee = price - int(round(price * (1 - AUCTION_TAX)))
+                            totals.setdefault(seller_id, {"taxes": 0, "fees": 0})["fees"] += fee
+                            fee_payments += 1
+                        elif embed.title == "🤝 Auction House Trade" and embed.description:
+                            swap_fees = re.findall(
+                                r"\*\*[^\d]*([\d,]+)\*\*\s*from\s*<@!?(\d+)>",
+                                embed.description,
+                            )
+                            if swap_fees:
+                                for amount_text, user_id_text in swap_fees:
+                                    user_id = int(user_id_text)
+                                    amount = int(amount_text.replace(",", ""))
+                                    totals.setdefault(user_id, {"taxes": 0, "fees": 0})["fees"] += amount
+                                    fee_payments += 1
+                                continue
+                            seller_match = re.search(r"from\s*<@!?(\d+)>\s*for", embed.description)
+                            cut_match = re.search(r"Auction House cut:\s*\*\*[^\d]*([\d,]+)\*\*", embed.description)
+                            if not seller_match or not cut_match:
+                                fee_logs_skipped += 1
+                                continue
+                            seller_id = int(seller_match.group(1))
+                            amount = int(cut_match.group(1).replace(",", ""))
+                            totals.setdefault(seller_id, {"taxes": 0, "fees": 0})["fees"] += amount
+                            fee_payments += 1
                         continue
                     member_match = re.search(r"Member:\s*<@!?(\d+)>", embed.description)
                     amount_match = re.search(r"Paid:\s*\*\*[^\d]*([\d,]+)\*\*", embed.description)
@@ -335,31 +371,6 @@ class OPAuction(commands.Cog):
         except (discord.Forbidden, discord.HTTPException):
             return None
 
-        for entry in await self.config.transaction_history():
-            kind = entry.get("kind")
-            if kind == "sale":
-                seller_id = int(entry.get("seller_id", 0) or 0)
-                if seller_id:
-                    totals.setdefault(seller_id, {"taxes": 0, "fees": 0})["fees"] += int(entry.get("vault_amount", 0) or 0)
-            elif kind == "trade":
-                fee_payments = entry.get("fee_payments")
-                if isinstance(fee_payments, list):
-                    for payment in fee_payments:
-                        user_id = int(payment.get("user_id", 0) or 0)
-                        if user_id:
-                            totals.setdefault(user_id, {"taxes": 0, "fees": 0})["fees"] += int(payment.get("amount", 0) or 0)
-                elif entry.get("requested_character_id") is not None:
-                    vault_amount = int(entry.get("vault_amount", 0) or 0)
-                    if vault_amount % 2:
-                        skipped_legacy_trades += 1
-                        continue
-                    for user_id in ("offerer_id", "recipient_id"):
-                        payer_id = int(entry.get(user_id, 0) or 0)
-                        if payer_id:
-                            totals.setdefault(payer_id, {"taxes": 0, "fees": 0})["fees"] += vault_amount // 2
-                else:
-                    skipped_legacy_trades += 1
-
         path = Path(__file__).parent / "data" / "tax_records.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
@@ -380,7 +391,9 @@ class OPAuction(commands.Cog):
         return {
             "members": len(totals),
             "tax_payments": len(tax_payments),
-            "trades_skipped": skipped_legacy_trades,
+            "fee_payments": fee_payments,
+            "fee_logs_skipped": fee_logs_skipped,
+            "log_messages": log_messages,
         }
 
     async def notify_rarity_subscribers(self, channel: discord.TextChannel, rarity: str) -> None:
@@ -2333,15 +2346,16 @@ class OPAuction(commands.Cog):
                 )
             )
 
-        caveats = []
-        if result["trades_skipped"]:
-            caveats.append(f"{result['trades_skipped']} legacy cash trade fee(s) had no recorded payer")
-        caveat_text = "\n".join(caveats) if caveats else "All stored fee records were attributable."
+        caveat_text = (
+            f"{result['fee_logs_skipped']} fee log(s) did not contain a readable payer and amount."
+            if result["fee_logs_skipped"]
+            else "All matching fee logs were attributable."
+        )
         await ctx.send(
             embed=AuctionEmbeds.success(
-                f"Rebuilt {result['tax_payments']} individual tax payment(s) for {result['members']} member(s).\n"
-                f"{caveat_text}\nTax totals were scanned from the full readable log history; "
-                "fee totals are limited to the latest 200 stored transactions."
+                f"Scanned {result['log_messages']} log message(s).\n"
+                f"Rebuilt {result['tax_payments']} tax payment(s) and {result['fee_payments']} fee payment(s) "
+                f"for {result['members']} member(s).\n{caveat_text}"
             )
         )
 
