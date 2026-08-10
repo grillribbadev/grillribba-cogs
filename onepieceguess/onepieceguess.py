@@ -522,7 +522,11 @@ class OnePieceGuess(commands.Cog):
                 return False
 
         message = await channel.send(embed=emb, file=file) if file else await channel.send(embed=emb)
-        await self.engine.set_active(guild, title=ctitle, message=message)
+        await self.engine.set_active(
+            guild,
+            title=title if custom_image_path else ctitle,
+            message=message,
+        )
         await self.engine.set_expired(guild, False)
         return True
 
@@ -754,7 +758,11 @@ class OnePieceGuess(commands.Cog):
                 emb.set_image(url="attachment://opguess_blur.png")
 
         message = await channel.send(embed=emb, file=file) if file else await channel.send(embed=emb)
-        await self.engine.set_active(guild, title=title, message=message)
+        await self.engine.set_active(
+            guild,
+            title=cand if custom_image_path else title,
+            message=message,
+        )
         await self.engine.set_expired(guild, False)
 
     # ---- player ----
