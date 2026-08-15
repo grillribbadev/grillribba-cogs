@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Optional, Union, List
 
 import discord
+from discord.ext import tasks
 from redbot.core import commands, Config
 from redbot.core.bot import Red
 
@@ -14,6 +15,9 @@ from redbot.core.bot import Red
 MENTION_RE = re.compile(r"<@!?\d+>")
 # Collapses multiple "<@mention>" tokens into one
 MULTI_MENTION_TOKEN_RE = re.compile(r"(?:<@mention>\s*){2,}")
+DURATION_RE = re.compile(r"(?:\d+[smhd])+")
+DURATION_PART_RE = re.compile(r"(\d+)([smhd])")
+DURATION_UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 
 
 def normalize_for_match(s: str, *, strip_leading_mentions: bool = True) -> str:
@@ -80,12 +84,18 @@ class PhraseMute(commands.Cog):
             "ignore_admins": True,
             "ignore_mods": True,
             "log_cooldown_seconds": 45,    # log once per user per N seconds
+            "mute_duration_seconds": 0,    # 0 means permanent
+            "scheduled_unmutes": {},       # {user_id: unix expiry timestamp}
         }
         self.config.register_guild(**defaults_guild)
 
         # In-memory cooldown tracker (fast, resets on bot restart)
         # key = (guild_id, user_id) -> last_log_timestamp (float)
         self._recent_logs = {}
+        self.check_expired_mutes.start()
+
+    def cog_unload(self):
+        self.check_expired_mutes.cancel()
 
     # -------------------------
     # Helpers
@@ -209,6 +219,54 @@ class PhraseMute(commands.Cog):
         self._recent_logs[key] = now
         return True
 
+    @staticmethod
+    def _parse_duration(duration: str) -> Optional[int]:
+        duration = duration.lower().strip()
+        if not DURATION_RE.fullmatch(duration):
+            return None
+        return sum(int(value) * DURATION_UNITS[unit] for value, unit in DURATION_PART_RE.findall(duration))
+
+    @staticmethod
+    def _format_duration(seconds: int) -> str:
+        parts = []
+        for unit, unit_seconds in (("d", 86400), ("h", 3600), ("m", 60), ("s", 1)):
+            value, seconds = divmod(seconds, unit_seconds)
+            if value:
+                parts.append(f"{value}{unit}")
+        return " ".join(parts) or "0s"
+
+    async def _schedule_unmute(self, member: discord.Member, duration: int) -> None:
+        expires = await self.config.guild(member.guild).scheduled_unmutes()
+        expires[str(member.id)] = int(time.time()) + duration
+        await self.config.guild(member.guild).scheduled_unmutes.set(expires)
+
+    @tasks.loop(seconds=30)
+    async def check_expired_mutes(self):
+        now = int(time.time())
+        for guild_id in (await self.config.all_guilds()).keys():
+            guild_config = self.config.guild_from_id(guild_id)
+            expires = await guild_config.scheduled_unmutes()
+            expired_user_ids = [user_id for user_id, expiry in expires.items() if int(expiry) <= now]
+            if not expired_user_ids:
+                continue
+
+            guild = self.bot.get_guild(guild_id)
+            muted_role = await self._get_muted_role(guild) if guild else None
+            for user_id in expired_user_ids:
+                if guild and muted_role:
+                    member = guild.get_member(int(user_id))
+                    if member and muted_role in member.roles:
+                        try:
+                            await member.remove_roles(muted_role, reason="PhraseMute timer expired")
+                        except (discord.Forbidden, discord.HTTPException):
+                            continue
+                expires.pop(user_id, None)
+            await guild_config.scheduled_unmutes.set(expires)
+
+    @check_expired_mutes.before_loop
+    async def before_check_expired_mutes(self):
+        await self.bot.wait_until_ready()
+
     async def _log_action(
         self,
         *,
@@ -321,8 +379,14 @@ class PhraseMute(commands.Cog):
             except (discord.Forbidden, discord.HTTPException):
                 deleted = False
 
+        # Do not schedule removal of a mute that existed before PhraseMute triggered.
+        was_already_muted = muted_role in message.author.roles
+
         # Always ensure muted (even if we skip logging)
         success = await self._mute_member(message.author, muted_role)
+        duration = await self.config.guild(message.guild).mute_duration_seconds()
+        if success and not was_already_muted and duration > 0:
+            await self._schedule_unmute(message.author, duration)
 
         # Cooldown: prevent log channel spam
         cooldown = await self.config.guild(message.guild).log_cooldown_seconds()
@@ -438,6 +502,20 @@ class PhraseMute(commands.Cog):
         await ctx.send(f"✅ Log cooldown set to `{seconds}` seconds per user.")
 
     @phrasemute.command()
+    async def timer(self, ctx: commands.Context, duration: str):
+        """Set automatic unmute time, e.g. 30m, 1h, or 1d12h. Use off to disable."""
+        if duration.lower().strip() in {"off", "none", "0"}:
+            await self.config.guild(ctx.guild).mute_duration_seconds.set(0)
+            return await ctx.send("✅ PhraseMute timer disabled; future mutes will be permanent.")
+
+        seconds = self._parse_duration(duration)
+        if seconds is None or seconds <= 0:
+            return await ctx.send("❌ Invalid duration. Use formats such as `30m`, `1h`, or `1d12h`.")
+
+        await self.config.guild(ctx.guild).mute_duration_seconds.set(seconds)
+        await ctx.send(f"✅ PhraseMute timer set to `{self._format_duration(seconds)}`.")
+
+    @phrasemute.command()
     async def ignoreadmins(self, ctx: commands.Context, value: bool):
         await self.config.guild(ctx.guild).ignore_admins.set(value)
         await ctx.send(f"✅ ignore_admins set to `{value}`")
@@ -508,6 +586,7 @@ class PhraseMute(commands.Cog):
         ignore_admins = await g.ignore_admins()
         ignore_mods = await g.ignore_mods()
         cooldown = await g.log_cooldown_seconds()
+        mute_duration = await g.mute_duration_seconds()
         phrases = await g.phrases()
 
         muted_role = ctx.guild.get_role(muted_role_id) if muted_role_id else None
@@ -519,6 +598,11 @@ class PhraseMute(commands.Cog):
         embed.add_field(name="Enabled", value=str(enabled), inline=True)
         embed.add_field(name="Match mode", value=str(match_mode), inline=True)
         embed.add_field(name="Log cooldown", value=f"{cooldown}s", inline=True)
+        embed.add_field(
+            name="Mute timer",
+            value=self._format_duration(mute_duration) if mute_duration else "Permanent",
+            inline=True,
+        )
         embed.add_field(name="Muted role", value=muted_role.mention if muted_role else "Not set", inline=False)
         embed.add_field(
             name="Log channel",
