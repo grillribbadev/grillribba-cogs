@@ -1,0 +1,13 @@
+{
+  "author": ["Grillribba"],
+  "install_msg": "SelfReactMute installed. Use `[p]selfreact show` to view the configuration.",
+  "name": "SelfReactMute",
+  "short": "Mutes members when they react to their own messages.",
+  "description": "Configurable self-reaction moderation with a timed mute role and customizable embed notification.",
+  "end_user_data_statement": "This cog stores guild configuration and temporary mute expiration timestamps. It does not store personal data beyond Discord member IDs needed for active mute timers.",
+  "tags": ["moderation", "reactions", "mute"],
+  "requirements": [],
+  "min_bot_version": "3.5.0",
+  "hidden": false,
+  "disabled": false
+}

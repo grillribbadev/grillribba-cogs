@@ -1,0 +1,1 @@
+from .selfreact import setup
