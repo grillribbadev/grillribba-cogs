@@ -120,9 +120,6 @@ class SelfReactMute(commands.Cog):
         if not guild:
             return
         conf = await self.config.guild(guild).all()
-        configured_channel_id = conf.get("channel_id")
-        if configured_channel_id and payload.channel_id != configured_channel_id:
-            return
         key = (payload.guild_id, payload.message_id)
         if key in self._processing:
             return
@@ -148,6 +145,9 @@ class SelfReactMute(commands.Cog):
                     log.exception("Failed to clear :sob: reaction in guild %s", guild.id)
                 return
 
+            configured_channel_id = conf.get("channel_id")
+            if configured_channel_id and payload.channel_id != configured_channel_id:
+                return
             if not conf.get("enabled") or not conf.get("mute_role_id"):
                 return
             if self.bot.user and payload.user_id == self.bot.user.id:

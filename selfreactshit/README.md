@@ -47,7 +47,7 @@ To silently clear Unicode `:sob:` reactions from a member's messages:
 [p]selfreact sob clear
 ```
 
-This cleanup works even when self-reaction muting is disabled. It clears the entire `:sob:` reaction from the message, so all users' `:sob:` reactions are removed.
+This cleanup works in every channel across the server, even when self-reaction muting is disabled. It clears the entire `:sob:` reaction from the message, so all users' `:sob:` reactions are removed. The configured listen channel only affects self-reaction muting.
 
 The bot needs **Manage Roles**, and its highest role must be above the configured muted role. The configured role must also deny speaking/sending permissions in the server's channel permissions.
 
