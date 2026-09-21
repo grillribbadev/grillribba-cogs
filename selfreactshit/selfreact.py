@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import time
 from typing import Optional
@@ -8,6 +9,9 @@ from typing import Optional
 import discord
 from redbot.core import Config, commands
 from redbot.core.bot import Red
+
+
+log = logging.getLogger("red.selfreactshit")
 
 
 DEFAULT_GUILD = {
@@ -131,12 +135,17 @@ class SelfReactMute(commands.Cog):
 
             # This cleanup is independent of self-reaction mute being enabled.
             watched_member_ids = {int(member_id) for member_id in conf.get("sob_watch_member_ids", [])}
-            is_sob = payload.emoji.id is None and payload.emoji.name == "sob"
+            is_sob = payload.emoji.id is None and payload.emoji.name in {"sob", "😭"}
             if is_sob and message.author.id in watched_member_ids:
                 try:
                     await message.clear_reaction(payload.emoji)
+                except discord.Forbidden:
+                    log.warning(
+                        "Cannot clear :sob: reaction in guild %s; Manage Messages is required.",
+                        guild.id,
+                    )
                 except discord.HTTPException:
-                    pass
+                    log.exception("Failed to clear :sob: reaction in guild %s", guild.id)
                 return
 
             if not conf.get("enabled") or not conf.get("mute_role_id"):
