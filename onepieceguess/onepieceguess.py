@@ -13,7 +13,7 @@ from redbot.core import commands
 from redbot.core.bot import Red
 
 from .constants import COLOR_OK
-from .core import GuessEngine
+from .core import FANDOM_IMAGE_HEADERS, GuessEngine
 from .tasks import GuessTasks
 
 DATA_DIR = Path(__file__).parent / "data"
@@ -634,7 +634,7 @@ class OnePieceGuess(commands.Cog):
                 ctitle, _extract, image_url = await self.engine.fetch_page_brief(title)
                 if image_url:
                     async with aiohttp.ClientSession() as s:
-                        async with s.get(image_url, timeout=12) as r:
+                        async with s.get(image_url, headers=FANDOM_IMAGE_HEADERS, timeout=12) as r:
                             if r.status == 200:
                                 buf = BytesIO(await r.read()); buf.seek(0)
                                 file = discord.File(buf, filename="opguess_answer.png")
@@ -756,6 +756,20 @@ class OnePieceGuess(commands.Cog):
             if buf:
                 file = discord.File(buf, filename="opguess_blur.png")
                 emb.set_image(url="attachment://opguess_blur.png")
+            elif require_image and image_url:
+                active = await self.engine.get_active(guild)
+                active.update(
+                    {
+                        "title": None,
+                        "posted_message_id": None,
+                        "posted_channel_id": None,
+                        "started_at": int(time.time()),
+                        "expired": True,
+                        "half_hint_sent": False,
+                    }
+                )
+                await self.engine.config.guild(guild).active.set(active)
+                return
 
         message = await channel.send(embed=emb, file=file) if file else await channel.send(embed=emb)
         await self.engine.set_active(
@@ -886,7 +900,7 @@ class OnePieceGuess(commands.Cog):
                 ctitle, _extract, image_url = await self.engine.fetch_page_brief(title)
                 if image_url:
                     async with aiohttp.ClientSession() as s:
-                        async with s.get(image_url, timeout=12) as r:
+                        async with s.get(image_url, headers=FANDOM_IMAGE_HEADERS, timeout=12) as r:
                             if r.status == 200:
                                 buf = BytesIO(await r.read())
                                 buf.seek(0)

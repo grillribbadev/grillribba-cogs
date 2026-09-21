@@ -9,7 +9,7 @@ import discord
 from discord.ext import tasks
 from redbot.core.bot import Red
 
-from .core import GuessEngine
+from .core import FANDOM_IMAGE_HEADERS, GuessEngine
 
 
 class GuessTasks:
@@ -117,7 +117,7 @@ class GuessTasks:
                                         _t, _extract, image_url = await self.engine.fetch_page_brief(title)
                                         if image_url:
                                             async with aiohttp.ClientSession() as s:
-                                                async with s.get(image_url, timeout=12) as r:
+                                                async with s.get(image_url, headers=FANDOM_IMAGE_HEADERS, timeout=12) as r:
                                                     if r.status == 200:
                                                         buf = BytesIO(await r.read())
                                                         buf.seek(0)

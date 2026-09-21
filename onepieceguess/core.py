@@ -16,6 +16,10 @@ from redbot.core.bot import Red
 from .constants import DEFAULT_GUILD, DEFAULT_USER
 
 ONEPIECE_API = "https://onepiece.fandom.com/api.php"
+FANDOM_IMAGE_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (compatible; OnePieceGuess/1.0)",
+    "Referer": "https://onepiece.fandom.com/",
+}
 
 
 def _now() -> int:
@@ -344,7 +348,7 @@ class GuessEngine:
     ) -> Optional[BytesIO]:
         try:
             async with aiohttp.ClientSession() as s:
-                async with s.get(image_url, timeout=15) as r:
+                async with s.get(image_url, headers=FANDOM_IMAGE_HEADERS, timeout=15) as r:
                     if r.status != 200:
                         return None
                     raw = await r.read()
