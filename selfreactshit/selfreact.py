@@ -14,6 +14,7 @@ DEFAULT_GUILD = {
     "enabled": False,
     "channel_id": None,
     "mute_role_id": None,
+    "ignored_role_ids": [],
     "duration_seconds": 600,
     "embed_title": "Self-reaction mute",
     "embed_description": "{user_mention} was muted for reacting to their own message.",
@@ -136,6 +137,9 @@ class SelfReactMute(commands.Cog):
                     member = await guild.fetch_member(payload.user_id)
                 except discord.HTTPException:
                     return
+            ignored_role_ids = {int(role_id) for role_id in conf.get("ignored_role_ids", [])}
+            if any(role.id in ignored_role_ids for role in member.roles):
+                return
             role = guild.get_role(conf["mute_role_id"])
             bot_member = guild.me
             if not role or not bot_member or role >= bot_member.top_role or member == guild.owner:
@@ -180,6 +184,38 @@ class SelfReactMute(commands.Cog):
     async def selfreact_role(self, ctx: commands.Context, role: discord.Role) -> None:
         await self.config.guild(ctx.guild).mute_role_id.set(role.id)
         await ctx.reply(f"Mute role set to {role.mention}.")
+
+    @selfreact.group(name="ignore", invoke_without_command=True)
+    async def selfreact_ignore(self, ctx: commands.Context) -> None:
+        await self.selfreact_ignore_list(ctx)
+
+    @selfreact_ignore.command(name="add")
+    async def selfreact_ignore_add(self, ctx: commands.Context, role: discord.Role) -> None:
+        ignored = await self.config.guild(ctx.guild).ignored_role_ids()
+        if role.id not in ignored:
+            ignored.append(role.id)
+            await self.config.guild(ctx.guild).ignored_role_ids.set(ignored)
+        await ctx.reply(f"Members with {role.mention} will be ignored by self-reaction mutes.")
+
+    @selfreact_ignore.command(name="remove")
+    async def selfreact_ignore_remove(self, ctx: commands.Context, role: discord.Role) -> None:
+        ignored = await self.config.guild(ctx.guild).ignored_role_ids()
+        if role.id in ignored:
+            ignored.remove(role.id)
+            await self.config.guild(ctx.guild).ignored_role_ids.set(ignored)
+        await ctx.reply(f"{role.mention} is no longer ignored by self-reaction mutes.")
+
+    @selfreact_ignore.command(name="clear")
+    async def selfreact_ignore_clear(self, ctx: commands.Context) -> None:
+        await self.config.guild(ctx.guild).ignored_role_ids.set([])
+        await ctx.reply("Cleared all ignored roles.")
+
+    @selfreact_ignore.command(name="list")
+    async def selfreact_ignore_list(self, ctx: commands.Context) -> None:
+        ignored = await self.config.guild(ctx.guild).ignored_role_ids()
+        roles = [ctx.guild.get_role(role_id) for role_id in ignored]
+        mentions = [role.mention for role in roles if role]
+        await ctx.reply("Ignored roles: " + (", ".join(mentions) if mentions else "none"))
 
     @selfreact.command(name="channel")
     async def selfreact_channel(
@@ -228,10 +264,16 @@ class SelfReactMute(commands.Cog):
         conf = await self.config.guild(ctx.guild).all()
         role = ctx.guild.get_role(conf.get("mute_role_id")) if conf.get("mute_role_id") else None
         channel = ctx.guild.get_channel(conf.get("channel_id")) if conf.get("channel_id") else None
+        ignored = [
+            ctx.guild.get_role(role_id)
+            for role_id in conf.get("ignored_role_ids", [])
+        ]
+        ignored_mentions = [role.mention for role in ignored if role]
         await ctx.reply(
             f"Enabled: **{'yes' if conf.get('enabled') else 'no'}**\n"
             f"Listen channel: {channel.mention if channel else '**all channels**'}\n"
             f"Mute role: {role.mention if role else '**not configured**'}\n"
+            f"Ignored roles: {', '.join(ignored_mentions) if ignored_mentions else '**none**'}\n"
             f"Duration: **{format_duration(int(conf.get('duration_seconds') or 600))}**\n"
             f"Title: {conf.get('embed_title') or '—'}\n"
             f"Message: {conf.get('embed_description') or '—'}\n"

@@ -11,6 +11,7 @@ Mutes a member when they add a reaction to their own message.
 ```text
 [p]selfreact role @Muted
 [p]selfreact channel #moderation
+[p]selfreact ignore add @Trusted
 [p]selfreact duration 10m
 [p]selfreact title Self-reaction mute
 [p]selfreact message {user_mention} was muted for reacting to their own message.
@@ -24,6 +25,17 @@ Check the current settings with:
 ```
 
 Use `[p]selfreact channel` without a channel argument to listen in all channels again.
+
+Ignored-role commands:
+
+```text
+[p]selfreact ignore add @Trusted
+[p]selfreact ignore remove @Trusted
+[p]selfreact ignore list
+[p]selfreact ignore clear
+```
+
+Members with any ignored role are not muted for self-reacting. Disable the entire feature with `[p]selfreact enable false`.
 
 The bot needs **Manage Roles**, and its highest role must be above the configured muted role. The configured role must also deny speaking/sending permissions in the server's channel permissions.
 
