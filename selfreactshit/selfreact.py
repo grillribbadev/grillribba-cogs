@@ -15,6 +15,7 @@ DEFAULT_GUILD = {
     "channel_id": None,
     "mute_role_id": None,
     "ignored_role_ids": [],
+    "sob_watch_member_ids": [],
     "duration_seconds": 600,
     "embed_title": "Self-reaction mute",
     "embed_description": "{user_mention} was muted for reacting to their own message.",
@@ -109,14 +110,12 @@ class SelfReactMute(commands.Cog):
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent) -> None:
-        if not payload.guild_id or (self.bot.user and payload.user_id == self.bot.user.id):
+        if not payload.guild_id:
             return
         guild = self.bot.get_guild(payload.guild_id)
         if not guild:
             return
         conf = await self.config.guild(guild).all()
-        if not conf.get("enabled") or not conf.get("mute_role_id"):
-            return
         configured_channel_id = conf.get("channel_id")
         if configured_channel_id and payload.channel_id != configured_channel_id:
             return
@@ -129,6 +128,21 @@ class SelfReactMute(commands.Cog):
             if not channel or not hasattr(channel, "fetch_message"):
                 return
             message = await channel.fetch_message(payload.message_id)
+
+            # This cleanup is independent of self-reaction mute being enabled.
+            watched_member_ids = {int(member_id) for member_id in conf.get("sob_watch_member_ids", [])}
+            is_sob = payload.emoji.id is None and payload.emoji.name == "sob"
+            if is_sob and message.author.id in watched_member_ids:
+                try:
+                    await message.clear_reaction(payload.emoji)
+                except discord.HTTPException:
+                    pass
+                return
+
+            if not conf.get("enabled") or not conf.get("mute_role_id"):
+                return
+            if self.bot.user and payload.user_id == self.bot.user.id:
+                return
             if message.author.id != payload.user_id:
                 return
             member = guild.get_member(payload.user_id)
@@ -217,6 +231,38 @@ class SelfReactMute(commands.Cog):
         mentions = [role.mention for role in roles if role]
         await ctx.reply("Ignored roles: " + (", ".join(mentions) if mentions else "none"))
 
+    @selfreact.group(name="sob", invoke_without_command=True)
+    async def selfreact_sob(self, ctx: commands.Context) -> None:
+        await self.selfreact_sob_list(ctx)
+
+    @selfreact_sob.command(name="add")
+    async def selfreact_sob_add(self, ctx: commands.Context, member: discord.Member) -> None:
+        watched = await self.config.guild(ctx.guild).sob_watch_member_ids()
+        if member.id not in watched:
+            watched.append(member.id)
+            await self.config.guild(ctx.guild).sob_watch_member_ids.set(watched)
+        await ctx.reply(f"I will silently clear `:sob:` reactions from {member.mention}'s messages.")
+
+    @selfreact_sob.command(name="remove")
+    async def selfreact_sob_remove(self, ctx: commands.Context, member: discord.Member) -> None:
+        watched = await self.config.guild(ctx.guild).sob_watch_member_ids()
+        if member.id in watched:
+            watched.remove(member.id)
+            await self.config.guild(ctx.guild).sob_watch_member_ids.set(watched)
+        await ctx.reply(f"I will no longer clear `:sob:` reactions from {member.mention}'s messages.")
+
+    @selfreact_sob.command(name="clear")
+    async def selfreact_sob_clear(self, ctx: commands.Context) -> None:
+        await self.config.guild(ctx.guild).sob_watch_member_ids.set([])
+        await ctx.reply("Cleared the `:sob:` reaction watch list.")
+
+    @selfreact_sob.command(name="list")
+    async def selfreact_sob_list(self, ctx: commands.Context) -> None:
+        watched = await self.config.guild(ctx.guild).sob_watch_member_ids()
+        members = [ctx.guild.get_member(member_id) for member_id in watched]
+        mentions = [member.mention for member in members if member]
+        await ctx.reply("`:sob:` watch list: " + (", ".join(mentions) if mentions else "empty"))
+
     @selfreact.command(name="channel")
     async def selfreact_channel(
         self, ctx: commands.Context, channel: Optional[discord.TextChannel] = None
@@ -269,11 +315,15 @@ class SelfReactMute(commands.Cog):
             for role_id in conf.get("ignored_role_ids", [])
         ]
         ignored_mentions = [role.mention for role in ignored if role]
+        watched_ids = conf.get("sob_watch_member_ids", [])
+        watched_members = [ctx.guild.get_member(member_id) for member_id in watched_ids]
+        watched_mentions = [member.mention for member in watched_members if member]
         await ctx.reply(
             f"Enabled: **{'yes' if conf.get('enabled') else 'no'}**\n"
             f"Listen channel: {channel.mention if channel else '**all channels**'}\n"
             f"Mute role: {role.mention if role else '**not configured**'}\n"
             f"Ignored roles: {', '.join(ignored_mentions) if ignored_mentions else '**none**'}\n"
+            f"`:sob:` watch list: {', '.join(watched_mentions) if watched_mentions else '**empty**'}\n"
             f"Duration: **{format_duration(int(conf.get('duration_seconds') or 600))}**\n"
             f"Title: {conf.get('embed_title') or '—'}\n"
             f"Message: {conf.get('embed_description') or '—'}\n"

@@ -12,6 +12,7 @@ Mutes a member when they add a reaction to their own message.
 [p]selfreact role @Muted
 [p]selfreact channel #moderation
 [p]selfreact ignore add @Trusted
+[p]selfreact sob add @Member
 [p]selfreact duration 10m
 [p]selfreact title Self-reaction mute
 [p]selfreact message {user_mention} was muted for reacting to their own message.
@@ -36,6 +37,17 @@ Ignored-role commands:
 ```
 
 Members with any ignored role are not muted for self-reacting. Disable the entire feature with `[p]selfreact enable false`.
+
+To silently clear Unicode `:sob:` reactions from a member's messages:
+
+```text
+[p]selfreact sob add @Member
+[p]selfreact sob remove @Member
+[p]selfreact sob list
+[p]selfreact sob clear
+```
+
+This cleanup works even when self-reaction muting is disabled. It clears the entire `:sob:` reaction from the message, so all users' `:sob:` reactions are removed.
 
 The bot needs **Manage Roles**, and its highest role must be above the configured muted role. The configured role must also deny speaking/sending permissions in the server's channel permissions.
 
