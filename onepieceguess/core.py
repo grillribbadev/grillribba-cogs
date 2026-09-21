@@ -241,9 +241,7 @@ class GuessEngine:
         """
         params = {
             "action": "query",
-            "prop": "extracts|pageimages",
-            "exintro": "1",
-            "explaintext": "1",
+            "prop": "pageimages",
             "titles": title,
             "piprop": "original",
             "format": "json",

@@ -427,8 +427,12 @@ class OnePieceGuess(commands.Cog):
         await self.engine.set_expired(ctx.guild, True)
 
         if not title:
-            await self._post_once(ctx.guild)
-            return await ctx.reply("Round posted (random from current mode).")
+            posted = await self._post_once(ctx.guild)
+            return await ctx.reply(
+                "Round posted (random from current mode)."
+                if posted
+                else "Couldn't post a round: no usable image was returned by Fandom."
+            )
 
         # resolve title within CURRENT mode pool
         pool = await self.engine.list_characters(ctx.guild)
@@ -663,11 +667,11 @@ class OnePieceGuess(commands.Cog):
             await self.engine.set_expired(ctx.guild, True)
 
     # ---------- posting ----------
-    async def _post_once(self, guild):
+    async def _post_once(self, guild) -> bool:
         gconf = await self.engine.config.guild(guild).all()
         channel = guild.get_channel(int(gconf.get("channel_id") or 0))
         if not channel:
-            return
+            return False
 
         mode = (gconf.get("mode") or "character").lower()
         require_map = gconf.get("require_image") or {}
@@ -712,7 +716,7 @@ class OnePieceGuess(commands.Cog):
                 await channel.send("⚠️ Skipping this round (no image found).")
             except Exception:
                 pass
-            return
+            return False
 
         interval = int(gconf.get("interval") or 1800)
         roundtime = int(gconf.get("roundtime") or 120)
@@ -769,7 +773,7 @@ class OnePieceGuess(commands.Cog):
                     }
                 )
                 await self.engine.config.guild(guild).active.set(active)
-                return
+                return False
 
         message = await channel.send(embed=emb, file=file) if file else await channel.send(embed=emb)
         await self.engine.set_active(
@@ -778,6 +782,7 @@ class OnePieceGuess(commands.Cog):
             message=message,
         )
         await self.engine.set_expired(guild, False)
+        return True
 
     # ---- player ----
     @commands.hybrid_command(name="guess")
