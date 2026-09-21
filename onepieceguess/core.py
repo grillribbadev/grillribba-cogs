@@ -250,7 +250,7 @@ class GuessEngine:
             "redirects": "1",
         }
         async with aiohttp.ClientSession() as s:
-            async with s.get(ONEPIECE_API, params=params, timeout=15) as r:
+            async with s.get(ONEPIECE_API, headers=FANDOM_IMAGE_HEADERS, params=params, timeout=15) as r:
                 data = await r.json()
         pages = data.get("query", {}).get("pages", {})
         page = next(iter(pages.values())) if pages else {}
@@ -268,7 +268,7 @@ class GuessEngine:
         # 1) find the section index for 'Quotes'
         params = {"action": "parse", "page": title, "prop": "sections", "format": "json"}
         async with aiohttp.ClientSession() as s:
-            async with s.get(ONEPIECE_API, params=params, timeout=15) as r:
+            async with s.get(ONEPIECE_API, headers=FANDOM_IMAGE_HEADERS, params=params, timeout=15) as r:
                 data = await r.json()
 
         sections = data.get("parse", {}).get("sections", []) or []
@@ -289,7 +289,7 @@ class GuessEngine:
             "format": "json",
         }
         async with aiohttp.ClientSession() as s:
-            async with s.get(ONEPIECE_API, params=params, timeout=15) as r:
+            async with s.get(ONEPIECE_API, headers=FANDOM_IMAGE_HEADERS, params=params, timeout=15) as r:
                 data = await r.json()
 
         wikitext = (data.get("parse", {}).get("wikitext", {}) or {}).get("*", "") or ""
