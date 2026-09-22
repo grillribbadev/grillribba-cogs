@@ -20,6 +20,9 @@ DEFAULT_GUILD = {
     "mute_role_id": None,
     "ignored_role_ids": [],
     "sob_watch_member_ids": [],
+    "shutup_enabled": False,
+    "shutup_user_id": None,
+    "shutup_duration_seconds": 60,
     "duration_seconds": 600,
     "embed_title": "Self-reaction mute",
     "embed_description": "{user_mention} was muted for reacting to their own message.",
@@ -190,6 +193,51 @@ class SelfReactMute(commands.Cog):
         finally:
             self._processing.discard(key)
 
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message) -> None:
+        if not message.guild or message.author.bot:
+            return
+        content = message.content.casefold()
+        if "shut up" not in content:
+            return
+
+        conf = await self.config.guild(message.guild).all()
+        if not conf.get("shutup_enabled") or message.author.id != conf.get("shutup_user_id"):
+            return
+
+        role = await self._get_role(message.guild)
+        bot_member = message.guild.me
+        target = message.author
+        if not role or not bot_member or role >= bot_member.top_role or target == message.guild.owner:
+            return
+        try:
+            await target.add_roles(role, reason='Said "shut up"')
+        except discord.Forbidden:
+            log.warning("Cannot apply shutup mute in guild %s; check Manage Roles and role hierarchy.", message.guild.id)
+            return
+        except discord.HTTPException:
+            log.exception("Failed to apply shutup mute in guild %s", message.guild.id)
+            return
+
+        duration = int(conf.get("shutup_duration_seconds") or 60)
+        active = conf.get("active_mutes") or {}
+        active[str(target.id)] = max(
+            int(active.get(str(target.id), 0)), int(time.time()) + duration
+        )
+        await self.config.guild(message.guild).active_mutes.set(active)
+        embed = discord.Embed(
+            title="Shut-up mute",
+            description=(
+                f"{target.mention} was muted for **{format_duration(duration)}** "
+                "for saying `shut up`."
+            ),
+            color=int(conf.get("embed_color") or 0xCC3333),
+        )
+        try:
+            await message.channel.send(embed=embed, allowed_mentions=discord.AllowedMentions(users=True))
+        except discord.HTTPException:
+            pass
+
     @commands.hybrid_group(name="selfreact", invoke_without_command=True)
     @commands.guild_only()
     @commands.admin_or_permissions(manage_guild=True)
@@ -207,6 +255,51 @@ class SelfReactMute(commands.Cog):
     async def selfreact_role(self, ctx: commands.Context, role: discord.Role) -> None:
         await self.config.guild(ctx.guild).mute_role_id.set(role.id)
         await ctx.reply(f"Mute role set to {role.mention}.")
+
+    @selfreact.group(name="shutup", invoke_without_command=True)
+    async def selfreact_shutup(self, ctx: commands.Context) -> None:
+        await self.selfreact_shutup_show(ctx)
+
+    @selfreact_shutup.command(name="user")
+    async def selfreact_shutup_user(self, ctx: commands.Context, member: discord.Member) -> None:
+        await self.config.guild(ctx.guild).shutup_user_id.set(member.id)
+        await ctx.reply(f"Shut-up reply rule will monitor {member.mention}.")
+
+    @selfreact_shutup.command(name="duration")
+    async def selfreact_shutup_duration(self, ctx: commands.Context, seconds: int) -> None:
+        if not 1 <= seconds <= 30 * 86400:
+            return await ctx.reply("Use a duration from **1** to **2592000** seconds.")
+        await self.config.guild(ctx.guild).shutup_duration_seconds.set(seconds)
+        await ctx.reply(f"Shut-up reply mute duration set to **{format_duration(seconds)}**.")
+
+    @selfreact_shutup.command(name="enable")
+    async def selfreact_shutup_enable(
+        self, ctx: commands.Context, enabled: Optional[bool] = None
+    ) -> None:
+        current = await self.config.guild(ctx.guild).shutup_enabled()
+        value = not current if enabled is None else enabled
+        await self.config.guild(ctx.guild).shutup_enabled.set(value)
+        await ctx.reply(f"Shut-up reply rule **{'enabled' if value else 'disabled'}**.")
+
+    @selfreact_shutup.command(name="clear")
+    async def selfreact_shutup_clear(self, ctx: commands.Context) -> None:
+        await self.config.guild(ctx.guild).shutup_user_id.set(None)
+        await self.config.guild(ctx.guild).shutup_enabled.set(False)
+        await ctx.reply("Shut-up reply rule cleared and disabled.")
+
+    @selfreact_shutup.command(name="show")
+    async def selfreact_shutup_show(self, ctx: commands.Context) -> None:
+        conf = await self.config.guild(ctx.guild).all()
+        member = (
+            ctx.guild.get_member(conf.get("shutup_user_id"))
+            if conf.get("shutup_user_id")
+            else None
+        )
+        await ctx.reply(
+            f"Enabled: **{'yes' if conf.get('shutup_enabled') else 'no'}**\n"
+            f"Configured user: {member.mention if member else '**not configured**'}\n"
+            f"Duration: **{int(conf.get('shutup_duration_seconds') or 60)} seconds**"
+        )
 
     @selfreact.group(name="ignore", invoke_without_command=True)
     async def selfreact_ignore(self, ctx: commands.Context) -> None:

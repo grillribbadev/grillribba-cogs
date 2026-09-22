@@ -38,6 +38,18 @@ Ignored-role commands:
 
 Members with any ignored role are not muted for self-reacting. Disable the entire feature with `[p]selfreact enable false`.
 
+The separate `shut up` rule watches one configured user anywhere in the server. When that user says `shut up`, they are muted with the configured role:
+
+```text
+[p]selfreact shutup user @Member
+[p]selfreact shutup duration 120
+[p]selfreact shutup enable true
+[p]selfreact shutup show
+[p]selfreact shutup clear
+```
+
+The duration is configured in seconds and uses the same configured mute role. It is independent of the self-reaction mute toggle.
+
 To silently clear Unicode `:sob:` reactions from a member's messages:
 
 ```text
