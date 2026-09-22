@@ -49,7 +49,7 @@ The separate `shut up` rule watches one configured user anywhere in the server. 
 [p]selfreact shutup clear
 ```
 
-The duration is configured in seconds and uses the same configured mute role. It is independent of the self-reaction mute toggle.
+The duration is configured in seconds and uses the same configured mute role. It is independent of the self-reaction mute toggle and does not send an announcement.
 
 To silently clear Unicode `:sob:` reactions from a member's messages:
 

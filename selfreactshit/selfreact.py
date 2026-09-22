@@ -237,18 +237,6 @@ class SelfReactMute(commands.Cog):
             int(active.get(str(target.id), 0)), int(time.time()) + duration
         )
         await self.config.guild(message.guild).active_mutes.set(active)
-        embed = discord.Embed(
-            title="Shut-up mute",
-            description=(
-                f"{target.mention} was muted for **{format_duration(duration)}** "
-                f"{conf.get('shutup_reason') or 'for violating the server rules.'}"
-            ),
-            color=int(conf.get("embed_color") or 0xCC3333),
-        )
-        try:
-            await message.channel.send(embed=embed, allowed_mentions=discord.AllowedMentions(users=True))
-        except discord.HTTPException:
-            pass
 
     @commands.hybrid_group(name="selfreact", invoke_without_command=True)
     @commands.guild_only()
