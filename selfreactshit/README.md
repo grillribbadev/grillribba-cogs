@@ -38,11 +38,12 @@ Ignored-role commands:
 
 Members with any ignored role are not muted for self-reacting. Disable the entire feature with `[p]selfreact enable false`.
 
-The separate `shut up` rule watches one configured user anywhere in the server. When that user says `shut up`, they are muted with the configured role:
+The separate `shut up` rule watches one configured user anywhere in the server. When that user replies to another member with `shut up`, the member being replied to is muted with the configured role:
 
 ```text
 [p]selfreact shutup user @Member
 [p]selfreact shutup duration 120
+[p]selfreact shutup reason for violating the server rules.
 [p]selfreact shutup enable true
 [p]selfreact shutup show
 [p]selfreact shutup clear
