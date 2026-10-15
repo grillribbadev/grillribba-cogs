@@ -1,12 +1,21 @@
 from __future__ import annotations
 
+import logging
+from pathlib import Path
+
 import discord
 from redbot.core import Config, commands
 from redbot.core.bot import Red
+from redbot.core.data_manager import cog_data_path
+
+log = logging.getLogger("red.banannounce")
 
 
 class BanAnnounce(commands.Cog):
     """Announce bans in a configured channel."""
+
+    MAX_IMAGE_SIZE = 8 * 1024 * 1024
+    IMAGE_FILENAME = "ban_announcement.gif"
 
     def __init__(self, bot: Red):
         self.bot = bot
@@ -22,6 +31,7 @@ class BanAnnounce(commands.Cog):
             title="🏴‍☠️ Divine Departure",
             message="{user} has been banned from {server}.",
             image_url=None,
+            image_file=None,
             enabled=True,
         )
 
@@ -88,14 +98,30 @@ class BanAnnounce(commands.Cog):
     async def set_image(
         self,
         ctx: commands.Context,
-        url: str,
+        attachment: discord.Attachment,
     ):
-        """Set GIF/image URL."""
+        """Upload a GIF attached to this command message."""
 
-        await self.config.guild(ctx.guild).image_url.set(url)
+        if not attachment.filename.lower().endswith(".gif"):
+            await ctx.send("⚠️ Please attach a GIF file (`.gif`).")
+            return
+
+        if attachment.content_type not in (None, "image/gif"):
+            await ctx.send("⚠️ The attached file must be a GIF.")
+            return
+
+        if attachment.size > self.MAX_IMAGE_SIZE:
+            await ctx.send("⚠️ The GIF must be 8 MiB or smaller.")
+            return
+
+        image_path = self._image_path(ctx.guild)
+        image_path.parent.mkdir(parents=True, exist_ok=True)
+        await attachment.save(image_path)
+        await self.config.guild(ctx.guild).image_file.set(self.IMAGE_FILENAME)
+        await self.config.guild(ctx.guild).image_url.set(None)
 
         await ctx.send(
-            "✅ Ban announcement GIF/image updated."
+            "✅ Ban announcement GIF uploaded and updated."
         )
 
     @banannounce.command(name="clearimage")
@@ -105,6 +131,11 @@ class BanAnnounce(commands.Cog):
     ):
         """Remove GIF/image."""
 
+        image_path = self._image_path(ctx.guild)
+        if image_path.exists():
+            image_path.unlink()
+
+        await self.config.guild(ctx.guild).image_file.set(None)
         await self.config.guild(ctx.guild).image_url.set(None)
 
         await ctx.send(
@@ -150,13 +181,19 @@ class BanAnnounce(commands.Cog):
                 data["channel_id"]
             )
 
+        image_status = (
+            "Uploaded GIF"
+            if data["image_file"]
+            else "No GIF uploaded"
+        )
+
         await ctx.send(
             "**Ban Announcement Settings**\n"
             f"Enabled: `{data['enabled']}`\n"
             f"Channel: {channel.mention if channel else 'Not Set'}\n"
             f"Title: `{data['title']}`\n"
             f"Message: `{data['message']}`\n"
-            f"GIF/Image: `{data['image_url'] or 'None'}`"
+            f"GIF/Image: `{image_status}`"
         )
 
     @commands.command(name="ben")
@@ -241,17 +278,34 @@ class BanAnnounce(commands.Cog):
             text="The Marines have carried out justice. ☠️"
         )
 
-        if data["image_url"]:
-            embed.set_image(
-                url=data["image_url"]
-            )
+        image_file = None
+        if data["image_file"]:
+            image_path = self._image_path(guild)
+            if image_path.is_file():
+                image_file = discord.File(image_path, filename=self.IMAGE_FILENAME)
+                embed.set_image(url=f"attachment://{self.IMAGE_FILENAME}")
+            else:
+                log.warning(
+                    "Configured ban announcement GIF is missing for guild %s",
+                    guild.id,
+                )
 
         try:
-            await channel.send(embed=embed)
+            await channel.send(embed=embed, file=image_file)
         except discord.Forbidden:
             return False
+        finally:
+            if image_file is not None:
+                image_file.close()
 
         return True
+
+    def _image_path(self, guild: discord.Guild) -> Path:
+        return (
+            cog_data_path(self)
+            / str(guild.id)
+            / self.IMAGE_FILENAME
+        )
 
     @commands.Cog.listener()
     async def on_member_ban(
