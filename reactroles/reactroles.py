@@ -57,14 +57,21 @@ class ReactRoles(commands.Cog):
         teams_cog = self.bot.get_cog("Teams")
         teams = getattr(teams_cog, "teams", None)
         if not isinstance(teams, dict):
+            log.warning("Teams cog is unavailable while handling role %s in guild %s", role.id, guild.id)
             return False, "no_cog", None, None
 
-        guild_teams = teams.get(guild.id, {})
+        guild_teams = teams.get(guild.id, teams.get(str(guild.id), {}))
         if not isinstance(guild_teams, dict):
+            log.warning("Teams data for guild %s is not a team mapping", guild.id)
             return False, "no_match", None, None
 
         for team in guild_teams.values():
-            if getattr(team, "member_role_id", None) != role.id:
+            team_role_id = getattr(team, "member_role_id", None)
+            try:
+                matches_role = int(team_role_id) == role.id
+            except (TypeError, ValueError):
+                matches_role = False
+            if not matches_role:
                 continue
 
             team_name = str(getattr(team, "display_name", None) or getattr(team, "name", None) or "team")
@@ -83,6 +90,17 @@ class ReactRoles(commands.Cog):
                 return True, "error", team_name, team
             return True, "joined", team_name, team
 
+        configured_role_ids = [
+            getattr(team, "member_role_id", None)
+            for team in guild_teams.values()
+        ]
+        log.warning(
+            "No Teams team in guild %s uses reacted role %s (%s); configured member-role IDs: %s",
+            guild.id,
+            role.id,
+            role.name,
+            configured_role_ids,
+        )
         return False, "no_match", None, None
 
     def _resolve_role(self, guild: discord.Guild, raw: str) -> Tuple[Optional[discord.Role], List[discord.Role]]:
@@ -1100,6 +1118,14 @@ class ReactRoles(commands.Cog):
             elif team_sync[0] and team_sync[1] == "error":
                 await member.send(
                     f"I couldn't add you to the team {team_sync[2]}. I removed {role.name} if possible; please contact a moderator."
+                )
+            elif team_sync[1] == "no_cog":
+                await member.send(
+                    f"You got {role.name}, but the Teams integration isn't available in this server. Please contact a moderator."
+                )
+            elif team_sync[1] == "no_match":
+                await member.send(
+                    f"You got {role.name}, but I couldn't find a Teams team configured with this role. Please contact a moderator."
                 )
             elif added and team_sync[0] and team_sync[1] in {"joined", "already"}:
                 if team_sync[1] == "joined":
