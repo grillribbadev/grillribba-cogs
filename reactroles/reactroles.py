@@ -1,10 +1,13 @@
 from __future__ import annotations
+import logging
 import discord
 from discord.ext import tasks
 from redbot.core import commands, Config
 from redbot.core.bot import Red
 from typing import Optional, Dict, Any, List, Tuple
 from .constants import EMBED_OK, EMBED_ERR
+
+log = logging.getLogger(__name__)
 
 
 class ReactRoles(commands.Cog):
@@ -43,6 +46,44 @@ class ReactRoles(commands.Cog):
             return await crew_cog.ensure_member_for_crew_role(guild, member, role.id)
         except Exception:
             return False, "error", None
+
+    async def _maybe_join_team_for_role(
+        self,
+        guild: discord.Guild,
+        member: discord.Member,
+        role: discord.Role,
+    ) -> Tuple[bool, str, Optional[str], Any]:
+        """Join the Teams team whose configured member role was granted."""
+        teams_cog = self.bot.get_cog("Teams")
+        teams = getattr(teams_cog, "teams", None)
+        if not isinstance(teams, dict):
+            return False, "no_cog", None, None
+
+        guild_teams = teams.get(guild.id, {})
+        if not isinstance(guild_teams, dict):
+            return False, "no_match", None, None
+
+        for team in guild_teams.values():
+            if getattr(team, "member_role_id", None) != role.id:
+                continue
+
+            team_name = str(getattr(team, "display_name", None) or getattr(team, "name", None) or "team")
+            if member.id in getattr(team, "member_ids", ()):
+                return True, "already", team_name, team
+
+            try:
+                await team.add_member(member)
+            except Exception:
+                log.exception(
+                    "Failed to add member %s to team %s in guild %s",
+                    member.id,
+                    team_name,
+                    guild.id,
+                )
+                return True, "error", team_name, team
+            return True, "joined", team_name, team
+
+        return False, "no_match", None, None
 
     def _resolve_role(self, guild: discord.Guild, raw: str) -> Tuple[Optional[discord.Role], List[discord.Role]]:
         """Resolve a role from free text; returns (best, candidates)."""
@@ -983,6 +1024,7 @@ class ReactRoles(commands.Cog):
         added = False
         removed = False
         crew_sync = (False, "no_match", None)
+        team_sync = (False, "no_match", None, None)
         try:
             if role in member.roles:
                 await member.remove_roles(role, reason="Reaction role toggled off")
@@ -1001,14 +1043,36 @@ class ReactRoles(commands.Cog):
                         await member.remove_roles(*roles_to_remove, reason="Unique reaction role swap")
                 await member.add_roles(role, reason="Reaction role toggled on")
                 added = True
-                crew_sync = await self._maybe_sync_crew_for_role(guild, member, role)
-                if crew_sync[0] and crew_sync[1] == "blocked_other":
-                    # Crew system doesn't allow switching crews: undo the role grant.
+                team_sync = await self._maybe_join_team_for_role(guild, member, role)
+                if team_sync[0] and team_sync[1] == "error":
                     try:
-                        await member.remove_roles(role, reason="Blocked by crew switching rule")
+                        await member.remove_roles(role, reason="Could not add member to the Teams team")
                         added = False
-                    except Exception:
-                        pass
+                    except discord.HTTPException:
+                        log.exception(
+                            "Could not remove role %s from member %s after Teams join failed",
+                            role.id,
+                            member.id,
+                        )
+
+                if added:
+                    crew_sync = await self._maybe_sync_crew_for_role(guild, member, role)
+                    if crew_sync[0] and crew_sync[1] == "blocked_other":
+                        # Crew system doesn't allow switching crews: undo the role grant.
+                        try:
+                            await member.remove_roles(role, reason="Blocked by crew switching rule")
+                            added = False
+                        except Exception:
+                            pass
+                        if team_sync[0] and team_sync[1] == "joined":
+                            try:
+                                await team_sync[3].remove_member(member)
+                            except Exception:
+                                log.exception(
+                                    "Could not remove member %s from team %s after crew join was blocked",
+                                    member.id,
+                                    team_sync[2],
+                                )
         except Exception:
             # Still try to remove the reaction even if role change fails.
             pass
@@ -1033,6 +1097,15 @@ class ReactRoles(commands.Cog):
                     )
                 else:
                     await member.send(f"You can't switch crews once you join one. I removed {role.name}.")
+            elif team_sync[0] and team_sync[1] == "error":
+                await member.send(
+                    f"I couldn't add you to the team {team_sync[2]}. I removed {role.name} if possible; please contact a moderator."
+                )
+            elif added and team_sync[0] and team_sync[1] in {"joined", "already"}:
+                if team_sync[1] == "joined":
+                    await member.send(f"You got {role.name} and joined the team {team_sync[2]}.")
+                else:
+                    await member.send(f"You got {role.name}. You're already in the team {team_sync[2]}.")
             elif added and crew_sync[0] and crew_sync[1] in {"joined", "already"}:
                 crew_name = crew_sync[2]
                 if crew_sync[1] == "joined":
