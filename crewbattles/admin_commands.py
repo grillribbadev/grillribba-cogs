@@ -1,6 +1,7 @@
 import io
 import json
 import copy
+import re
 import discord
 import hashlib
 from datetime import datetime, timezone
@@ -216,6 +217,22 @@ class AdminCommandsMixin:
             return None
         return int(token)
 
+    def _parse_cba_duration(self, duration: str) -> int | None:
+        if not duration or not duration.strip():
+            return None
+
+        value = duration.strip().lower()
+        pattern = r"\s*(?:\d+\s*(?:days?|d|hours?|h|minutes?|m)\s*)+"
+        if not re.fullmatch(pattern, value):
+            raise ValueError("Invalid duration")
+
+        parts = re.findall(r"(\d+)\s*(days?|d|hours?|h|minutes?|m)", value)
+        multipliers = {"d": 86400, "h": 3600, "m": 60}
+        seconds = sum(int(amount) * multipliers[unit[0]] for amount, unit in parts)
+        if seconds <= 0:
+            raise ValueError("Duration must be greater than zero")
+        return seconds
+
     def _norm_fruit_type(self, t: str) -> str:
         t = " ".join((t or "").strip().lower().split())
         aliases = {
@@ -262,6 +279,54 @@ class AdminCommandsMixin:
     # =========================================================
     # Admin commands
     # =========================================================
+
+    @commands.group(name="cba", invoke_without_command=True)
+    @commands.guild_only()
+    @commands.admin_or_permissions(administrator=True)
+    async def cba(self, ctx: commands.Context):
+        """Manage Crew Battles bans and high-balance alerts."""
+        await ctx.send_help()
+
+    @cba.command(name="ban")
+    async def cba_ban(self, ctx: commands.Context, member: discord.Member, *, duration: str = None):
+        """Ban a member from Crew Battles, optionally for a duration such as 2d or 4h."""
+        try:
+            duration_seconds = self._parse_cba_duration(duration)
+        except ValueError:
+            return await ctx.reply("Use a duration such as `2d`, `4h`, `30m`, or `1d 2h`. Omit it for a permanent ban.")
+
+        player = await self.players.get(member, guild=ctx.guild)
+        if duration_seconds is None:
+            player["tempban_until"] = -1
+            await self.players.save(member, player, guild=ctx.guild)
+            return await ctx.reply(f"⛔ {member.mention} is permanently banned from Crew Battles.")
+
+        until = self._now() + duration_seconds
+        player["tempban_until"] = until
+        await self.players.save(member, player, guild=ctx.guild)
+        await ctx.reply(f"⛔ {member.mention} is banned from Crew Battles for {duration.strip()}.")
+
+    @cba.command(name="unban")
+    async def cba_unban(self, ctx: commands.Context, member: discord.Member):
+        """Remove a Crew Battles ban from a member."""
+        player = await self.players.get(member, guild=ctx.guild)
+        player["tempban_until"] = 0
+        await self.players.save(member, player, guild=ctx.guild)
+        await ctx.reply(f"✅ {member.mention} can use Crew Battles commands again.")
+
+    @cba.command(name="highberilog", aliases=["berilog", "sethighberilog"])
+    async def cba_high_beri_log(self, ctx: commands.Context, channel: discord.TextChannel = None):
+        """Set or clear the channel for 500-million-Beri wallet and vault alerts."""
+        config = self.config.guild(ctx.guild).high_beri_log_channel
+        if channel is None:
+            await config.clear()
+            return await ctx.reply("High-balance Beri alerts are disabled.")
+
+        await config.set(channel.id)
+        await ctx.reply(
+            f"✅ High-balance alerts will be sent to {channel.mention} when a wallet or monitored vault "
+            "exceeds 500,000,000 Beri. Checks run hourly."
+        )
 
     @commands.group(name="cbadmin", invoke_without_command=True)
     @commands.admin_or_permissions(administrator=True)

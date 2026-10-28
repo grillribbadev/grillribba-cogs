@@ -61,6 +61,8 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
             beri_log_channel=None,  # Channel ID for general beri logs
             beri_win_channel=None,  # Channel ID for win beri logs
             beri_loss_channel=None,  # Channel ID for loss beri logs
+            high_beri_log_channel=None,
+            high_beri_alerted={},
         )
         # ...existing code...
 
@@ -72,12 +74,14 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
 
         self._active_battles = set()
         self._backup_task = self.bot.loop.create_task(self._periodic_backup())
+        self._high_beri_task = self.bot.loop.create_task(self._high_beri_monitor_loop())
 
     def cog_unload(self):
-        try:
-            self._backup_task.cancel()
-        except Exception:
-            pass
+        for task in (self._backup_task, self._high_beri_task):
+            try:
+                task.cancel()
+            except Exception:
+                pass
 
     # -----------------------------
     # Backups
@@ -276,6 +280,71 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
             except Exception as e:
                 print(f"[CrewBattles] periodic backup failed: {e}")
             await asyncio.sleep(6 * 60 * 60)
+
+    async def _high_beri_monitor_loop(self):
+        await self.bot.wait_until_ready()
+        while True:
+            try:
+                await self._scan_high_beri()
+            except Exception as e:
+                print(f"[CrewBattles] high-beri monitor failed: {e}")
+            await asyncio.sleep(60 * 60)
+
+    async def _scan_high_beri(self):
+        core = self._beri()
+        auction = self.bot.get_cog("OPAuction")
+        if not core and not auction:
+            return
+
+        for guild in list(getattr(self.bot, "guilds", []) or []):
+            guild_config = self.config.guild(guild)
+            try:
+                channel_id = await guild_config.high_beri_log_channel()
+                channel = guild.get_channel(int(channel_id)) if channel_id else None
+                if channel is None:
+                    continue
+                alerted = await guild_config.high_beri_alerted()
+                if not isinstance(alerted, dict):
+                    alerted = {}
+            except Exception:
+                continue
+
+            if core:
+                for member in list(getattr(guild, "members", []) or []):
+                    key = f"wallet:{member.id}"
+                    try:
+                        balance = int(await core.get_beri(member))
+                    except Exception:
+                        continue
+
+                    over_limit = balance > 500_000_000
+                    if over_limit and not alerted.get(key, False):
+                        try:
+                            await channel.send(
+                                f"⚠️ {member.mention} has **{balance:,} Beri** in their wallet, "
+                                "exceeding the 500,000,000 Beri alert threshold."
+                            )
+                        except Exception:
+                            continue
+                    alerted[key] = over_limit
+
+            if auction:
+                try:
+                    vault_balance = int(await auction.config.total_fees())
+                    over_limit = vault_balance > 500_000_000
+                    if over_limit and not alerted.get("opauction_vault", False):
+                        await channel.send(
+                            f"⚠️ The OP Auction global vault has **{vault_balance:,} Beri**, "
+                            "exceeding the 500,000,000 Beri alert threshold."
+                        )
+                    alerted["opauction_vault"] = over_limit
+                except Exception:
+                    pass
+
+            try:
+                await guild_config.high_beri_alerted.set(alerted)
+            except Exception:
+                pass
 
     async def _restore_backup(self, backup_path: Path, guild: discord.Guild = None) -> int:
         def _sync_read():
@@ -507,6 +576,19 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
                 pass
 
         try:
+            pdata = await self.players.get(ctx.author, guild=ctx.guild)
+            until = int(pdata.get("tempban_until", 0) or 0)
+            if self._is_tempbanned(pdata):
+                if until < 0:
+                    message = "⛔ You are permanently banned from Crew Battles."
+                else:
+                    message = f"⛔ You are banned from Crew Battles for {format_duration(until - self._now())}."
+                await ctx.reply(message)
+                return False
+        except Exception:
+            pass
+
+        try:
             maintenance = bool(await self.config.maintenance())
         except Exception:
             maintenance = False
@@ -525,13 +607,6 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
                 pass
             return False
 
-        # tempban enforcement (admins/owner bypass; cbadmin bypass)
-        try:
-            if ctx.command and ctx.command.qualified_name.startswith("cbadmin"):
-                return True
-        except Exception:
-            pass
-
         try:
             if await self.bot.is_owner(ctx.author):
                 return True
@@ -539,17 +614,6 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
             pass
         if ctx.guild and getattr(ctx.author, "guild_permissions", None) and ctx.author.guild_permissions.administrator:
             return True
-
-        try:
-            pdata = await self.players.get(ctx.author)
-            until = int(pdata.get("tempban_until", 0) or 0)
-            now = self._now()
-            if until > now:
-                remaining = until - now
-                await ctx.reply(f"⛔ You are temporarily banned from Crew Battles for {remaining}s.")
-                return False
-        except Exception:
-            pass
 
         return True
 
@@ -608,6 +672,13 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
     def _now(self) -> int:
         """Unix timestamp (seconds). Used for cooldowns/tempbans."""
         return int(time.time())
+
+    def _is_tempbanned(self, player: dict) -> bool:
+        try:
+            until = int(player.get("tempban_until", 0) or 0)
+        except (TypeError, ValueError):
+            return False
+        return until < 0 or until > self._now()
 
     # =========================================================
     # Admin commands
@@ -1428,12 +1499,11 @@ class CrewBattles(AdminCommandsMixin, PlayerCommandsMixin, commands.Cog):
             if not p2.get("started"):
                 return await ctx.reply("That user must `.startcb` first.")
 
-            # tempban handled by cog_check; still guard opponent edge cases
-            if int(p1.get("tempban_until", 0) or 0) > self._now():
-                return await ctx.reply("You are temporarily banned from Crew Battles.")
-            if int(p2.get("tempban_until", 0) or 0) > self._now():
-                return await ctx.reply("That user is temporarily banned from Crew Battles.")
-
+            # cog_check handles the caller; retain a guard for the opponent.
+            if self._is_tempbanned(p1):
+                return await ctx.reply("You are banned from Crew Battles.")
+            if self._is_tempbanned(p2):
+                return await ctx.reply("That user is banned from Crew Battles.")
             # battle cooldown
             now = self._now()
             cd = int(g.get("battle_cooldown", DEFAULT_BATTLE_COOLDOWN) or DEFAULT_BATTLE_COOLDOWN)
